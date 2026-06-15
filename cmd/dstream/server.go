@@ -14,6 +14,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
+	"github.com/streamingo/dstream/internal/api"
+	"github.com/streamingo/dstream/internal/auth"
 	"github.com/streamingo/dstream/internal/config"
 	"github.com/streamingo/dstream/internal/ingest"
 	"github.com/streamingo/dstream/internal/logging"
@@ -29,6 +31,9 @@ func serverCmd() *cobra.Command {
 			cfg, err := config.Load()
 			if err != nil {
 				return err
+			}
+			if len(cfg.SessionSecret) < 32 {
+				return errors.New("DSTREAM_SESSION_SECRET must be at least 32 bytes")
 			}
 			log := logging.New(cfg.LogLevel, cfg.LogFormat)
 			log.Info("starting server", "addr", cfg.HTTPAddr, "version", version)
@@ -53,6 +58,7 @@ func serverCmd() *cobra.Command {
 			qc := queue.NewClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
 			defer qc.Close()
 
+			signer := &auth.SessionSigner{Secret: []byte(cfg.SessionSecret)}
 			bodyStore := ingest.NewPostgresBodyStore(q)
 
 			r := chi.NewRouter()
@@ -70,16 +76,24 @@ func serverCmd() *cobra.Command {
 				_, _ = w.Write([]byte("ready"))
 			})
 
-			ingestHandler := &ingest.Handler{
+			ih := &ingest.Handler{
 				Log:       log,
 				Queries:   q,
 				Redis:     rdb,
 				Queue:     qc,
 				BodyStore: bodyStore,
 			}
-			ingestHandler.Mount(r)
+			ih.Mount(r)
 
-			// TODO(phase-1.3): mount /api/* and /admin/* routers here.
+			api.Mount(r, api.Deps{
+				Log:     log,
+				Queries: q,
+				Redis:   rdb,
+				Queue:   qc,
+				Signer:  signer,
+			})
+
+			// TODO(phase-1.4): mount /admin/* (asynqmon + custom admin pages) + /web/* (dashboard).
 
 			srv := &http.Server{
 				Addr:              cfg.HTTPAddr,

@@ -17,6 +17,7 @@ type Querier interface {
 	CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error)
 	CreateDestination(ctx context.Context, arg CreateDestinationParams) (Destination, error)
 	CreateEvent(ctx context.Context, arg CreateEventParams) (Event, error)
+	CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkTokenParams) (MagicLinkToken, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (Organization, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
@@ -24,8 +25,10 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteConnection(ctx context.Context, id pgtype.UUID) error
 	DeleteDestination(ctx context.Context, id pgtype.UUID) error
+	DeleteExpiredMagicLinkTokens(ctx context.Context) error
 	DeleteSource(ctx context.Context, id pgtype.UUID) error
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetDestinationByID(ctx context.Context, id pgtype.UUID) (Destination, error)
 	GetEventByID(ctx context.Context, id pgtype.UUID) (Event, error)
@@ -51,6 +54,7 @@ type Querier interface {
 	MarkEventDelivered(ctx context.Context, id pgtype.UUID) error
 	MarkEventFailed(ctx context.Context, id pgtype.UUID) error
 	MarkEventInFlight(ctx context.Context, id pgtype.UUID) error
+	MarkMagicLinkUsed(ctx context.Context, id pgtype.UUID) error
 	PromoteUserToSuperAdmin(ctx context.Context, email string) error
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
