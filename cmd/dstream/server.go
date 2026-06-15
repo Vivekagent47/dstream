@@ -1,0 +1,111 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/redis/go-redis/v9"
+	"github.com/spf13/cobra"
+
+	"github.com/streamingo/dstream/internal/config"
+	"github.com/streamingo/dstream/internal/ingest"
+	"github.com/streamingo/dstream/internal/logging"
+	"github.com/streamingo/dstream/internal/queue"
+	"github.com/streamingo/dstream/internal/store"
+)
+
+func serverCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "server",
+		Short: "Run the HTTP API + dashboard server",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			log := logging.New(cfg.LogLevel, cfg.LogFormat)
+			log.Info("starting server", "addr", cfg.HTTPAddr, "version", version)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
+			if err != nil {
+				return err
+			}
+			defer pool.Close()
+			q := store.New(pool)
+
+			rdb := redis.NewClient(&redis.Options{
+				Addr:     cfg.Redis.Addr,
+				Password: cfg.Redis.Password,
+				DB:       cfg.Redis.DB,
+			})
+			defer rdb.Close()
+
+			qc := queue.NewClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+			defer qc.Close()
+
+			bodyStore := ingest.NewPostgresBodyStore(q)
+
+			r := chi.NewRouter()
+			r.Use(middleware.RequestID)
+			r.Use(middleware.RealIP)
+			r.Use(middleware.Recoverer)
+			r.Use(middleware.Timeout(30 * time.Second))
+
+			r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ok"))
+			})
+			r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ready"))
+			})
+
+			ingestHandler := &ingest.Handler{
+				Log:       log,
+				Queries:   q,
+				Redis:     rdb,
+				Queue:     qc,
+				BodyStore: bodyStore,
+			}
+			ingestHandler.Mount(r)
+
+			// TODO(phase-1.3): mount /api/* and /admin/* routers here.
+
+			srv := &http.Server{
+				Addr:              cfg.HTTPAddr,
+				Handler:           r,
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+
+			errCh := make(chan error, 1)
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					errCh <- err
+				}
+			}()
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+			select {
+			case err := <-errCh:
+				return err
+			case <-sigCh:
+				log.Info("shutting down server")
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer shutdownCancel()
+				return srv.Shutdown(shutdownCtx)
+			}
+		},
+	}
+}

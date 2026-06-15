@@ -1,0 +1,32 @@
+# binaries
+/bin/
+/dstream
+/dstream.exe
+*.test
+*.out
+
+# env
+.env
+.env.local
+
+# go
+/vendor/
+
+# editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# frontend
+/web/node_modules/
+/web/.output/
+/web/.tanstack/
+/web/dist/
+/web/.nitro/
+
+# logs
+*.log
+
+# minio data, postgres data when running compose
+/.data/
