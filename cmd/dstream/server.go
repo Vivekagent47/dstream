@@ -14,6 +14,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
+	"github.com/hibiken/asynq"
+
+	"github.com/streamingo/dstream/internal/admin"
 	"github.com/streamingo/dstream/internal/api"
 	"github.com/streamingo/dstream/internal/auth"
 	"github.com/streamingo/dstream/internal/config"
@@ -93,7 +96,19 @@ func serverCmd() *cobra.Command {
 				Signer:  signer,
 			})
 
-			// TODO(phase-1.4): mount /admin/* (asynqmon + custom admin pages) + /web/* (dashboard).
+			admin.Mount(r, admin.Deps{
+				Log:     log,
+				Queries: q,
+				Redis:   rdb,
+				Signer:  signer,
+				Asynq: asynq.RedisClientOpt{
+					Addr:     cfg.Redis.Addr,
+					Password: cfg.Redis.Password,
+					DB:       cfg.Redis.DB,
+				},
+			})
+
+			// TODO(phase-1.4 follow-up): mount /web/* dashboard.
 
 			srv := &http.Server{
 				Addr:              cfg.HTTPAddr,

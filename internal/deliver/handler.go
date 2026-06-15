@@ -74,8 +74,10 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 		return fmt.Errorf("load event: %w", err)
 	}
 
+	if row.DestinationType == "cli" {
+		return h.dispatchToCLI(ctx, row)
+	}
 	if row.DestinationType != "http" {
-		// Phase 1.3: CLI tunnel delivery handled separately.
 		return fmt.Errorf("delivery type %q not implemented", row.DestinationType)
 	}
 	if row.DestinationUrl == nil || *row.DestinationUrl == "" {
@@ -250,6 +252,43 @@ func defaultRetry(n int) time.Duration {
 		d = time.Hour
 	}
 	return d
+}
+
+// dispatchToCLI hands the event off to a live CLI tunnel via Redis. The CLI
+// WebSocket handler does the actual forwarding + attempt recording, so this
+// path returns asynq.SkipRetry on success.
+func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDeliveryRow) error {
+	sessionKey := "cli:source:" + store.GoUUID(row.SourceID).String()
+	exists, err := h.Redis.Exists(ctx, sessionKey).Result()
+	if err != nil {
+		return fmt.Errorf("cli session check: %w", err)
+	}
+	if exists == 0 {
+		// No live CLI: re-queue with backoff so the event isn't dropped.
+		_ = h.Queries.ResetEventForRetry(ctx, store.ResetEventForRetryParams{
+			ID: row.ID,
+			NextRetryAt: pgtype.Timestamptz{
+				Time:  time.Now().Add(15 * time.Second),
+				Valid: true,
+			},
+		})
+		if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
+			EventID:    store.GoUUID(row.ID),
+			Attempt:    int(row.AttemptCount),
+			EnqueuedAt: time.Now().UnixMilli(),
+		}, int(row.MaxRetries), asynq.ProcessIn(15*time.Second)); err != nil {
+			return fmt.Errorf("cli reenqueue: %w", err)
+		}
+		return asynq.SkipRetry
+	}
+
+	dispatchKey := "cli:dispatch:" + store.GoUUID(row.SourceID).String()
+	payload, _ := json.Marshal(map[string]any{"event_id": store.GoUUID(row.ID).String()})
+	if err := h.Redis.RPush(ctx, dispatchKey, payload).Err(); err != nil {
+		return fmt.Errorf("cli rpush: %w", err)
+	}
+	// CLI WS handler will record attempt + update status; we hand off.
+	return asynq.SkipRetry
 }
 
 func unmarshalHeaders(raw []byte) (map[string][]string, error) {

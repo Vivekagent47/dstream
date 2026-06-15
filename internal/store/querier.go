@@ -12,6 +12,8 @@ import (
 
 type Querier interface {
 	AddOrgMember(ctx context.Context, arg AddOrgMemberParams) error
+	CountOrganizations(ctx context.Context) (int64, error)
+	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (Attempt, error)
 	CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error)
@@ -43,6 +45,7 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
 	ListAPIKeysByProject(ctx context.Context, projectID pgtype.UUID) ([]ApiKey, error)
+	ListAllOrganizations(ctx context.Context) ([]Organization, error)
 	ListAttemptsByEvent(ctx context.Context, eventID pgtype.UUID) ([]Attempt, error)
 	ListConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
 	ListDestinationsByProject(ctx context.Context, projectID pgtype.UUID) ([]Destination, error)
