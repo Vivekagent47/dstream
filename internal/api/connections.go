@@ -7,7 +7,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/audit"
+	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 type createConnectionReq struct {
@@ -17,6 +19,11 @@ type createConnectionReq struct {
 }
 
 func (d Deps) createConnection(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
 	var body createConnectionReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid json")
@@ -24,6 +31,21 @@ func (d Deps) createConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SourceID == uuid.Nil || body.DestinationID == uuid.Nil {
 		httpErr(w, http.StatusBadRequest, "source_id and destination_id required")
+		return
+	}
+	// Verify both source and destination belong to the caller's org.
+	if _, err := d.Queries.GetSourceForOrg(r.Context(), store.GetSourceForOrgParams{
+		ID:    store.UUID(body.SourceID),
+		OrgID: store.UUID(p.OrgID),
+	}); err != nil {
+		httpErr(w, http.StatusBadRequest, "source not found in this org")
+		return
+	}
+	if _, err := d.Queries.GetDestinationForOrg(r.Context(), store.GetDestinationForOrgParams{
+		ID:    store.UUID(body.DestinationID),
+		OrgID: store.UUID(p.OrgID),
+	}); err != nil {
+		httpErr(w, http.StatusBadRequest, "destination not found in this org")
 		return
 	}
 	enabled := true
@@ -36,24 +58,29 @@ func (d Deps) createConnection(w http.ResponseWriter, r *http.Request) {
 		Enabled:       enabled,
 	})
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "create: "+err.Error())
+		d.Log.Error("create connection", "err", err)
+		httpErr(w, http.StatusInternalServerError, "create")
 		return
 	}
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "connection.create",
+		TargetType: "connection",
+		TargetID:   audit.PtrUUID(store.GoUUID(row.ID)),
+		Metadata: map[string]any{
+			"source_id":      store.GoUUID(row.SourceID).String(),
+			"destination_id": store.GoUUID(row.DestinationID).String(),
+		},
+	})
 	writeJSON(w, http.StatusCreated, connectionView(row))
 }
 
 func (d Deps) listConnections(w http.ResponseWriter, r *http.Request) {
-	sourceIDStr := r.URL.Query().Get("source_id")
-	if sourceIDStr == "" {
-		httpErr(w, http.StatusBadRequest, "source_id query param required")
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
 		return
 	}
-	sid, err := uuid.Parse(sourceIDStr)
-	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid source_id")
-		return
-	}
-	rows, err := d.Queries.ListConnectionsBySource(r.Context(), store.UUID(sid))
+	rows, err := d.Queries.ListConnectionsByOrg(r.Context(), store.UUID(p.OrgID))
 	if err != nil {
 		httpErr(w, http.StatusInternalServerError, "list")
 		return
@@ -66,12 +93,20 @@ func (d Deps) listConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) getConnection(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	row, err := d.Queries.GetConnectionByID(r.Context(), store.UUID(id))
+	row, err := d.Queries.GetConnectionForOrg(r.Context(), store.GetConnectionForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	})
 	if err != nil {
 		httpErr(w, http.StatusNotFound, "not found")
 		return
@@ -80,16 +115,21 @@ func (d Deps) getConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchConnectionReq struct {
-	Enabled               *bool           `json:"enabled,omitempty"`
-	MaxRetries            *int32          `json:"max_retries,omitempty"`
-	RetryStrategy         *string         `json:"retry_strategy,omitempty"`
-	RetryBaseMs           *int32          `json:"retry_base_ms,omitempty"`
-	RetryCapMs            *int32          `json:"retry_cap_ms,omitempty"`
-	RetryJitterPct        *int32          `json:"retry_jitter_pct,omitempty"`
-	CustomRetrySchedule   json.RawMessage `json:"custom_retry_schedule,omitempty"`
+	Enabled             *bool           `json:"enabled,omitempty"`
+	MaxRetries          *int32          `json:"max_retries,omitempty"`
+	RetryStrategy       *string         `json:"retry_strategy,omitempty"`
+	RetryBaseMs         *int32          `json:"retry_base_ms,omitempty"`
+	RetryCapMs          *int32          `json:"retry_cap_ms,omitempty"`
+	RetryJitterPct      *int32          `json:"retry_jitter_pct,omitempty"`
+	CustomRetrySchedule json.RawMessage `json:"custom_retry_schedule,omitempty"`
 }
 
 func (d Deps) patchConnection(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid id")
@@ -107,34 +147,98 @@ func (d Deps) patchConnection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	params := store.UpdateConnectionParams{ID: store.UUID(id)}
-	if body.Enabled != nil {
-		params.Enabled = body.Enabled
+	old, err := d.Queries.GetConnectionForOrg(r.Context(), store.GetConnectionForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	})
+	if err != nil {
+		httpErr(w, http.StatusNotFound, "not found")
+		return
 	}
-	if body.MaxRetries != nil {
-		params.MaxRetries = body.MaxRetries
-	}
-	if body.RetryStrategy != nil {
-		params.RetryStrategy = body.RetryStrategy
-	}
-	if body.RetryBaseMs != nil {
-		params.RetryBaseMs = body.RetryBaseMs
-	}
-	if body.RetryCapMs != nil {
-		params.RetryCapMs = body.RetryCapMs
-	}
-	if body.RetryJitterPct != nil {
-		params.RetryJitterPct = body.RetryJitterPct
+	params := store.PatchConnectionForOrgParams{
+		ID:             store.UUID(id),
+		OrgID:          store.UUID(p.OrgID),
+		Enabled:        body.Enabled,
+		MaxRetries:     body.MaxRetries,
+		RetryStrategy:  body.RetryStrategy,
+		RetryBaseMs:    body.RetryBaseMs,
+		RetryCapMs:     body.RetryCapMs,
+		RetryJitterPct: body.RetryJitterPct,
 	}
 	if len(body.CustomRetrySchedule) > 0 {
 		params.CustomRetrySchedule = body.CustomRetrySchedule
 	}
-	row, err := d.Queries.UpdateConnection(r.Context(), params)
+	row, err := d.Queries.PatchConnectionForOrg(r.Context(), params)
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "update: "+err.Error())
+		d.Log.Error("patch connection", "err", err)
+		httpErr(w, http.StatusInternalServerError, "update")
 		return
 	}
+	if changed := diffConnection(old, row); len(changed) > 0 {
+		audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+			Action:     "connection.update",
+			TargetType: "connection",
+			TargetID:   audit.PtrUUID(store.GoUUID(row.ID)),
+			Metadata:   map[string]any{"changed": changed},
+		})
+	}
 	writeJSON(w, http.StatusOK, connectionView(row))
+}
+
+func (d Deps) deleteConnection(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := d.Queries.DeleteConnectionForOrg(r.Context(), store.DeleteConnectionForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	}); err != nil {
+		d.Log.Error("delete connection", "err", err)
+		httpErr(w, http.StatusInternalServerError, "delete")
+		return
+	}
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "connection.delete",
+		TargetType: "connection",
+		TargetID:   audit.PtrUUID(id),
+		Metadata:   map[string]any{},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// diffConnection produces the changed-fields map for an audit entry. Returns
+// an empty map if nothing changed.
+func diffConnection(old, new store.Connection) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	if old.Enabled != new.Enabled {
+		out["enabled"] = map[string]any{"from": old.Enabled, "to": new.Enabled}
+	}
+	if old.MaxRetries != new.MaxRetries {
+		out["max_retries"] = map[string]any{"from": old.MaxRetries, "to": new.MaxRetries}
+	}
+	if old.RetryStrategy != new.RetryStrategy {
+		out["retry_strategy"] = map[string]any{"from": old.RetryStrategy, "to": new.RetryStrategy}
+	}
+	if old.RetryBaseMs != new.RetryBaseMs {
+		out["retry_base_ms"] = map[string]any{"from": old.RetryBaseMs, "to": new.RetryBaseMs}
+	}
+	if old.RetryCapMs != new.RetryCapMs {
+		out["retry_cap_ms"] = map[string]any{"from": old.RetryCapMs, "to": new.RetryCapMs}
+	}
+	if old.RetryJitterPct != new.RetryJitterPct {
+		out["retry_jitter_pct"] = map[string]any{"from": old.RetryJitterPct, "to": new.RetryJitterPct}
+	}
+	if !bytesEq(old.CustomRetrySchedule, new.CustomRetrySchedule) {
+		out["custom_retry_schedule"] = map[string]any{"changed": true}
+	}
+	return out
 }
 
 func connectionView(c store.Connection) map[string]any {

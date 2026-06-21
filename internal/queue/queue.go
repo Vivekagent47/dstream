@@ -19,14 +19,28 @@ const (
 	TaskDeliver = "deliver"
 )
 
-// DeliverPayload is the task body for delivery tasks. It carries only the
-// event ID — the handler reloads the full event/connection/destination from
-// Postgres on every attempt so config changes (rate limit, retry policy) are
-// honored on the next try.
+// DeliverPayload is the task body for delivery tasks.
+//
+// The handler still reloads the event/connection/destination from Postgres
+// on every attempt (so live rate-limit + destination edits take effect).
+// But the RETRY policy fields are stashed inline so asynq's
+// RetryDelayFunc can compute the next backoff without two extra queries
+// per failed delivery (events + connections). Worst-case staleness is
+// bounded by the task's lifetime — a policy edit lands on the next NEW
+// event, not on in-flight retries, which is acceptable.
 type DeliverPayload struct {
-	EventID  uuid.UUID `json:"event_id"`
-	Attempt  int       `json:"attempt"`
-	EnqueuedAt int64   `json:"enqueued_at_unix_ms"`
+	EventID    uuid.UUID `json:"event_id"`
+	Attempt    int       `json:"attempt"`
+	EnqueuedAt int64     `json:"enqueued_at_unix_ms"`
+
+	// Retry policy snapshot, captured at enqueue time. Optional — handler
+	// falls back to a 2-query DB lookup if RetryStrategy is empty (covers
+	// tasks enqueued before this field shipped).
+	RetryStrategy       string `json:"retry_strategy,omitempty"`
+	RetryBaseMs         int32  `json:"retry_base_ms,omitempty"`
+	RetryCapMs          int32  `json:"retry_cap_ms,omitempty"`
+	RetryJitterPct      int32  `json:"retry_jitter_pct,omitempty"`
+	CustomRetrySchedule []byte `json:"custom_retry_schedule,omitempty"`
 }
 
 type Client struct {

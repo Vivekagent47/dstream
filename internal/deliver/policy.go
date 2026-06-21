@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 // RetryDelay computes the next retry delay given a connection's policy and

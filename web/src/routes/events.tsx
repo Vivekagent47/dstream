@@ -1,93 +1,99 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { queryOptions, useQuery } from '@tanstack/react-query'
 
-import { api, type Event } from '#/lib/api'
+import { api, qk } from '#/lib/api'
+import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
+import { Badge } from '#/components/ui/badge'
+import { Card } from '#/components/ui/card'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '#/components/ui/table'
 
-export const Route = createFileRoute('/events')({ component: EventsPage })
+const eventsQuery = (params: { limit: number }) =>
+  queryOptions({
+    queryKey: qk.events(params),
+    queryFn: () => api.listEvents(params),
+    refetchInterval: 5000,
+  })
 
-const statusColor: Record<string, string> = {
-  delivered: 'text-emerald-700 bg-emerald-50',
-  queued: 'text-slate-700 bg-slate-100',
-  in_flight: 'text-blue-700 bg-blue-50',
-  failed: 'text-red-700 bg-red-50',
-  paused: 'text-amber-700 bg-amber-50',
-  dead: 'text-red-900 bg-red-100',
+export const Route = createFileRoute('/events')({
+  loader: ({ context }) => context.queryClient.ensureQueryData(eventsQuery({ limit: 100 })),
+  component: EventsPage,
+  errorComponent: AuthErrorBoundary,
+})
+
+const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant']> = {
+  delivered: 'success',
+  queued: 'secondary',
+  in_flight: 'info',
+  failed: 'destructive',
+  paused: 'warning',
+  dead: 'destructive',
 }
 
 function EventsPage() {
-  const [events, setEvents] = useState<Event[] | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    let dead = false
-    const tick = () => {
-      api.listEvents({ limit: 100 })
-        .then((e) => !dead && setEvents(e))
-        .catch((e) => !dead && setErr(e.message))
-    }
-    tick()
-    const t = setInterval(tick, 5000)
-    return () => {
-      dead = true
-      clearInterval(t)
-    }
-  }, [])
+  const { data: events, error } = useQuery(eventsQuery({ limit: 100 }))
 
   return (
-    <main className="page-wrap mx-auto px-4 pb-16 pt-10">
-      <h1 className="mb-6 text-2xl font-semibold">Events</h1>
+    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
+      <h1 className="text-2xl font-semibold">Events</h1>
 
-      {err && <p className="mb-4 text-sm text-red-600">{err}</p>}
+      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
-      <div className="overflow-hidden rounded-xl border border-[rgba(23,58,64,0.08)]">
-        <table className="w-full border-collapse text-sm">
-          <thead className="bg-white/70 text-left text-xs uppercase tracking-wide text-[var(--sea-ink-soft)]">
-            <tr>
-              <th className="px-4 py-3">ID</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Attempts</th>
-              <th className="px-4 py-3">Last attempt</th>
-              <th className="px-4 py-3">Next retry</th>
-              <th className="px-4 py-3">Created</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white/40">
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Attempts</TableHead>
+              <TableHead>Last attempt</TableHead>
+              <TableHead>Next retry</TableHead>
+              <TableHead>Created</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {events?.map((e) => (
-              <tr key={e.id} className="border-t border-[rgba(23,58,64,0.06)]">
-                <td className="px-4 py-3 font-mono text-xs">
-                  <Link to="/events/$id" params={{ id: e.id }} className="text-[var(--lagoon-deep)]">
+              <TableRow key={e.id}>
+                <TableCell className="font-mono text-xs">
+                  <Link
+                    to="/events/$id"
+                    params={{ id: e.id }}
+                    className="text-primary hover:underline"
+                  >
                     {e.id.slice(0, 8)}
                   </Link>
-                </td>
-                <td className="px-4 py-3">
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusColor[e.status] || 'bg-slate-100'}`}
-                  >
-                    {e.status}
-                  </span>
-                </td>
-                <td className="px-4 py-3">{e.attempt_count}</td>
-                <td className="px-4 py-3 text-[var(--sea-ink-soft)]">
+                </TableCell>
+                <TableCell>
+                  <Badge variant={statusVariant[e.status] || 'secondary'}>{e.status}</Badge>
+                </TableCell>
+                <TableCell>{e.attempt_count}</TableCell>
+                <TableCell className="text-muted-foreground">
                   {e.last_attempt_at ? new Date(e.last_attempt_at).toLocaleString() : '—'}
-                </td>
-                <td className="px-4 py-3 text-[var(--sea-ink-soft)]">
+                </TableCell>
+                <TableCell className="text-muted-foreground">
                   {e.next_retry_at ? new Date(e.next_retry_at).toLocaleString() : '—'}
-                </td>
-                <td className="px-4 py-3 text-[var(--sea-ink-soft)]">
+                </TableCell>
+                <TableCell className="text-muted-foreground">
                   {new Date(e.created_at).toLocaleString()}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
             {events && events.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-sm text-[var(--sea-ink-soft)]">
+              <TableRow>
+                <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
                   No events yet.
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </Card>
     </main>
   )
 }

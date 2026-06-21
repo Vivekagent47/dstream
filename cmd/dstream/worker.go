@@ -7,12 +7,12 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
-	"github.com/streamingo/dstream/internal/config"
-	"github.com/streamingo/dstream/internal/deliver"
-	"github.com/streamingo/dstream/internal/ingest"
-	"github.com/streamingo/dstream/internal/logging"
-	"github.com/streamingo/dstream/internal/queue"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/config"
+	"github.com/Vivekagent47/dstream/internal/deliver"
+	"github.com/Vivekagent47/dstream/internal/ingest"
+	"github.com/Vivekagent47/dstream/internal/logging"
+	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 func workerCmd() *cobra.Command {

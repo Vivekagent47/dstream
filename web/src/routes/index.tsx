@@ -4,7 +4,7 @@ export const Route = createFileRoute('/')({ component: Home })
 
 function Home() {
   return (
-    <main className="page-wrap mx-auto px-4 pb-8 pt-14">
+    <main className="page-wrap mx-auto px-4 pt-14 pb-8">
       <section className="rounded-2xl border border-[rgba(23,58,64,0.08)] bg-white/60 p-8">
         <p className="island-kicker mb-3">dstream — webhook IDE</p>
         <h1 className="display-title mb-4 text-4xl font-bold tracking-tight text-[var(--sea-ink)]">

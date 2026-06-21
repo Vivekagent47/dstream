@@ -13,9 +13,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/streamingo/dstream/internal/auth"
-	"github.com/streamingo/dstream/internal/ingest"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/ingest"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 const (
@@ -34,11 +34,11 @@ func DispatchKey(sourceID uuid.UUID) string { return "cli:dispatch:" + sourceID.
 // GET /api/cli/sources — minimal lookup used by the CLI to resolve `--source <name>`.
 func (d Deps) cliListSources(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
-	if err != nil || p.ProjectID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "api key required")
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
 		return
 	}
-	rows, err := d.Queries.ListSourcesByProject(r.Context(), store.UUID(p.ProjectID))
+	rows, err := d.Queries.ListSourcesByOrg(r.Context(), store.UUID(p.OrgID))
 	if err != nil {
 		httpErr(w, http.StatusInternalServerError, "list")
 		return
@@ -64,8 +64,8 @@ func (d Deps) cliListSources(w http.ResponseWriter, r *http.Request) {
 //   - record the attempt and update event status in Postgres
 func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
-	if err != nil || p.ProjectID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "api key required")
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	sourceIDStr := r.URL.Query().Get("source_id")
@@ -78,8 +78,10 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusBadRequest, "invalid source_id")
 		return
 	}
-	src, err := d.Queries.GetSourceByID(r.Context(), store.UUID(sid))
-	if err != nil || store.GoUUID(src.ProjectID) != p.ProjectID {
+	if _, err := d.Queries.GetSourceForOrg(r.Context(), store.GetSourceForOrgParams{
+		ID:    store.UUID(sid),
+		OrgID: store.UUID(p.OrgID),
+	}); err != nil {
 		httpErr(w, http.StatusNotFound, "source not found")
 		return
 	}
@@ -92,7 +94,12 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
-	ctx, cancel := context.WithCancel(r.Context())
+	// Detach from r.Context() — the router-wide chi.Timeout(30s) middleware
+	// cancels r.Context() after 30s, which would kill the WebSocket mid-
+	// session. We still propagate cancellation from process shutdown via
+	// our own derived ctx; CLI client disconnects are observed via the
+	// websocket reader returning an error.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sessionKey := SessionKey(sid)

@@ -1,70 +1,88 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { api } from '#/lib/api'
+import { Button } from '#/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#/components/ui/card'
+import { Input } from '#/components/ui/input'
+import { Label } from '#/components/ui/label'
 
 export const Route = createFileRoute('/login')({ component: Login })
 
 function Login() {
   const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
+  const request = useMutation({
+    // Normalize email to match the server (trim + lowercase) so the
+    // per-email rate-limit key is stable across casing variations the
+    // user might type.
+    mutationFn: (e: string) => api.requestMagicLink(e.trim().toLowerCase()),
+  })
 
-  async function submit(e: React.FormEvent) {
+  function submit(e: React.FormEvent) {
     e.preventDefault()
-    setErr(null)
-    try {
-      await api.requestMagicLink(email)
-      setSent(true)
-    } catch (e: any) {
-      setErr(e.message)
-    }
+    request.mutate(email)
   }
 
-  if (sent) {
+  if (request.isSuccess) {
     return (
       <main className="page-wrap mx-auto px-4 pt-20">
-        <div className="mx-auto max-w-md rounded-2xl border border-[rgba(23,58,64,0.08)] bg-white/70 p-8 text-center">
-          <h1 className="mb-2 text-xl font-semibold">Check your email</h1>
-          <p className="text-sm text-[var(--sea-ink-soft)]">
-            If <strong>{email}</strong> is a known account, a sign-in link is on its way.
-          </p>
-          <p className="mt-4 text-xs text-[var(--sea-ink-soft)]">
-            Dev tip: dstream logs the link to stdout when SMTP is not configured.
-          </p>
-        </div>
+        <Card className="mx-auto max-w-md text-center">
+          <CardHeader>
+            <CardTitle>Check your email</CardTitle>
+            <CardDescription>
+              If <strong>{email}</strong> is a known account, a sign-in link is on its way.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Dev tip: dstream logs the link to stdout when SMTP is not configured.
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                request.reset()
+                setEmail('')
+              }}
+            >
+              Use a different email
+            </Button>
+          </CardContent>
+        </Card>
       </main>
     )
   }
 
   return (
     <main className="page-wrap mx-auto px-4 pt-20">
-      <form
-        onSubmit={submit}
-        className="mx-auto max-w-md rounded-2xl border border-[rgba(23,58,64,0.08)] bg-white/70 p-8"
-      >
-        <h1 className="mb-1 text-xl font-semibold">Sign in to dstream</h1>
-        <p className="mb-6 text-sm text-[var(--sea-ink-soft)]">
-          We'll email you a single-use link.
-        </p>
-        <label className="block">
-          <span className="mb-1 block text-sm font-medium">Email</span>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-lg border border-[rgba(23,58,64,0.15)] bg-white px-3 py-2 text-sm"
-          />
-        </label>
-        {err && <p className="mt-3 text-sm text-red-600">{err}</p>}
-        <button
-          type="submit"
-          className="mt-5 w-full rounded-full bg-[var(--sea-ink)] px-5 py-2.5 text-sm font-semibold text-white"
-        >
-          Send magic link
-        </button>
-      </form>
+      <Card className="mx-auto max-w-md">
+        <CardHeader>
+          <CardTitle>Sign in to dstream</CardTitle>
+          <CardDescription>We&apos;ll email you a single-use link.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+              />
+            </div>
+            {request.error && (
+              <p className="text-sm text-destructive">{(request.error as Error).message}</p>
+            )}
+            <Button type="submit" className="w-full" disabled={request.isPending}>
+              {request.isPending ? 'Sending…' : 'Send magic link'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </main>
   )
 }

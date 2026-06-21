@@ -9,9 +9,9 @@ import (
 	"github.com/hibiken/asynqmon"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/streamingo/dstream/internal/auth"
-	"github.com/streamingo/dstream/internal/queue"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 type Deps struct {

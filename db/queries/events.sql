@@ -75,11 +75,19 @@ SET status        = 'queued',
     updated_at    = now()
 WHERE id = $1;
 
--- name: ListEventsByProject :many
+-- name: ListEventsByOrg :many
 SELECT e.*
 FROM events e
 JOIN connections c ON c.id = e.connection_id
 JOIN sources s     ON s.id = c.source_id
-WHERE s.project_id = $1
+WHERE s.org_id = $1
 ORDER BY e.created_at DESC
 LIMIT $2 OFFSET $3;
+
+-- name: GetEventForOrg :one
+SELECT e.*
+  FROM events e
+  JOIN connections c ON c.id = e.connection_id
+  JOIN sources s     ON s.id = c.source_id
+ WHERE e.id = $1
+   AND s.org_id = $2;

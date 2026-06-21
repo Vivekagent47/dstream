@@ -1,10 +1,9 @@
-
-@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap");
-@import "tailwindcss";
-@plugin "@tailwindcss/typography";
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
 
 @theme {
-  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {
@@ -29,7 +28,7 @@
   --hero-b: rgba(47, 106, 74, 0.2);
 }
 
-:root[data-theme="dark"] {
+:root[data-theme='dark'] {
   --sea-ink: #d7ece8;
   --sea-ink-soft: #afcdc8;
   --lagoon: #60d7cf;
@@ -52,7 +51,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme='light']) {
     --sea-ink: #d7ece8;
     --sea-ink-soft: #afcdc8;
     --lagoon: #60d7cf;
@@ -94,14 +93,19 @@ body {
     radial-gradient(1100px 620px at -8% -10%, var(--hero-a), transparent 58%),
     radial-gradient(1050px 620px at 112% -12%, var(--hero-b), transparent 62%),
     radial-gradient(720px 380px at 50% 115%, rgba(79, 184, 178, 0.1), transparent 68%),
-    linear-gradient(180deg, color-mix(in oklab, var(--sand) 68%, white) 0%, var(--foam) 44%, var(--bg-base) 100%);
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--sand) 68%, white) 0%,
+      var(--foam) 44%,
+      var(--bg-base) 100%
+    );
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 body::before {
-  content: "";
+  content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
@@ -114,7 +118,7 @@ body::before {
 }
 
 body::after {
-  content: "";
+  content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
@@ -161,7 +165,7 @@ pre code {
 }
 
 .display-title {
-  font-family: "Fraunces", Georgia, serif;
+  font-family: 'Fraunces', Georgia, serif;
 }
 
 .island-shell {
@@ -175,7 +179,11 @@ pre code {
 }
 
 .feature-card {
-  background: linear-gradient(165deg, color-mix(in oklab, var(--surface-strong) 93%, white 7%), var(--surface));
+  background: linear-gradient(
+    165deg,
+    color-mix(in oklab, var(--surface-strong) 93%, white 7%),
+    var(--surface)
+  );
   box-shadow:
     0 1px 0 var(--inset-glint) inset,
     0 18px 34px rgba(30, 90, 72, 0.1),
@@ -255,7 +263,10 @@ pre code {
   background: color-mix(in oklab, var(--surface-strong) 88%, white 12%);
   color: var(--sea-ink);
   outline: none;
-  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
 }
 
 .demo-input,
@@ -393,7 +404,10 @@ pre code {
 button,
 .island-shell,
 a {
-  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease,
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    border-color 180ms ease,
     transform 180ms ease;
 }
 
@@ -414,7 +428,7 @@ a {
 }
 
 .nav-link::after {
-  content: "";
+  content: '';
   position: absolute;
   left: 0;
   bottom: -6px;
@@ -462,3 +476,78 @@ a {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* shadcn / Base UI tokens — neutral palette, mapped to project palette */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 195 42% 17%;
+  --card: 0 0% 100%;
+  --card-foreground: 195 42% 17%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 195 42% 17%;
+  --primary: 187 49% 38%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 174 17% 92%;
+  --secondary-foreground: 195 42% 17%;
+  --muted: 174 17% 95%;
+  --muted-foreground: 196 22% 36%;
+  --accent: 174 60% 91%;
+  --accent-foreground: 195 42% 17%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 187 18% 86%;
+  --input: 187 18% 86%;
+  --ring: 187 49% 38%;
+  --radius: 0.5rem;
+}
+
+:root[data-theme='dark'],
+:root[data-theme='dark'] * {
+  --background: 200 35% 6%;
+  --foreground: 174 35% 88%;
+  --card: 200 35% 9%;
+  --card-foreground: 174 35% 88%;
+  --popover: 200 35% 9%;
+  --popover-foreground: 174 35% 88%;
+  --primary: 174 64% 60%;
+  --primary-foreground: 200 35% 6%;
+  --secondary: 196 20% 18%;
+  --secondary-foreground: 174 35% 88%;
+  --muted: 196 20% 14%;
+  --muted-foreground: 174 25% 70%;
+  --accent: 174 60% 22%;
+  --accent-foreground: 174 35% 95%;
+  --destructive: 0 70% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 200 25% 18%;
+  --input: 200 25% 18%;
+  --ring: 174 64% 60%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}

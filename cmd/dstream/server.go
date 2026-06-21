@@ -16,14 +16,15 @@ import (
 
 	"github.com/hibiken/asynq"
 
-	"github.com/streamingo/dstream/internal/admin"
-	"github.com/streamingo/dstream/internal/api"
-	"github.com/streamingo/dstream/internal/auth"
-	"github.com/streamingo/dstream/internal/config"
-	"github.com/streamingo/dstream/internal/ingest"
-	"github.com/streamingo/dstream/internal/logging"
-	"github.com/streamingo/dstream/internal/queue"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/admin"
+	"github.com/Vivekagent47/dstream/internal/api"
+	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/config"
+	"github.com/Vivekagent47/dstream/internal/ingest"
+	"github.com/Vivekagent47/dstream/internal/logging"
+	mw "github.com/Vivekagent47/dstream/internal/middleware"
+	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 func serverCmd() *cobra.Command {
@@ -61,13 +62,24 @@ func serverCmd() *cobra.Command {
 			qc := queue.NewClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
 			defer qc.Close()
 
-			signer := &auth.SessionSigner{Secret: []byte(cfg.SessionSecret)}
+			signer := &auth.SessionSigner{
+				Secret: []byte(cfg.SessionSecret),
+				Secure: cfg.CookieSecure,
+			}
 			bodyStore := ingest.NewPostgresBodyStore(q)
+
+			realIP, err := mw.TrustedRealIP(cfg.TrustedProxies)
+			if err != nil {
+				return err
+			}
 
 			r := chi.NewRouter()
 			r.Use(middleware.RequestID)
-			r.Use(middleware.RealIP)
+			r.Use(realIP)
 			r.Use(middleware.Recoverer)
+			// 30s deadline applies to every request EXCEPT long-lived
+			// websockets — those handlers detach from r.Context() onto a
+			// fresh background context (see internal/api/cli.go).
 			r.Use(middleware.Timeout(30 * time.Second))
 
 			r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -89,12 +101,15 @@ func serverCmd() *cobra.Command {
 			ih.Mount(r)
 
 			api.Mount(r, api.Deps{
-				Log:     log,
-				Queries: q,
-				Redis:   rdb,
-				Queue:   qc,
-				Signer:  signer,
-			})
+				Log:           log,
+				Queries:       q,
+				Pool:          pool,
+				Redis:         rdb,
+				Queue:         qc,
+				Signer:        signer,
+				PublicBaseURL: cfg.PublicBaseURL,
+				DevMode:       cfg.DevMode,
+			}, mw.CSRF(cfg.CookieSecure))
 
 			admin.Mount(r, admin.Deps{
 				Log:     log,

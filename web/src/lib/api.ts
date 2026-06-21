@@ -1,9 +1,12 @@
-// Tiny typed fetch wrapper. All paths go through the vite dev proxy in dev
-// and same-origin in prod (dashboard is served from the dstream server).
+// Typed API client. Uses axios under the hood (see `./http`). All paths go
+// through the vite dev proxy in dev and same-origin in prod (the dashboard is
+// served from the dstream server).
+
+import { http } from './http'
 
 export interface Source {
   id: string
-  project_id: string
+  org_id: string
   name: string
   type: string
   ingest_token: string
@@ -12,10 +15,14 @@ export interface Source {
 
 export interface Destination {
   id: string
-  project_id: string
+  org_id: string
   name: string
   type: 'http' | 'cli'
   url: string | null
+  // auth_configured is a non-sensitive flag: true when the destination has
+  // an auth_config blob set on the server. The raw auth_config (HMAC
+  // secret, bearer token, etc.) is NEVER sent to the client.
+  auth_configured: boolean
   rate_limit_rps: number | null
   rate_limit_burst: number | null
   max_inflight: number | null
@@ -57,59 +64,209 @@ export interface Attempt {
   attempted_at: string
 }
 
-async function req<T>(
-  method: string,
-  path: string,
-  body?: unknown,
-  init?: RequestInit,
-): Promise<T> {
-  const resp = await fetch(path, {
-    method,
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-    body: body == null ? undefined : JSON.stringify(body),
-    ...init,
-  })
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`)
-  }
-  if (resp.status === 204) return undefined as T
-  return (await resp.json()) as T
+export type Role = 'owner' | 'admin' | 'member'
+
+export interface Org {
+  id: string
+  name: string
+  slug: string
+  role?: Role
+  created_at: string
+}
+
+export interface Member {
+  user_id: string
+  email: string
+  name: string | null
+  role: Role
+  created_at: string
+}
+
+export interface Invite {
+  id: string
+  email: string
+  role: 'admin' | 'member'
+  expires_at: string
+  created_at: string
+  invited_by_email?: string
+  accepted_at?: string | null
+}
+
+export interface APIKey {
+  id: string
+  name: string
+  prefix: string
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface APIKeyCreateResult {
+  id: string
+  name: string
+  prefix: string
+  key: string
+}
+
+export interface AuditEntry {
+  id: number
+  created_at: string
+  actor: Record<string, unknown> | null
+  action: string
+  target: Record<string, unknown> | null
+  metadata: Record<string, unknown> | null
+}
+
+// AuditPage matches the server envelope from GET /api/audit and
+// GET /api/orgs/{id}/audit — `entries` is the row slice, `next_before_id`
+// is the keyset cursor for the next page (undefined when no more pages).
+export interface AuditPage {
+  entries: AuditEntry[]
+  next_before_id?: number
+}
+
+export interface MeUser {
+  id: string
+  email: string
+  name: string | null
+  is_super_admin: boolean
+}
+
+export interface MeResponse {
+  user?: MeUser
+  orgs?: Org[]
+  active_org_id?: string
+  api_key?: { org_id: string }
+}
+
+export interface InvitePeek {
+  org_name: string
+  email: string
+  role: 'admin' | 'member'
+  expires_at: string
+  requires_login?: boolean
+}
+
+export interface InviteAcceptResult {
+  org_id?: string
+  org_name?: string
+  requires_login?: boolean
+  email?: string
+}
+
+export interface AuditFilters {
+  limit?: number
+  before_id?: number
+  action?: string
+  target_type?: string
+  actor_user_id?: string
 }
 
 export const api = {
-  me: () => req<{ user?: { email: string; is_super_admin: boolean }; project_id?: string }>('GET', '/api/me'),
+  me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
 
   requestMagicLink: (email: string) =>
-    req<void>('POST', '/api/auth/magic-link/request', { email }),
-  logout: () => req<void>('POST', '/api/auth/logout'),
+    http.post<void>('/api/auth/magic-link/request', { email }).then((r) => r.data),
+  logout: () => http.post<void>('/api/auth/logout').then((r) => r.data),
 
-  listSources: () => req<Source[]>('GET', '/api/sources'),
+  // Orgs
+  listMyOrgs: () => http.get<Org[]>('/api/orgs').then((r) => r.data),
+  createOrg: (input: { name: string }) =>
+    http.post<Org>('/api/orgs', input).then((r) => r.data),
+  selectOrg: (org_id: string) =>
+    http
+      .post<{ active_org_id: string }>('/api/orgs/select', { org_id })
+      .then((r) => r.data),
+  updateOrg: (org_id: string, input: { name: string }) =>
+    http.patch<Org>(`/api/orgs/${org_id}`, input).then((r) => r.data),
+  deleteOrg: (org_id: string) =>
+    http.delete<void>(`/api/orgs/${org_id}`).then((r) => r.data),
+  transferOrg: (org_id: string, to_user_id: string) =>
+    http
+      .post<void>(`/api/orgs/${org_id}/transfer`, { to_user_id })
+      .then((r) => r.data),
+
+  // Members
+  listMembers: (org_id: string) =>
+    http.get<Member[]>(`/api/orgs/${org_id}/members`).then((r) => r.data),
+  patchMember: (org_id: string, user_id: string, role: Role) =>
+    http
+      .patch<Member>(`/api/orgs/${org_id}/members/${user_id}`, { role })
+      .then((r) => r.data),
+  removeMember: (org_id: string, user_id: string) =>
+    http.delete<void>(`/api/orgs/${org_id}/members/${user_id}`).then((r) => r.data),
+
+  // Invites
+  listInvites: (org_id: string) =>
+    http.get<Invite[]>(`/api/orgs/${org_id}/invites`).then((r) => r.data),
+  createInvite: (org_id: string, input: { email: string; role: 'admin' | 'member' }) =>
+    http.post<Invite>(`/api/orgs/${org_id}/invites`, input).then((r) => r.data),
+  revokeInvite: (org_id: string, id: string) =>
+    http.delete<void>(`/api/orgs/${org_id}/invites/${id}`).then((r) => r.data),
+  peekInvite: (token: string) =>
+    http.get<InvitePeek>(`/api/invites/${token}`).then((r) => r.data),
+  acceptInvite: (token: string) =>
+    http.post<InviteAcceptResult>(`/api/invites/${token}/accept`).then((r) => r.data),
+
+  // API keys
+  listAPIKeys: (org_id: string) =>
+    http.get<APIKey[]>(`/api/orgs/${org_id}/api-keys`).then((r) => r.data),
+  createAPIKey: (org_id: string, name: string) =>
+    http
+      .post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name })
+      .then((r) => r.data),
+  revokeAPIKey: (org_id: string, id: string) =>
+    http.delete<void>(`/api/orgs/${org_id}/api-keys/${id}`).then((r) => r.data),
+
+  // Audit
+  listAudit: (filters?: AuditFilters) =>
+    http.get<AuditPage>('/api/audit', { params: filters }).then((r) => r.data),
+  listOrgAudit: (org_id: string, filters?: AuditFilters) =>
+    http
+      .get<AuditPage>(`/api/orgs/${org_id}/audit`, { params: filters })
+      .then((r) => r.data),
+
+  // Sources
+  listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
   createSource: (input: { name: string; type?: string }) =>
-    req<Source>('POST', '/api/sources', input),
+    http.post<Source>('/api/sources', input).then((r) => r.data),
 
-  listDestinations: () => req<Destination[]>('GET', '/api/destinations'),
+  // Destinations
+  listDestinations: () => http.get<Destination[]>('/api/destinations').then((r) => r.data),
   createDestination: (input: Partial<Destination> & { name: string; type: 'http' | 'cli' }) =>
-    req<Destination>('POST', '/api/destinations', input),
+    http.post<Destination>('/api/destinations', input).then((r) => r.data),
   patchDestination: (id: string, input: Partial<Destination>) =>
-    req<Destination>('PATCH', `/api/destinations/${id}`, input),
+    http.patch<Destination>(`/api/destinations/${id}`, input).then((r) => r.data),
 
+  // Connections
   listConnections: (sourceId: string) =>
-    req<Connection[]>('GET', `/api/connections?source_id=${encodeURIComponent(sourceId)}`),
+    http
+      .get<Connection[]>('/api/connections', { params: { source_id: sourceId } })
+      .then((r) => r.data),
   createConnection: (input: { source_id: string; destination_id: string; enabled?: boolean }) =>
-    req<Connection>('POST', '/api/connections', input),
+    http.post<Connection>('/api/connections', input).then((r) => r.data),
   patchConnection: (id: string, input: Partial<Connection>) =>
-    req<Connection>('PATCH', `/api/connections/${id}`, input),
+    http.patch<Connection>(`/api/connections/${id}`, input).then((r) => r.data),
 
-  listEvents: (params?: { limit?: number; offset?: number }) => {
-    const q = new URLSearchParams()
-    if (params?.limit) q.set('limit', String(params.limit))
-    if (params?.offset) q.set('offset', String(params.offset))
-    const qs = q.toString()
-    return req<Event[]>('GET', `/api/events${qs ? `?${qs}` : ''}`)
-  },
+  // Events
+  listEvents: (params?: { limit?: number; offset?: number }) =>
+    http.get<Event[]>('/api/events', { params }).then((r) => r.data),
   getEvent: (id: string) =>
-    req<Event & { attempts: Attempt[] }>('GET', `/api/events/${id}`),
-  retryEvent: (id: string) => req<void>('POST', `/api/events/${id}/retry`),
+    http.get<Event & { attempts: Attempt[] }>(`/api/events/${id}`).then((r) => r.data),
+  retryEvent: (id: string) => http.post<void>(`/api/events/${id}/retry`).then((r) => r.data),
+}
+
+// Stable query keys for react-query. Keep keyed factories here so call sites
+// stay in sync with the API surface.
+export const qk = {
+  me: () => ['me'] as const,
+  orgs: () => ['orgs'] as const,
+  members: (org_id: string) => ['members', org_id] as const,
+  invites: (org_id: string) => ['invites', org_id] as const,
+  apiKeys: (org_id: string) => ['api-keys', org_id] as const,
+  audit: (filters?: AuditFilters) => ['audit', filters ?? {}] as const,
+  sources: () => ['sources'] as const,
+  destinations: () => ['destinations'] as const,
+  connections: (sourceId: string) => ['connections', sourceId] as const,
+  events: (params?: { limit?: number; offset?: number }) => ['events', params ?? {}] as const,
+  event: (id: string) => ['event', id] as const,
 }

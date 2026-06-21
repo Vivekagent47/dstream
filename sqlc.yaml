@@ -2,7 +2,7 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "db/queries"
-    schema: "internal/migrations"
+    schema: "db/migrations"
     gen:
       go:
         package: "store"
@@ -17,3 +17,10 @@ sql:
           ingest_ip: "IngestIP"
           http_method: "HTTPMethod"
           http_path: "HTTPPath"
+        overrides:
+          - column: "users.email"
+            go_type: "string"
+          - column: "magic_link_tokens.email"
+            go_type: "string"
+          - column: "org_invites.email"
+            go_type: "string"

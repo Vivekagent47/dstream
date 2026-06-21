@@ -1,120 +1,144 @@
-import { createFileRoute, useRouter } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { createFileRoute } from '@tanstack/react-router'
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
-import { api, type Source } from '#/lib/api'
+import { api, qk } from '#/lib/api'
+import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
+import { Button } from '#/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#/components/ui/card'
+import { Input } from '#/components/ui/input'
+import { Label } from '#/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '#/components/ui/select'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '#/components/ui/table'
 
-export const Route = createFileRoute('/sources')({ component: SourcesPage })
+const sourcesQuery = queryOptions({
+  queryKey: qk.sources(),
+  queryFn: () => api.listSources(),
+})
+
+export const Route = createFileRoute('/sources')({
+  loader: ({ context }) => context.queryClient.ensureQueryData(sourcesQuery),
+  component: SourcesPage,
+  errorComponent: AuthErrorBoundary,
+})
+
+const SOURCE_TYPES = ['generic', 'stripe', 'github', 'shopify'] as const
 
 function SourcesPage() {
-  const router = useRouter()
-  const [sources, setSources] = useState<Source[] | null>(null)
+  const qc = useQueryClient()
+  const { data: sources } = useQuery(sourcesQuery)
   const [name, setName] = useState('')
-  const [type, setType] = useState('generic')
-  const [err, setErr] = useState<string | null>(null)
+  const [type, setType] = useState<string>('generic')
 
-  async function load() {
-    try {
-      const s = await api.listSources()
-      setSources(s)
-    } catch (e: any) {
-      setErr(e.message)
-    }
-  }
-  useEffect(() => {
-    void load()
-  }, [])
-
-  async function create(e: React.FormEvent) {
-    e.preventDefault()
-    setErr(null)
-    try {
-      await api.createSource({ name, type })
+  const create = useMutation({
+    mutationFn: (input: { name: string; type: string }) => api.createSource(input),
+    onSuccess: () => {
       setName('')
-      await load()
-      router.invalidate()
-    } catch (e: any) {
-      setErr(e.message)
-    }
+      qc.invalidateQueries({ queryKey: qk.sources() })
+    },
+  })
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    create.mutate({ name, type })
   }
 
   return (
-    <main className="page-wrap mx-auto px-4 pb-16 pt-10">
-      <h1 className="mb-6 text-2xl font-semibold">Sources</h1>
+    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
+      <h1 className="text-2xl font-semibold">Sources</h1>
 
-      <form
-        onSubmit={create}
-        className="mb-8 flex flex-wrap items-end gap-3 rounded-xl border border-[rgba(23,58,64,0.08)] bg-white/60 p-4"
-      >
-        <label className="flex-1 min-w-[200px]">
-          <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-[var(--sea-ink-soft)]">
-            Name
-          </span>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="stripe-prod"
-            className="w-full rounded-lg border border-[rgba(23,58,64,0.15)] bg-white px-3 py-2 text-sm"
-            required
-          />
-        </label>
-        <label>
-          <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-[var(--sea-ink-soft)]">
-            Type
-          </span>
-          <select
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className="rounded-lg border border-[rgba(23,58,64,0.15)] bg-white px-3 py-2 text-sm"
-          >
-            <option value="generic">generic</option>
-            <option value="stripe">stripe</option>
-            <option value="github">github</option>
-            <option value="shopify">shopify</option>
-          </select>
-        </label>
-        <button
-          type="submit"
-          className="rounded-full bg-[var(--sea-ink)] px-5 py-2.5 text-sm font-semibold text-white"
-        >
-          Create
-        </button>
-      </form>
+      <Card>
+        <CardHeader>
+          <CardTitle>Create a source</CardTitle>
+          <CardDescription>
+            Sources receive webhook traffic. Each gets a unique ingest URL.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="grid gap-4 sm:grid-cols-[1fr_180px_auto] sm:items-end">
+            <div className="space-y-2">
+              <Label htmlFor="name">Name</Label>
+              <Input
+                id="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="stripe-prod"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Type</Label>
+              <Select value={type} onValueChange={(v) => setType(v as string)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SOURCE_TYPES.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button type="submit" disabled={create.isPending}>
+              {create.isPending ? 'Creating…' : 'Create'}
+            </Button>
+          </form>
+          {create.error && (
+            <p className="mt-3 text-sm text-destructive">{(create.error as Error).message}</p>
+          )}
+        </CardContent>
+      </Card>
 
-      {err && <p className="mb-4 text-sm text-red-600">{err}</p>}
-
-      <div className="overflow-hidden rounded-xl border border-[rgba(23,58,64,0.08)]">
-        <table className="w-full border-collapse text-sm">
-          <thead className="bg-white/70 text-left text-xs uppercase tracking-wide text-[var(--sea-ink-soft)]">
-            <tr>
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Ingest URL</th>
-              <th className="px-4 py-3">Created</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white/40">
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Ingest URL</TableHead>
+              <TableHead>Created</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {sources?.map((s) => (
-              <tr key={s.id} className="border-t border-[rgba(23,58,64,0.06)]">
-                <td className="px-4 py-3 font-medium">{s.name}</td>
-                <td className="px-4 py-3">{s.type}</td>
-                <td className="px-4 py-3 font-mono text-xs">
-                  <code>/e/{s.ingest_token}</code>
-                </td>
-                <td className="px-4 py-3 text-[var(--sea-ink-soft)]">
+              <TableRow key={s.id}>
+                <TableCell className="font-medium">{s.name}</TableCell>
+                <TableCell>{s.type}</TableCell>
+                <TableCell>
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                    /e/{s.ingest_token}
+                  </code>
+                </TableCell>
+                <TableCell className="text-muted-foreground">
                   {new Date(s.created_at).toLocaleString()}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
             {sources && sources.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-sm text-[var(--sea-ink-soft)]">
+              <TableRow>
+                <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
                   No sources yet — create one above.
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </Card>
     </main>
   )
 }

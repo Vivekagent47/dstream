@@ -12,15 +12,14 @@ import (
 )
 
 const createDestination = `-- name: CreateDestination :one
-INSERT INTO destinations (
-    project_id, name, type, url, auth_config,
-    rate_limit_rps, rate_limit_burst, max_inflight
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, project_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at
+INSERT INTO destinations (org_id, name, type, url, auth_config,
+                           rate_limit_rps, rate_limit_burst, max_inflight)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at
 `
 
 type CreateDestinationParams struct {
-	ProjectID      pgtype.UUID `json:"project_id"`
+	OrgID          pgtype.UUID `json:"org_id"`
 	Name           string      `json:"name"`
 	Type           string      `json:"type"`
 	Url            *string     `json:"url"`
@@ -32,7 +31,7 @@ type CreateDestinationParams struct {
 
 func (q *Queries) CreateDestination(ctx context.Context, arg CreateDestinationParams) (Destination, error) {
 	row := q.db.QueryRow(ctx, createDestination,
-		arg.ProjectID,
+		arg.OrgID,
 		arg.Name,
 		arg.Type,
 		arg.Url,
@@ -44,7 +43,7 @@ func (q *Queries) CreateDestination(ctx context.Context, arg CreateDestinationPa
 	var i Destination
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
+		&i.OrgID,
 		&i.Name,
 		&i.Type,
 		&i.Url,
@@ -58,17 +57,22 @@ func (q *Queries) CreateDestination(ctx context.Context, arg CreateDestinationPa
 	return i, err
 }
 
-const deleteDestination = `-- name: DeleteDestination :exec
-DELETE FROM destinations WHERE id = $1
+const deleteDestinationForOrg = `-- name: DeleteDestinationForOrg :exec
+DELETE FROM destinations WHERE id = $1 AND org_id = $2
 `
 
-func (q *Queries) DeleteDestination(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteDestination, id)
+type DeleteDestinationForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) DeleteDestinationForOrg(ctx context.Context, arg DeleteDestinationForOrgParams) error {
+	_, err := q.db.Exec(ctx, deleteDestinationForOrg, arg.ID, arg.OrgID)
 	return err
 }
 
 const getDestinationByID = `-- name: GetDestinationByID :one
-SELECT id, project_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations WHERE id = $1
+SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations WHERE id = $1
 `
 
 func (q *Queries) GetDestinationByID(ctx context.Context, id pgtype.UUID) (Destination, error) {
@@ -76,7 +80,7 @@ func (q *Queries) GetDestinationByID(ctx context.Context, id pgtype.UUID) (Desti
 	var i Destination
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
+		&i.OrgID,
 		&i.Name,
 		&i.Type,
 		&i.Url,
@@ -90,14 +94,42 @@ func (q *Queries) GetDestinationByID(ctx context.Context, id pgtype.UUID) (Desti
 	return i, err
 }
 
-const listDestinationsByProject = `-- name: ListDestinationsByProject :many
-SELECT id, project_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations
-WHERE project_id = $1
+const getDestinationForOrg = `-- name: GetDestinationForOrg :one
+SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations WHERE id = $1 AND org_id = $2
+`
+
+type GetDestinationForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) GetDestinationForOrg(ctx context.Context, arg GetDestinationForOrgParams) (Destination, error) {
+	row := q.db.QueryRow(ctx, getDestinationForOrg, arg.ID, arg.OrgID)
+	var i Destination
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.Type,
+		&i.Url,
+		&i.AuthConfig,
+		&i.RateLimitRps,
+		&i.RateLimitBurst,
+		&i.MaxInflight,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listDestinationsByOrg = `-- name: ListDestinationsByOrg :many
+SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations
+WHERE org_id = $1
 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListDestinationsByProject(ctx context.Context, projectID pgtype.UUID) ([]Destination, error) {
-	rows, err := q.db.Query(ctx, listDestinationsByProject, projectID)
+func (q *Queries) ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error) {
+	rows, err := q.db.Query(ctx, listDestinationsByOrg, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +139,7 @@ func (q *Queries) ListDestinationsByProject(ctx context.Context, projectID pgtyp
 		var i Destination
 		if err := rows.Scan(
 			&i.ID,
-			&i.ProjectID,
+			&i.OrgID,
 			&i.Name,
 			&i.Type,
 			&i.Url,
@@ -128,43 +160,49 @@ func (q *Queries) ListDestinationsByProject(ctx context.Context, projectID pgtyp
 	return items, nil
 }
 
-const updateDestination = `-- name: UpdateDestination :one
+const patchDestinationForOrg = `-- name: PatchDestinationForOrg :one
 UPDATE destinations
-SET name             = COALESCE($1,             name),
-    url              = COALESCE($2,              url),
-    auth_config      = COALESCE($3,      auth_config),
-    rate_limit_rps   = COALESCE($4,   rate_limit_rps),
-    rate_limit_burst = COALESCE($5, rate_limit_burst),
-    max_inflight     = COALESCE($6,     max_inflight),
-    updated_at       = now()
-WHERE id = $7
-RETURNING id, project_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at
+   SET name             = COALESCE($3,             name),
+       type             = COALESCE($4,             type),
+       url              = COALESCE($5,              url),
+       auth_config      = COALESCE($6,      auth_config),
+       rate_limit_rps   = COALESCE($7,   rate_limit_rps),
+       rate_limit_burst = COALESCE($8, rate_limit_burst),
+       max_inflight     = COALESCE($9,     max_inflight),
+       updated_at       = now()
+ WHERE id = $1 AND org_id = $2
+ RETURNING id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at
 `
 
-type UpdateDestinationParams struct {
+type PatchDestinationForOrgParams struct {
+	ID             pgtype.UUID `json:"id"`
+	OrgID          pgtype.UUID `json:"org_id"`
 	Name           *string     `json:"name"`
+	Type           *string     `json:"type"`
 	Url            *string     `json:"url"`
 	AuthConfig     []byte      `json:"auth_config"`
 	RateLimitRps   *int32      `json:"rate_limit_rps"`
 	RateLimitBurst *int32      `json:"rate_limit_burst"`
 	MaxInflight    *int32      `json:"max_inflight"`
-	ID             pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) UpdateDestination(ctx context.Context, arg UpdateDestinationParams) (Destination, error) {
-	row := q.db.QueryRow(ctx, updateDestination,
+// COALESCE pattern so unspecified fields keep current values.
+func (q *Queries) PatchDestinationForOrg(ctx context.Context, arg PatchDestinationForOrgParams) (Destination, error) {
+	row := q.db.QueryRow(ctx, patchDestinationForOrg,
+		arg.ID,
+		arg.OrgID,
 		arg.Name,
+		arg.Type,
 		arg.Url,
 		arg.AuthConfig,
 		arg.RateLimitRps,
 		arg.RateLimitBurst,
 		arg.MaxInflight,
-		arg.ID,
 	)
 	var i Destination
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
+		&i.OrgID,
 		&i.Name,
 		&i.Type,
 		&i.Url,

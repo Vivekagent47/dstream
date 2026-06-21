@@ -9,8 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/streamingo/dstream/internal/auth"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/audit"
+	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 type createSourceReq struct {
@@ -21,8 +22,8 @@ type createSourceReq struct {
 
 func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
-	if err != nil || p.ProjectID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "api key required")
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	var body createSourceReq
@@ -47,26 +48,36 @@ func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
 		signing = json.RawMessage(`{}`)
 	}
 	row, err := d.Queries.CreateSource(r.Context(), store.CreateSourceParams{
-		ProjectID:     store.UUID(p.ProjectID),
+		OrgID:         store.UUID(p.OrgID),
 		Name:          body.Name,
 		Type:          body.Type,
 		IngestToken:   token,
 		SigningConfig: signing,
 	})
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "create source: "+err.Error())
+		d.Log.Error("create source", "err", err)
+		httpErr(w, http.StatusInternalServerError, "create source")
 		return
 	}
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "source.create",
+		TargetType: "source",
+		TargetID:   audit.PtrUUID(store.GoUUID(row.ID)),
+		Metadata: map[string]any{
+			"name": row.Name,
+			"type": row.Type,
+		},
+	})
 	writeJSON(w, http.StatusCreated, sourceView(row))
 }
 
 func (d Deps) listSources(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
-	if err != nil || p.ProjectID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "api key required")
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
 		return
 	}
-	rows, err := d.Queries.ListSourcesByProject(r.Context(), store.UUID(p.ProjectID))
+	rows, err := d.Queries.ListSourcesByOrg(r.Context(), store.UUID(p.OrgID))
 	if err != nil {
 		httpErr(w, http.StatusInternalServerError, "list sources")
 		return
@@ -79,12 +90,20 @@ func (d Deps) listSources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) getSource(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	row, err := d.Queries.GetSourceByID(r.Context(), store.UUID(id))
+	row, err := d.Queries.GetSourceForOrg(r.Context(), store.GetSourceForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	})
 	if err != nil {
 		httpErr(w, http.StatusNotFound, "not found")
 		return
@@ -92,10 +111,38 @@ func (d Deps) getSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sourceView(row))
 }
 
+func (d Deps) deleteSource(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := d.Queries.DeleteSourceForOrg(r.Context(), store.DeleteSourceForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	}); err != nil {
+		d.Log.Error("delete source", "err", err)
+		httpErr(w, http.StatusInternalServerError, "delete source")
+		return
+	}
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "source.delete",
+		TargetType: "source",
+		TargetID:   audit.PtrUUID(id),
+		Metadata:   map[string]any{},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func sourceView(s store.Source) map[string]any {
 	return map[string]any{
 		"id":             store.GoUUID(s.ID).String(),
-		"project_id":     store.GoUUID(s.ProjectID).String(),
+		"org_id":         store.GoUUID(s.OrgID).String(),
 		"name":           s.Name,
 		"type":           s.Type,
 		"ingest_token":   s.IngestToken,

@@ -28,8 +28,16 @@ func NewPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 	return pool, nil
 }
 
-// UUID wraps a google/uuid.UUID into pgtype.UUID (Valid=true).
+// UUID wraps a google/uuid.UUID into pgtype.UUID. uuid.Nil maps to SQL
+// NULL (Valid=false) — NOT to the all-zeros UUID. Any code path that
+// accidentally lets uuid.Nil slip into a sqlc parameter then fails fast
+// against NOT NULL / FK constraints instead of silently matching the
+// all-zeros sentinel. Callers that genuinely need a "no row" predicate
+// already pass pgtype.UUID{} directly.
 func UUID(id uuid.UUID) pgtype.UUID {
+	if id == uuid.Nil {
+		return pgtype.UUID{}
+	}
 	return pgtype.UUID{Bytes: id, Valid: true}
 }
 

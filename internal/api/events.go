@@ -9,17 +9,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/streamingo/dstream/internal/auth"
-	"github.com/streamingo/dstream/internal/queue"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/audit"
+	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 const defaultEventsPageSize = 50
 
 func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
-	if err != nil || p.ProjectID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "api key required")
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	limit := defaultEventsPageSize
@@ -34,10 +35,10 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 			offset = n
 		}
 	}
-	rows, err := d.Queries.ListEventsByProject(r.Context(), store.ListEventsByProjectParams{
-		ProjectID: store.UUID(p.ProjectID),
-		Limit:     int32(limit),
-		Offset:    int32(offset),
+	rows, err := d.Queries.ListEventsByOrg(r.Context(), store.ListEventsByOrgParams{
+		OrgID:  store.UUID(p.OrgID),
+		Limit:  int32(limit),
+		Offset: int32(offset),
 	})
 	if err != nil {
 		httpErr(w, http.StatusInternalServerError, "list")
@@ -51,12 +52,20 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) getEvent(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ev, err := d.Queries.GetEventByID(r.Context(), store.UUID(id))
+	ev, err := d.Queries.GetEventForOrg(r.Context(), store.GetEventForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	})
 	if err != nil {
 		httpErr(w, http.StatusNotFound, "not found")
 		return
@@ -68,12 +77,20 @@ func (d Deps) getEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) retryEvent(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ev, err := d.Queries.GetEventByID(r.Context(), store.UUID(id))
+	ev, err := d.Queries.GetEventForOrg(r.Context(), store.GetEventForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	})
 	if err != nil {
 		httpErr(w, http.StatusNotFound, "not found")
 		return
@@ -88,13 +105,25 @@ func (d Deps) retryEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := d.Queue.EnqueueDeliver(r.Context(), queue.DeliverPayload{
-		EventID:    store.GoUUID(ev.ID),
-		Attempt:    0,
-		EnqueuedAt: time.Now().UnixMilli(),
+		EventID:             store.GoUUID(ev.ID),
+		Attempt:             0,
+		EnqueuedAt:          time.Now().UnixMilli(),
+		RetryStrategy:       conn.RetryStrategy,
+		RetryBaseMs:         conn.RetryBaseMs,
+		RetryCapMs:          conn.RetryCapMs,
+		RetryJitterPct:      conn.RetryJitterPct,
+		CustomRetrySchedule: conn.CustomRetrySchedule,
 	}, int(conn.MaxRetries)); err != nil {
 		httpErr(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
+	evID := store.GoUUID(ev.ID)
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "event.retry",
+		TargetType: "event",
+		TargetID:   audit.PtrUUID(evID),
+		Metadata:   map[string]any{"event_id": evID.String()},
+	})
 	w.WriteHeader(http.StatusAccepted)
 }
 

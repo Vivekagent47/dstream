@@ -142,24 +142,55 @@ func (q *Queries) GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetE
 	return i, err
 }
 
-const listEventsByProject = `-- name: ListEventsByProject :many
+const getEventForOrg = `-- name: GetEventForOrg :one
+SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count, e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at
+  FROM events e
+  JOIN connections c ON c.id = e.connection_id
+  JOIN sources s     ON s.id = c.source_id
+ WHERE e.id = $1
+   AND s.org_id = $2
+`
+
+type GetEventForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (Event, error) {
+	row := q.db.QueryRow(ctx, getEventForOrg, arg.ID, arg.OrgID)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.RequestID,
+		&i.ConnectionID,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LastAttemptAt,
+		&i.NextRetryAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listEventsByOrg = `-- name: ListEventsByOrg :many
 SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count, e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at
 FROM events e
 JOIN connections c ON c.id = e.connection_id
 JOIN sources s     ON s.id = c.source_id
-WHERE s.project_id = $1
+WHERE s.org_id = $1
 ORDER BY e.created_at DESC
 LIMIT $2 OFFSET $3
 `
 
-type ListEventsByProjectParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
-	Limit     int32       `json:"limit"`
-	Offset    int32       `json:"offset"`
+type ListEventsByOrgParams struct {
+	OrgID  pgtype.UUID `json:"org_id"`
+	Limit  int32       `json:"limit"`
+	Offset int32       `json:"offset"`
 }
 
-func (q *Queries) ListEventsByProject(ctx context.Context, arg ListEventsByProjectParams) ([]Event, error) {
-	rows, err := q.db.Query(ctx, listEventsByProject, arg.ProjectID, arg.Limit, arg.Offset)
+func (q *Queries) ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listEventsByOrg, arg.OrgID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

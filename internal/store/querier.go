@@ -12,6 +12,8 @@ import (
 
 type Querier interface {
 	AddOrgMember(ctx context.Context, arg AddOrgMemberParams) error
+	CountOrgMembershipsForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	CountOrgOwners(ctx context.Context, orgID pgtype.UUID) (int64, error)
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
@@ -20,52 +22,80 @@ type Querier interface {
 	CreateDestination(ctx context.Context, arg CreateDestinationParams) (Destination, error)
 	CreateEvent(ctx context.Context, arg CreateEventParams) (Event, error)
 	CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkTokenParams) (MagicLinkToken, error)
+	CreateOrgInvite(ctx context.Context, arg CreateOrgInviteParams) (OrgInvite, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (Organization, error)
-	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
 	CreateSource(ctx context.Context, arg CreateSourceParams) (Source, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteConnection(ctx context.Context, id pgtype.UUID) error
-	DeleteDestination(ctx context.Context, id pgtype.UUID) error
+	DeleteConnectionForOrg(ctx context.Context, arg DeleteConnectionForOrgParams) error
+	DeleteDestinationForOrg(ctx context.Context, arg DeleteDestinationForOrgParams) error
 	DeleteExpiredMagicLinkTokens(ctx context.Context) error
-	DeleteSource(ctx context.Context, id pgtype.UUID) error
+	DeleteOrgInvite(ctx context.Context, arg DeleteOrgInviteParams) error
+	DeleteOrgMember(ctx context.Context, arg DeleteOrgMemberParams) error
+	DeleteOrgOwnerIfNotLast(ctx context.Context, arg DeleteOrgOwnerIfNotLastParams) (int64, error)
+	DeleteOrganization(ctx context.Context, id pgtype.UUID) error
+	DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error)
+	DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrgParams) error
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error)
+	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
+	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
 	GetDestinationByID(ctx context.Context, id pgtype.UUID) (Destination, error)
+	GetDestinationForOrg(ctx context.Context, arg GetDestinationForOrgParams) (Destination, error)
 	GetEventByID(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetEventForDeliveryRow, error)
+	GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (Event, error)
+	GetFirstOrgForUser(ctx context.Context, userID pgtype.UUID) (pgtype.UUID, error)
+	GetOrgMember(ctx context.Context, arg GetOrgMemberParams) (OrgMember, error)
+	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error)
 	GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error)
-	GetProjectByOrgAndSlug(ctx context.Context, arg GetProjectByOrgAndSlugParams) (Project, error)
 	GetRequestBody(ctx context.Context, requestID pgtype.UUID) ([]byte, error)
 	GetRequestByID(ctx context.Context, id pgtype.UUID) (Request, error)
 	GetSourceByID(ctx context.Context, id pgtype.UUID) (Source, error)
 	GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error)
+	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
-	ListAPIKeysByProject(ctx context.Context, projectID pgtype.UUID) ([]ApiKey, error)
+	ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error)
 	ListAllOrganizations(ctx context.Context) ([]Organization, error)
 	ListAttemptsByEvent(ctx context.Context, eventID pgtype.UUID) ([]Attempt, error)
+	// LEFT JOIN may yield NULL for u/k columns; COALESCE so sqlc generates
+	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
+	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
+	ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error)
 	ListConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
-	ListDestinationsByProject(ctx context.Context, projectID pgtype.UUID) ([]Destination, error)
+	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)
 	ListEnabledConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
-	ListEventsByProject(ctx context.Context, arg ListEventsByProjectParams) ([]Event, error)
-	ListOrgMembers(ctx context.Context, orgID pgtype.UUID) ([]User, error)
-	ListProjectsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Project, error)
-	ListSourcesByProject(ctx context.Context, projectID pgtype.UUID) ([]Source, error)
+	ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams) ([]Event, error)
+	ListOrgInvitesByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgInvitesByOrgRow, error)
+	ListOrgMembersByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgMembersByOrgRow, error)
+	ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error)
+	ListPendingOrgInvitesByEmail(ctx context.Context, email string) ([]OrgInvite, error)
+	ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]Source, error)
 	MarkEventDelivered(ctx context.Context, id pgtype.UUID) error
 	MarkEventFailed(ctx context.Context, id pgtype.UUID) error
 	MarkEventInFlight(ctx context.Context, id pgtype.UUID) error
 	MarkMagicLinkUsed(ctx context.Context, id pgtype.UUID) error
+	MarkOrgInviteAccepted(ctx context.Context, id pgtype.UUID) error
+	// COALESCE pattern so unspecified fields keep current values.
+	// Tenancy is enforced by joining through sources.org_id.
+	PatchConnectionForOrg(ctx context.Context, arg PatchConnectionForOrgParams) (Connection, error)
+	// COALESCE pattern so unspecified fields keep current values.
+	PatchDestinationForOrg(ctx context.Context, arg PatchDestinationForOrgParams) (Destination, error)
 	PromoteUserToSuperAdmin(ctx context.Context, email string) error
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
-	RevokeAPIKey(ctx context.Context, id pgtype.UUID) error
+	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
 	TouchAPIKey(ctx context.Context, id pgtype.UUID) error
+	TransferOrgOwnership(ctx context.Context, arg TransferOrgOwnershipParams) (int64, error)
 	UpdateConnection(ctx context.Context, arg UpdateConnectionParams) (Connection, error)
-	UpdateDestination(ctx context.Context, arg UpdateDestinationParams) (Destination, error)
-	UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error)
+	UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error
+	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (Organization, error)
+	UpdateSourceForOrg(ctx context.Context, arg UpdateSourceForOrgParams) (Source, error)
 }
 
 var _ Querier = (*Queries)(nil)

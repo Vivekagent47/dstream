@@ -17,9 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/streamingo/dstream/internal/ingest"
-	"github.com/streamingo/dstream/internal/queue"
-	"github.com/streamingo/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/ingest"
+	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/store"
 )
 
 const (
@@ -103,9 +103,14 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 				retryAfter = 100 * time.Millisecond
 			}
 			if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
-				EventID:    p.EventID,
-				Attempt:    p.Attempt,
-				EnqueuedAt: time.Now().UnixMilli(),
+				EventID:             p.EventID,
+				Attempt:             p.Attempt,
+				EnqueuedAt:          time.Now().UnixMilli(),
+				RetryStrategy:       p.RetryStrategy,
+				RetryBaseMs:         p.RetryBaseMs,
+				RetryCapMs:          p.RetryCapMs,
+				RetryJitterPct:      p.RetryJitterPct,
+				CustomRetrySchedule: p.CustomRetrySchedule,
 			}, int(row.MaxRetries), asynq.ProcessIn(retryAfter)); err != nil {
 				return fmt.Errorf("rate-limit reenqueue: %w", err)
 			}
@@ -123,9 +128,14 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 			if count > int64(*row.DestinationMaxInflight) {
 				_, _ = h.Redis.Decr(ctx, inflightKey).Result()
 				if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
-					EventID:    p.EventID,
-					Attempt:    p.Attempt,
-					EnqueuedAt: time.Now().UnixMilli(),
+					EventID:             p.EventID,
+					Attempt:             p.Attempt,
+					EnqueuedAt:          time.Now().UnixMilli(),
+					RetryStrategy:       p.RetryStrategy,
+					RetryBaseMs:         p.RetryBaseMs,
+					RetryCapMs:          p.RetryCapMs,
+					RetryJitterPct:      p.RetryJitterPct,
+					CustomRetrySchedule: p.CustomRetrySchedule,
 				}, int(row.MaxRetries), asynq.ProcessIn(250*time.Millisecond)); err != nil {
 					return fmt.Errorf("inflight reenqueue: %w", err)
 				}
@@ -222,17 +232,35 @@ func (h *Handler) recordAttempt(
 }
 
 // RetryDelayFunc returns an asynq RetryDelayFunc that consults the connection
-// policy for the given task. It loads the connection from the DB on each
-// invocation so live policy edits take effect on the very next retry.
+// policy attached to the task payload. If the payload has the policy fields
+// populated (new code path), we compute the delay with ZERO DB queries. If
+// the payload is older / lacks the snapshot, we fall back to the legacy
+// 2-query lookup so in-flight tasks during a deploy don't break.
+//
+// Trade-off: policy edits made AFTER an event is enqueued won't apply to
+// subsequent retries of that event — only to events enqueued post-edit.
+// For a retry policy this is acceptable; operators rarely tune retry
+// strategy mid-incident, and live edits already weren't atomic.
 func (h *Handler) RetryDelayFunc() asynq.RetryDelayFunc {
 	return func(n int, taskErr error, task *asynq.Task) time.Duration {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
 		var p queue.DeliverPayload
 		if err := json.Unmarshal(task.Payload(), &p); err != nil {
 			return defaultRetry(n)
 		}
+		// asynq calls RetryDelayFunc with n = attempt number that just failed (1-based).
+		attempt := n + 1
+		if p.RetryStrategy != "" {
+			return RetryDelay(store.Connection{
+				RetryStrategy:       p.RetryStrategy,
+				RetryBaseMs:         p.RetryBaseMs,
+				RetryCapMs:          p.RetryCapMs,
+				RetryJitterPct:      p.RetryJitterPct,
+				CustomRetrySchedule: p.CustomRetrySchedule,
+			}, attempt)
+		}
+		// Legacy fallback for tasks enqueued before payload carried policy.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 		ev, err := h.Queries.GetEventByID(ctx, store.UUID(p.EventID))
 		if err != nil {
 			return defaultRetry(n)
@@ -241,8 +269,7 @@ func (h *Handler) RetryDelayFunc() asynq.RetryDelayFunc {
 		if err != nil {
 			return defaultRetry(n)
 		}
-		// asynq calls RetryDelayFunc with n = attempt number that just failed (1-based).
-		return RetryDelay(conn, n+1)
+		return RetryDelay(conn, attempt)
 	}
 }
 
@@ -273,9 +300,14 @@ func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDelive
 			},
 		})
 		if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
-			EventID:    store.GoUUID(row.ID),
-			Attempt:    int(row.AttemptCount),
-			EnqueuedAt: time.Now().UnixMilli(),
+			EventID:             store.GoUUID(row.ID),
+			Attempt:             int(row.AttemptCount),
+			EnqueuedAt:          time.Now().UnixMilli(),
+			RetryStrategy:       row.RetryStrategy,
+			RetryBaseMs:         row.RetryBaseMs,
+			RetryCapMs:          row.RetryCapMs,
+			RetryJitterPct:      row.RetryJitterPct,
+			CustomRetrySchedule: row.CustomRetrySchedule,
 		}, int(row.MaxRetries), asynq.ProcessIn(15*time.Second)); err != nil {
 			return fmt.Errorf("cli reenqueue: %w", err)
 		}

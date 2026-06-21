@@ -12,7 +12,7 @@ import (
 
 type ApiKey struct {
 	ID         pgtype.UUID        `json:"id"`
-	ProjectID  pgtype.UUID        `json:"project_id"`
+	OrgID      pgtype.UUID        `json:"org_id"`
 	Name       string             `json:"name"`
 	Prefix     string             `json:"prefix"`
 	KeyHash    []byte             `json:"key_hash"`
@@ -32,6 +32,19 @@ type Attempt struct {
 	QueuedInMs      *int32             `json:"queued_in_ms"`
 	ErrorMessage    *string            `json:"error_message"`
 	AttemptedAt     pgtype.Timestamptz `json:"attempted_at"`
+}
+
+type AuditLog struct {
+	ID                 int64              `json:"id"`
+	OrgID              pgtype.UUID        `json:"org_id"`
+	ActorUserID        pgtype.UUID        `json:"actor_user_id"`
+	ActorApiKeyID      pgtype.UUID        `json:"actor_api_key_id"`
+	ActorEmailSnapshot *string            `json:"actor_email_snapshot"`
+	Action             string             `json:"action"`
+	TargetType         string             `json:"target_type"`
+	TargetID           pgtype.UUID        `json:"target_id"`
+	Metadata           []byte             `json:"metadata"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
 type CliSession struct {
@@ -60,7 +73,7 @@ type Connection struct {
 
 type Destination struct {
 	ID             pgtype.UUID        `json:"id"`
-	ProjectID      pgtype.UUID        `json:"project_id"`
+	OrgID          pgtype.UUID        `json:"org_id"`
 	Name           string             `json:"name"`
 	Type           string             `json:"type"`
 	Url            *string            `json:"url"`
@@ -93,6 +106,18 @@ type MagicLinkToken struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type OrgInvite struct {
+	ID         pgtype.UUID        `json:"id"`
+	OrgID      pgtype.UUID        `json:"org_id"`
+	Email      string             `json:"email"`
+	Role       string             `json:"role"`
+	TokenHash  []byte             `json:"token_hash"`
+	InvitedBy  pgtype.UUID        `json:"invited_by"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
+	AcceptedAt pgtype.Timestamptz `json:"accepted_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
 type OrgMember struct {
 	OrgID     pgtype.UUID        `json:"org_id"`
 	UserID    pgtype.UUID        `json:"user_id"`
@@ -102,15 +127,6 @@ type OrgMember struct {
 
 type Organization struct {
 	ID        pgtype.UUID        `json:"id"`
-	Name      string             `json:"name"`
-	Slug      string             `json:"slug"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
-}
-
-type Project struct {
-	ID        pgtype.UUID        `json:"id"`
-	OrgID     pgtype.UUID        `json:"org_id"`
 	Name      string             `json:"name"`
 	Slug      string             `json:"slug"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
@@ -140,7 +156,7 @@ type RequestBody struct {
 
 type Source struct {
 	ID            pgtype.UUID        `json:"id"`
-	ProjectID     pgtype.UUID        `json:"project_id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
 	Name          string             `json:"name"`
 	Type          string             `json:"type"`
 	IngestToken   string             `json:"ingest_token"`

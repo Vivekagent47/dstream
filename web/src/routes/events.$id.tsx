@@ -1,98 +1,124 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { api, type Attempt, type Event } from '#/lib/api'
+import { api, qk } from '#/lib/api'
+import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
+import { Badge } from '#/components/ui/badge'
+import { Button } from '#/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '#/components/ui/card'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '#/components/ui/table'
 
-export const Route = createFileRoute('/events/$id')({ component: EventDetail })
+const eventQuery = (id: string) =>
+  queryOptions({
+    queryKey: qk.event(id),
+    queryFn: () => api.getEvent(id),
+  })
+
+export const Route = createFileRoute('/events/$id')({
+  loader: ({ context, params }) => context.queryClient.ensureQueryData(eventQuery(params.id)),
+  component: EventDetail,
+  errorComponent: AuthErrorBoundary,
+})
 
 function EventDetail() {
   const { id } = Route.useParams()
-  const [ev, setEv] = useState<(Event & { attempts: Attempt[] }) | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const qc = useQueryClient()
+  const { data: ev, error } = useQuery(eventQuery(id))
 
-  async function load() {
-    try {
-      setEv(await api.getEvent(id))
-    } catch (e: any) {
-      setErr(e.message)
-    }
+  const retry = useMutation({
+    mutationFn: () => api.retryEvent(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.event(id) }),
+  })
+
+  if (error) {
+    return (
+      <main className="page-wrap mx-auto px-4 pt-10">
+        <p className="text-sm text-destructive">{(error as Error).message}</p>
+      </main>
+    )
   }
-  useEffect(() => {
-    void load()
-  }, [id])
-
-  async function retry() {
-    setBusy(true)
-    try {
-      await api.retryEvent(id)
-      await load()
-    } catch (e: any) {
-      setErr(e.message)
-    } finally {
-      setBusy(false)
-    }
+  if (!ev) {
+    return (
+      <main className="page-wrap mx-auto px-4 pt-10">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </main>
+    )
   }
-
-  if (err) return <main className="page-wrap mx-auto px-4 pt-10 text-sm text-red-600">{err}</main>
-  if (!ev) return <main className="page-wrap mx-auto px-4 pt-10 text-sm">Loading…</main>
 
   return (
-    <main className="page-wrap mx-auto px-4 pb-16 pt-10">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Event {ev.id.slice(0, 8)}</h1>
-        <button
-          onClick={retry}
-          disabled={busy}
-          className="rounded-full bg-[var(--sea-ink)] px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
-        >
-          {busy ? 'Retrying…' : 'Retry now'}
-        </button>
+    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold">
+          Event <span className="font-mono text-base">{ev.id.slice(0, 8)}</span>
+        </h1>
+        <Button onClick={() => retry.mutate()} disabled={retry.isPending}>
+          {retry.isPending ? 'Retrying…' : 'Retry now'}
+        </Button>
       </div>
 
-      <dl className="mb-8 grid grid-cols-2 gap-x-6 gap-y-2 rounded-xl border border-[rgba(23,58,64,0.08)] bg-white/60 p-5 text-sm sm:grid-cols-4">
-        <Pair k="Status" v={ev.status} />
-        <Pair k="Attempts" v={String(ev.attempt_count)} />
-        <Pair k="Last attempt" v={ev.last_attempt_at ?? '—'} />
-        <Pair k="Next retry" v={ev.next_retry_at ?? '—'} />
-      </dl>
+      {retry.error && <p className="text-sm text-destructive">{(retry.error as Error).message}</p>}
 
-      <h2 className="mb-3 text-lg font-semibold">Attempts</h2>
-      <div className="overflow-hidden rounded-xl border border-[rgba(23,58,64,0.08)]">
-        <table className="w-full border-collapse text-sm">
-          <thead className="bg-white/70 text-left text-xs uppercase tracking-wide text-[var(--sea-ink-soft)]">
-            <tr>
-              <th className="px-4 py-3">#</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Duration</th>
-              <th className="px-4 py-3">Error</th>
-              <th className="px-4 py-3">When</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white/40">
+      <Card>
+        <CardContent className="grid grid-cols-2 gap-x-6 gap-y-3 p-6 sm:grid-cols-4">
+          <Pair k="Status" v={<Badge variant="secondary">{ev.status}</Badge>} />
+          <Pair k="Attempts" v={String(ev.attempt_count)} />
+          <Pair k="Last attempt" v={ev.last_attempt_at ?? '—'} />
+          <Pair k="Next retry" v={ev.next_retry_at ?? '—'} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Attempts</CardTitle>
+        </CardHeader>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>#</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Duration</TableHead>
+              <TableHead>Error</TableHead>
+              <TableHead>When</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {ev.attempts.map((a) => (
-              <tr key={a.id} className="border-t border-[rgba(23,58,64,0.06)]">
-                <td className="px-4 py-3">{a.attempt_num}</td>
-                <td className="px-4 py-3">{a.response_status ?? '—'}</td>
-                <td className="px-4 py-3">{a.duration_ms != null ? `${a.duration_ms}ms` : '—'}</td>
-                <td className="px-4 py-3 text-red-700">{a.error_message ?? ''}</td>
-                <td className="px-4 py-3 text-[var(--sea-ink-soft)]">
+              <TableRow key={a.id}>
+                <TableCell>{a.attempt_num}</TableCell>
+                <TableCell>{a.response_status ?? '—'}</TableCell>
+                <TableCell>{a.duration_ms != null ? `${a.duration_ms}ms` : '—'}</TableCell>
+                <TableCell className="text-destructive">{a.error_message ?? ''}</TableCell>
+                <TableCell className="text-muted-foreground">
                   {new Date(a.attempted_at).toLocaleString()}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+            {ev.attempts.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={5} className="text-center text-sm text-muted-foreground">
+                  No attempts yet.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Card>
     </main>
   )
 }
 
-function Pair({ k, v }: { k: string; v: string }) {
+function Pair({ k, v }: { k: string; v: React.ReactNode }) {
   return (
-    <>
-      <dt className="text-xs uppercase tracking-wide text-[var(--sea-ink-soft)]">{k}</dt>
-      <dd className="text-sm">{v}</dd>
-    </>
+    <div>
+      <dt className="text-xs tracking-wide text-muted-foreground uppercase">{k}</dt>
+      <dd className="mt-1 text-sm">{v}</dd>
+    </div>
   )
 }

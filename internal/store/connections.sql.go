@@ -52,6 +52,22 @@ func (q *Queries) DeleteConnection(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const deleteConnectionForOrg = `-- name: DeleteConnectionForOrg :exec
+DELETE FROM connections AS c
+ WHERE c.id = $1
+   AND c.source_id IN (SELECT s.id FROM sources s WHERE s.org_id = $2)
+`
+
+type DeleteConnectionForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) DeleteConnectionForOrg(ctx context.Context, arg DeleteConnectionForOrgParams) error {
+	_, err := q.db.Exec(ctx, deleteConnectionForOrg, arg.ID, arg.OrgID)
+	return err
+}
+
 const getConnectionByID = `-- name: GetConnectionByID :one
 SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at FROM connections WHERE id = $1
 `
@@ -74,6 +90,80 @@ func (q *Queries) GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connec
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getConnectionForOrg = `-- name: GetConnectionForOrg :one
+SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at
+  FROM connections c
+  JOIN sources s ON s.id = c.source_id
+ WHERE c.id = $1
+   AND s.org_id = $2
+`
+
+type GetConnectionForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error) {
+	row := q.db.QueryRow(ctx, getConnectionForOrg, arg.ID, arg.OrgID)
+	var i Connection
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.DestinationID,
+		&i.Enabled,
+		&i.MaxRetries,
+		&i.RetryStrategy,
+		&i.RetryBaseMs,
+		&i.RetryCapMs,
+		&i.RetryJitterPct,
+		&i.CustomRetrySchedule,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listConnectionsByOrg = `-- name: ListConnectionsByOrg :many
+SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at
+  FROM connections c
+  JOIN sources s ON s.id = c.source_id
+ WHERE s.org_id = $1
+ ORDER BY c.created_at DESC
+`
+
+func (q *Queries) ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error) {
+	rows, err := q.db.Query(ctx, listConnectionsByOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Connection{}
+	for rows.Next() {
+		var i Connection
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.DestinationID,
+			&i.Enabled,
+			&i.MaxRetries,
+			&i.RetryStrategy,
+			&i.RetryBaseMs,
+			&i.RetryCapMs,
+			&i.RetryJitterPct,
+			&i.CustomRetrySchedule,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listConnectionsBySource = `-- name: ListConnectionsBySource :many
@@ -151,6 +241,67 @@ func (q *Queries) ListEnabledConnectionsBySource(ctx context.Context, sourceID p
 		return nil, err
 	}
 	return items, nil
+}
+
+const patchConnectionForOrg = `-- name: PatchConnectionForOrg :one
+UPDATE connections AS c
+   SET enabled               = COALESCE($1,               c.enabled),
+       max_retries           = COALESCE($2,           c.max_retries),
+       retry_strategy        = COALESCE($3,        c.retry_strategy),
+       retry_base_ms         = COALESCE($4,         c.retry_base_ms),
+       retry_cap_ms          = COALESCE($5,          c.retry_cap_ms),
+       retry_jitter_pct      = COALESCE($6,      c.retry_jitter_pct),
+       custom_retry_schedule = COALESCE($7, c.custom_retry_schedule),
+       updated_at            = now()
+  FROM sources s
+ WHERE c.id = $8
+   AND c.source_id = s.id
+   AND s.org_id = $9
+ RETURNING c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at
+`
+
+type PatchConnectionForOrgParams struct {
+	Enabled             *bool       `json:"enabled"`
+	MaxRetries          *int32      `json:"max_retries"`
+	RetryStrategy       *string     `json:"retry_strategy"`
+	RetryBaseMs         *int32      `json:"retry_base_ms"`
+	RetryCapMs          *int32      `json:"retry_cap_ms"`
+	RetryJitterPct      *int32      `json:"retry_jitter_pct"`
+	CustomRetrySchedule []byte      `json:"custom_retry_schedule"`
+	ID                  pgtype.UUID `json:"id"`
+	OrgID               pgtype.UUID `json:"org_id"`
+}
+
+// COALESCE pattern so unspecified fields keep current values.
+// Tenancy is enforced by joining through sources.org_id.
+func (q *Queries) PatchConnectionForOrg(ctx context.Context, arg PatchConnectionForOrgParams) (Connection, error) {
+	row := q.db.QueryRow(ctx, patchConnectionForOrg,
+		arg.Enabled,
+		arg.MaxRetries,
+		arg.RetryStrategy,
+		arg.RetryBaseMs,
+		arg.RetryCapMs,
+		arg.RetryJitterPct,
+		arg.CustomRetrySchedule,
+		arg.ID,
+		arg.OrgID,
+	)
+	var i Connection
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.DestinationID,
+		&i.Enabled,
+		&i.MaxRetries,
+		&i.RetryStrategy,
+		&i.RetryBaseMs,
+		&i.RetryCapMs,
+		&i.RetryJitterPct,
+		&i.CustomRetrySchedule,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateConnection = `-- name: UpdateConnection :one

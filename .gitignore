@@ -30,3 +30,5 @@
 
 # minio data, postgres data when running compose
 /.data/
+
+docs/

@@ -12,21 +12,21 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :one
-INSERT INTO api_keys (project_id, name, prefix, key_hash)
+INSERT INTO api_keys (org_id, name, prefix, key_hash)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, name, prefix, key_hash, last_used_at, revoked_at, created_at
+RETURNING id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at
 `
 
 type CreateAPIKeyParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
-	Name      string      `json:"name"`
-	Prefix    string      `json:"prefix"`
-	KeyHash   []byte      `json:"key_hash"`
+	OrgID   pgtype.UUID `json:"org_id"`
+	Name    string      `json:"name"`
+	Prefix  string      `json:"prefix"`
+	KeyHash []byte      `json:"key_hash"`
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
 	row := q.db.QueryRow(ctx, createAPIKey,
-		arg.ProjectID,
+		arg.OrgID,
 		arg.Name,
 		arg.Prefix,
 		arg.KeyHash,
@@ -34,7 +34,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 	var i ApiKey
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
+		&i.OrgID,
 		&i.Name,
 		&i.Prefix,
 		&i.KeyHash,
@@ -46,7 +46,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 }
 
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
-SELECT id, project_id, name, prefix, key_hash, last_used_at, revoked_at, created_at FROM api_keys
+SELECT id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at FROM api_keys
 WHERE prefix = $1 AND revoked_at IS NULL
 `
 
@@ -55,7 +55,7 @@ func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey,
 	var i ApiKey
 	err := row.Scan(
 		&i.ID,
-		&i.ProjectID,
+		&i.OrgID,
 		&i.Name,
 		&i.Prefix,
 		&i.KeyHash,
@@ -66,14 +66,14 @@ func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey,
 	return i, err
 }
 
-const listAPIKeysByProject = `-- name: ListAPIKeysByProject :many
-SELECT id, project_id, name, prefix, key_hash, last_used_at, revoked_at, created_at FROM api_keys
-WHERE project_id = $1
+const listAPIKeysByOrg = `-- name: ListAPIKeysByOrg :many
+SELECT id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at FROM api_keys
+WHERE org_id = $1 AND revoked_at IS NULL
 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListAPIKeysByProject(ctx context.Context, projectID pgtype.UUID) ([]ApiKey, error) {
-	rows, err := q.db.Query(ctx, listAPIKeysByProject, projectID)
+func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error) {
+	rows, err := q.db.Query(ctx, listAPIKeysByOrg, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (q *Queries) ListAPIKeysByProject(ctx context.Context, projectID pgtype.UUI
 		var i ApiKey
 		if err := rows.Scan(
 			&i.ID,
-			&i.ProjectID,
+			&i.OrgID,
 			&i.Name,
 			&i.Prefix,
 			&i.KeyHash,
@@ -101,17 +101,27 @@ func (q *Queries) ListAPIKeysByProject(ctx context.Context, projectID pgtype.UUI
 	return items, nil
 }
 
-const revokeAPIKey = `-- name: RevokeAPIKey :exec
-UPDATE api_keys SET revoked_at = now() WHERE id = $1
+const revokeAPIKeyForOrg = `-- name: RevokeAPIKeyForOrg :exec
+UPDATE api_keys
+   SET revoked_at = now()
+ WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL
 `
 
-func (q *Queries) RevokeAPIKey(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, revokeAPIKey, id)
+type RevokeAPIKeyForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error {
+	_, err := q.db.Exec(ctx, revokeAPIKeyForOrg, arg.ID, arg.OrgID)
 	return err
 }
 
 const touchAPIKey = `-- name: TouchAPIKey :exec
-UPDATE api_keys SET last_used_at = now() WHERE id = $1
+UPDATE api_keys
+   SET last_used_at = now()
+ WHERE id = $1
+   AND (last_used_at IS NULL OR last_used_at < now() - INTERVAL '1 minute')
 `
 
 func (q *Queries) TouchAPIKey(ctx context.Context, id pgtype.UUID) error {
