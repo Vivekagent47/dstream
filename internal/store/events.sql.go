@@ -11,36 +11,57 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createEvent = `-- name: CreateEvent :one
-INSERT INTO events (request_id, connection_id, status)
-VALUES ($1, $2, 'queued')
-RETURNING id, request_id, connection_id, status, attempt_count, last_attempt_at, next_retry_at, created_at, updated_at
+const createEventsBatch = `-- name: CreateEventsBatch :many
+INSERT INTO events (request_id, connection_id, org_id, status)
+SELECT $1, conn_id, $2, 'queued'
+FROM unnest($3::uuid[]) AS conn_id
+RETURNING id, request_id, connection_id, status, attempt_count, last_attempt_at, next_retry_at, created_at, updated_at, org_id
 `
 
-type CreateEventParams struct {
-	RequestID    pgtype.UUID `json:"request_id"`
-	ConnectionID pgtype.UUID `json:"connection_id"`
+type CreateEventsBatchParams struct {
+	RequestID     pgtype.UUID   `json:"request_id"`
+	OrgID         pgtype.UUID   `json:"org_id"`
+	ConnectionIds []pgtype.UUID `json:"connection_ids"`
 }
 
-func (q *Queries) CreateEvent(ctx context.Context, arg CreateEventParams) (Event, error) {
-	row := q.db.QueryRow(ctx, createEvent, arg.RequestID, arg.ConnectionID)
-	var i Event
-	err := row.Scan(
-		&i.ID,
-		&i.RequestID,
-		&i.ConnectionID,
-		&i.Status,
-		&i.AttemptCount,
-		&i.LastAttemptAt,
-		&i.NextRetryAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
+// Fan-out insert: one queued event per connection_id, all sharing the same
+// request_id and org_id (a source belongs to exactly one org). One statement
+// instead of a roundtrip per destination. RETURNING order is not guaranteed,
+// so callers key the returned rows by connection_id rather than positional
+// index.
+func (q *Queries) CreateEventsBatch(ctx context.Context, arg CreateEventsBatchParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, createEventsBatch, arg.RequestID, arg.OrgID, arg.ConnectionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.RequestID,
+			&i.ConnectionID,
+			&i.Status,
+			&i.AttemptCount,
+			&i.LastAttemptAt,
+			&i.NextRetryAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getEventByID = `-- name: GetEventByID :one
-SELECT id, request_id, connection_id, status, attempt_count, last_attempt_at, next_retry_at, created_at, updated_at FROM events WHERE id = $1
+SELECT id, request_id, connection_id, status, attempt_count, last_attempt_at, next_retry_at, created_at, updated_at, org_id FROM events WHERE id = $1
 `
 
 func (q *Queries) GetEventByID(ctx context.Context, id pgtype.UUID) (Event, error) {
@@ -56,6 +77,7 @@ func (q *Queries) GetEventByID(ctx context.Context, id pgtype.UUID) (Event, erro
 		&i.NextRetryAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OrgID,
 	)
 	return i, err
 }
@@ -143,12 +165,10 @@ func (q *Queries) GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetE
 }
 
 const getEventForOrg = `-- name: GetEventForOrg :one
-SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count, e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at
+SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count, e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at, e.org_id
   FROM events e
-  JOIN connections c ON c.id = e.connection_id
-  JOIN sources s     ON s.id = c.source_id
  WHERE e.id = $1
-   AND s.org_id = $2
+   AND e.org_id = $2
 `
 
 type GetEventForOrgParams struct {
@@ -156,6 +176,8 @@ type GetEventForOrgParams struct {
 	OrgID pgtype.UUID `json:"org_id"`
 }
 
+// org_id lives on events now, so this is a direct two-column lookup (PK + org)
+// instead of a join through connections/sources.
 func (q *Queries) GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (Event, error) {
 	row := q.db.QueryRow(ctx, getEventForOrg, arg.ID, arg.OrgID)
 	var i Event
@@ -169,28 +191,41 @@ func (q *Queries) GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) 
 		&i.NextRetryAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OrgID,
 	)
 	return i, err
 }
 
 const listEventsByOrg = `-- name: ListEventsByOrg :many
-SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count, e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at
+SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count, e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at, e.org_id
 FROM events e
-JOIN connections c ON c.id = e.connection_id
-JOIN sources s     ON s.id = c.source_id
-WHERE s.org_id = $1
-ORDER BY e.created_at DESC
-LIMIT $2 OFFSET $3
+WHERE e.org_id = $1
+  AND (
+    $2::timestamptz IS NULL
+    OR (e.created_at, e.id) < ($2::timestamptz, $3::uuid)
+  )
+ORDER BY e.created_at DESC, e.id DESC
+LIMIT $4
 `
 
 type ListEventsByOrgParams struct {
-	OrgID  pgtype.UUID `json:"org_id"`
-	Limit  int32       `json:"limit"`
-	Offset int32       `json:"offset"`
+	OrgID           pgtype.UUID        `json:"org_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	BeforeID        pgtype.UUID        `json:"before_id"`
+	PageLimit       int32              `json:"page_limit"`
 }
 
+// Keyset pagination on (created_at DESC, id DESC), backed by
+// events_org_created_idx. First page passes NULL cursor; each subsequent page
+// passes the last row's (created_at, id). No OFFSET, so page cost is constant
+// regardless of depth.
 func (q *Queries) ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams) ([]Event, error) {
-	rows, err := q.db.Query(ctx, listEventsByOrg, arg.OrgID, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listEventsByOrg,
+		arg.OrgID,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.PageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +243,7 @@ func (q *Queries) ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams
 			&i.NextRetryAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OrgID,
 		); err != nil {
 			return nil, err
 		}

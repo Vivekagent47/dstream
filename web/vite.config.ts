@@ -9,20 +9,28 @@ import { nitro } from 'nitro/vite'
 
 const apiTarget = process.env.DSTREAM_API_URL || 'http://localhost:8080'
 
+// The dev server is Nitro (via TanStack Start); it handles requests before
+// Vite's `server.proxy` middleware, so /api etc. must go through Nitro's own
+// devProxy — otherwise they fall through to the SPA catch-all and 404.
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
-  server: {
-    proxy: {
-      '/api': { target: apiTarget, changeOrigin: true, ws: true },
-      '/admin': { target: apiTarget, changeOrigin: true },
-      '/e': { target: apiTarget, changeOrigin: true },
-      '/healthz': apiTarget,
-      '/readyz': apiTarget,
-    },
-  },
   plugins: [
     devtools(),
-    nitro({ rollupConfig: { external: [/^@sentry\//] } }),
+    nitro({
+      rollupConfig: { external: [/^@sentry\//] },
+      // /api/** is a nitro-reserved namespace, so devProxy can't claim it —
+      // a routeRules proxy runs inside nitro's router and does. Everything
+      // else goes through devProxy.
+      routeRules: {
+        '/api/**': { proxy: { to: `${apiTarget}/api/**` } },
+      },
+      devProxy: {
+        '/admin': { target: apiTarget, changeOrigin: true },
+        '/e': { target: apiTarget, changeOrigin: true },
+        '/healthz': { target: apiTarget, changeOrigin: true },
+        '/readyz': { target: apiTarget, changeOrigin: true },
+      },
+    }),
     tailwindcss(),
     tanstackStart(),
     viteReact(),

@@ -1,0 +1,11 @@
+# Build context is the repo root (the app Dockerfile does `COPY . .`). Keep the
+# heavy + host-only paths out so image builds stay small and fast.
+.git
+.data
+bin
+web/node_modules
+web/dist
+**/node_modules
+*.log
+.env
+.DS_Store

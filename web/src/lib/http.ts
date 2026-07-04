@@ -12,8 +12,15 @@ export class ApiError extends Error {
   }
 }
 
+// Browser: relative base, so requests hit the same origin and Vite's dev
+// proxy (or the prod reverse proxy) forwards /api to the backend. Node/SSR:
+// axios can't resolve a relative URL, so point it straight at the backend
+// via DSTREAM_API_URL (same var the Vite proxy target uses).
+const baseURL =
+  typeof window === 'undefined' ? process.env.DSTREAM_API_URL || 'http://localhost:8080' : '/'
+
 export const http: AxiosInstance = axios.create({
-  baseURL: '/',
+  baseURL,
   withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
   // CSRF double-submit: axios reads `dstream_csrf` cookie and copies the
@@ -30,9 +37,7 @@ http.interceptors.response.use(
       const body = err.response.data as { error?: string; message?: string } | string | undefined
       const fallback = err.response.statusText || `HTTP ${err.response.status}`
       const msg =
-        typeof body === 'string'
-          ? body || fallback
-          : body?.error || body?.message || fallback
+        typeof body === 'string' ? body || fallback : body?.error || body?.message || fallback
       return Promise.reject(new ApiError(msg, err.response.status, body))
     }
     return Promise.reject(new ApiError(err.message || 'network error', 0, null))

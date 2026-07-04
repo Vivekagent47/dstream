@@ -9,7 +9,7 @@
 
 -- unchanged
 CREATE TABLE organizations (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     name        TEXT NOT NULL,
     slug        TEXT NOT NULL UNIQUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -18,7 +18,7 @@ CREATE TABLE organizations (
 
 -- unchanged
 CREATE TABLE users (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     email           CITEXT NOT NULL UNIQUE,
     name            TEXT,
     is_super_admin  BOOLEAN NOT NULL DEFAULT FALSE,
@@ -44,7 +44,7 @@ CREATE INDEX org_members_user_idx ON org_members (user_id);
 
 -- changed: project_id -> org_id; unique scope changed
 CREATE TABLE api_keys (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,
     prefix        TEXT NOT NULL,
@@ -58,7 +58,7 @@ CREATE UNIQUE INDEX api_keys_prefix_idx ON api_keys (prefix) WHERE revoked_at IS
 
 -- unchanged
 CREATE TABLE magic_link_tokens (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     email       CITEXT NOT NULL,
     token_hash  BYTEA NOT NULL,
     expires_at  TIMESTAMPTZ NOT NULL,
@@ -70,7 +70,7 @@ CREATE INDEX magic_link_tokens_expires_idx ON magic_link_tokens (expires_at);
 
 -- new
 CREATE TABLE org_invites (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     email       CITEXT NOT NULL,
     role        TEXT NOT NULL CHECK (role IN ('admin', 'member')),
@@ -123,7 +123,7 @@ CREATE INDEX audit_logs_actor_user_idx
 
 -- changed: project_id -> org_id; UNIQUE scope; index renamed
 CREATE TABLE sources (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id          UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     type            TEXT NOT NULL,
@@ -137,7 +137,7 @@ CREATE INDEX sources_org_idx ON sources (org_id);
 
 -- changed: project_id -> org_id; UNIQUE scope; index renamed
 CREATE TABLE destinations (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id            UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name              TEXT NOT NULL,
     type              TEXT NOT NULL CHECK (type IN ('http', 'cli')),
@@ -154,7 +154,7 @@ CREATE INDEX destinations_org_idx ON destinations (org_id);
 
 -- unchanged (source_id/destination_id transitively scope to org)
 CREATE TABLE connections (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     source_id               UUID NOT NULL REFERENCES sources(id)      ON DELETE CASCADE,
     destination_id          UUID NOT NULL REFERENCES destinations(id) ON DELETE CASCADE,
     enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
@@ -177,7 +177,7 @@ CREATE INDEX connections_destination_idx ON connections (destination_id);
 -- =========================================================================
 
 CREATE TABLE requests (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            UUID PRIMARY KEY DEFAULT uuidv7(),
     source_id     UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     http_method   TEXT NOT NULL,
     http_path     TEXT NOT NULL,
@@ -200,9 +200,10 @@ CREATE TABLE request_bodies (
 );
 
 CREATE TABLE events (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     request_id      UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
     connection_id   UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    org_id          UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     status          TEXT NOT NULL DEFAULT 'queued'
                       CHECK (status IN ('queued', 'in_flight', 'delivered', 'failed', 'paused', 'dead')),
     attempt_count   INTEGER NOT NULL DEFAULT 0,
@@ -214,9 +215,10 @@ CREATE TABLE events (
 CREATE INDEX events_connection_status_idx ON events (connection_id, status);
 CREATE INDEX events_request_idx           ON events (request_id);
 CREATE INDEX events_status_created_idx    ON events (status, created_at DESC);
+CREATE INDEX events_org_created_idx       ON events (org_id, created_at DESC, id DESC);
 
 CREATE TABLE attempts (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                UUID PRIMARY KEY DEFAULT uuidv7(),
     event_id          UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     attempt_num       INTEGER NOT NULL,
     response_status   INTEGER,
@@ -235,7 +237,7 @@ CREATE INDEX attempts_event_idx ON attempts (event_id);
 -- =========================================================================
 
 CREATE TABLE cli_sessions (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            UUID PRIMARY KEY DEFAULT uuidv7(),
     source_id     UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     token_hash    BYTEA NOT NULL,
     last_seen_at  TIMESTAMPTZ,

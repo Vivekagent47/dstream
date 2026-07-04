@@ -1,13 +1,16 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
@@ -29,17 +32,25 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
-		}
+
+	params := store.ListEventsByOrgParams{
+		OrgID:     store.UUID(p.OrgID),
+		PageLimit: int32(limit),
 	}
-	rows, err := d.Queries.ListEventsByOrg(r.Context(), store.ListEventsByOrgParams{
-		OrgID:  store.UUID(p.OrgID),
-		Limit:  int32(limit),
-		Offset: int32(offset),
-	})
+	// Keyset cursor: opaque token carrying the previous page's last
+	// (created_at, id). Absent on the first page; the query treats a NULL
+	// before_created_at as "no lower bound".
+	if cur := r.URL.Query().Get("cursor"); cur != "" {
+		ts, id, ok := decodeEventCursor(cur)
+		if !ok {
+			httpErr(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		params.BeforeCreatedAt = pgtype.Timestamptz{Time: ts, Valid: true}
+		params.BeforeID = store.UUID(id)
+	}
+
+	rows, err := d.Queries.ListEventsByOrg(r.Context(), params)
 	if err != nil {
 		httpErr(w, http.StatusInternalServerError, "list")
 		return
@@ -48,7 +59,42 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 	for _, e := range rows {
 		out = append(out, eventView(e))
 	}
-	writeJSON(w, http.StatusOK, out)
+	resp := map[string]any{"events": out}
+	// A full page means there may be more; hand back a cursor pointing at the
+	// last row. A short page is the end of the stream.
+	if len(rows) == limit && limit > 0 {
+		last := rows[len(rows)-1]
+		resp["next_cursor"] = encodeEventCursor(last.CreatedAt.Time, store.GoUUID(last.ID))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// Event cursors are an opaque base64 of "<rfc3339nano>|<uuid>" — the last row
+// of the previous page. Opaque so the client treats it as a token; the format
+// is purely internal.
+func encodeEventCursor(ts time.Time, id uuid.UUID) string {
+	raw := ts.UTC().Format(time.RFC3339Nano) + "|" + id.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeEventCursor(s string) (time.Time, uuid.UUID, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	return ts, id, true
 }
 
 func (d Deps) getEvent(w http.ResponseWriter, r *http.Request) {

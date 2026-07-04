@@ -11,6 +11,3 @@ WHERE token_hash = $1
 
 -- name: MarkMagicLinkUsed :exec
 UPDATE magic_link_tokens SET used_at = now() WHERE id = $1;
-
--- name: DeleteExpiredMagicLinkTokens :exec
-DELETE FROM magic_link_tokens WHERE expires_at < now() - interval '1 day';

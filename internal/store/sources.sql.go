@@ -61,26 +61,6 @@ func (q *Queries) DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrg
 	return err
 }
 
-const getSourceByID = `-- name: GetSourceByID :one
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at FROM sources WHERE id = $1
-`
-
-func (q *Queries) GetSourceByID(ctx context.Context, id pgtype.UUID) (Source, error) {
-	row := q.db.QueryRow(ctx, getSourceByID, id)
-	var i Source
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.Name,
-		&i.Type,
-		&i.IngestToken,
-		&i.SigningConfig,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getSourceByIngestToken = `-- name: GetSourceByIngestToken :one
 SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at FROM sources WHERE ingest_token = $1
 `
@@ -159,41 +139,4 @@ func (q *Queries) ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]So
 		return nil, err
 	}
 	return items, nil
-}
-
-const updateSourceForOrg = `-- name: UpdateSourceForOrg :one
-UPDATE sources
-SET name = COALESCE($1, name),
-    signing_config = COALESCE($2, signing_config),
-    updated_at = now()
-WHERE id = $3 AND org_id = $4
-RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at
-`
-
-type UpdateSourceForOrgParams struct {
-	Name          *string     `json:"name"`
-	SigningConfig []byte      `json:"signing_config"`
-	ID            pgtype.UUID `json:"id"`
-	OrgID         pgtype.UUID `json:"org_id"`
-}
-
-func (q *Queries) UpdateSourceForOrg(ctx context.Context, arg UpdateSourceForOrgParams) (Source, error) {
-	row := q.db.QueryRow(ctx, updateSourceForOrg,
-		arg.Name,
-		arg.SigningConfig,
-		arg.ID,
-		arg.OrgID,
-	)
-	var i Source
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.Name,
-		&i.Type,
-		&i.IngestToken,
-		&i.SigningConfig,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
 }

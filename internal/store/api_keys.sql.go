@@ -124,6 +124,12 @@ UPDATE api_keys
    AND (last_used_at IS NULL OR last_used_at < now() - INTERVAL '1 minute')
 `
 
+// Debounced: skip the write (and the WAL row / heap update / index churn)
+// when the key was already touched within the past minute. Authenticated
+// API traffic can exceed 1 req/s per key; without this gate the api_keys
+// table is a write hotspot on the hot path. last_used_at accuracy at
+// 1-minute granularity is the trade-off — good enough for "when did this
+// key last work?" answer in the UI.
 func (q *Queries) TouchAPIKey(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, touchAPIKey, id)
 	return err

@@ -45,7 +45,7 @@ func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) 
 }
 
 const listAuditLogsByOrg = `-- name: ListAuditLogsByOrg :many
-SELECT a.id, a.org_id, a.actor_user_id, a.actor_api_key_id, a.actor_email_snapshot, a.action, a.target_type, a.target_id, a.metadata, a.created_at,
+SELECT a.id, a.org_id, a.actor_user_id, a.actor_api_key_id, a.actor_email_snapshot, a.action, a.target_type, a.target_id, a.metadata, a.created_at, a.org_name_snapshot,
        COALESCE(u.email::text, '')::text AS actor_user_email_join,
        COALESCE(u.name,        '')::text AS actor_user_name_join,
        COALESCE(k.name,        '')::text AS actor_api_key_name_join
@@ -81,6 +81,7 @@ type ListAuditLogsByOrgRow struct {
 	TargetID            pgtype.UUID        `json:"target_id"`
 	Metadata            []byte             `json:"metadata"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	OrgNameSnapshot     *string            `json:"org_name_snapshot"`
 	ActorUserEmailJoin  string             `json:"actor_user_email_join"`
 	ActorUserNameJoin   string             `json:"actor_user_name_join"`
 	ActorApiKeyNameJoin string             `json:"actor_api_key_name_join"`
@@ -115,6 +116,7 @@ func (q *Queries) ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrg
 			&i.TargetID,
 			&i.Metadata,
 			&i.CreatedAt,
+			&i.OrgNameSnapshot,
 			&i.ActorUserEmailJoin,
 			&i.ActorUserNameJoin,
 			&i.ActorApiKeyNameJoin,

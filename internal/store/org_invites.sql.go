@@ -130,6 +130,9 @@ type ListOrgInvitesByOrgRow struct {
 	InvitedByEmail string             `json:"invited_by_email"`
 }
 
+// Explicit column list (no SELECT i.*) — token_hash is a secret-adjacent
+// value (sha256 of the bearer token) and must never leave the database.
+// invited_by UUID is omitted; we surface invited_by_email for the UI.
 func (q *Queries) ListOrgInvitesByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgInvitesByOrgRow, error) {
 	rows, err := q.db.Query(ctx, listOrgInvitesByOrg, orgID)
 	if err != nil {

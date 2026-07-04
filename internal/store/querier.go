@@ -13,47 +13,53 @@ import (
 type Querier interface {
 	AddOrgMember(ctx context.Context, arg AddOrgMemberParams) error
 	CountOrgMembershipsForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
-	CountOrgOwners(ctx context.Context, orgID pgtype.UUID) (int64, error)
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (Attempt, error)
 	CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error)
 	CreateDestination(ctx context.Context, arg CreateDestinationParams) (Destination, error)
-	CreateEvent(ctx context.Context, arg CreateEventParams) (Event, error)
+	// Fan-out insert: one queued event per connection_id, all sharing the same
+	// request_id and org_id (a source belongs to exactly one org). One statement
+	// instead of a roundtrip per destination. RETURNING order is not guaranteed,
+	// so callers key the returned rows by connection_id rather than positional
+	// index.
+	CreateEventsBatch(ctx context.Context, arg CreateEventsBatchParams) ([]Event, error)
 	CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkTokenParams) (MagicLinkToken, error)
 	CreateOrgInvite(ctx context.Context, arg CreateOrgInviteParams) (OrgInvite, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (Organization, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
 	CreateSource(ctx context.Context, arg CreateSourceParams) (Source, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
-	DeleteConnection(ctx context.Context, id pgtype.UUID) error
 	DeleteConnectionForOrg(ctx context.Context, arg DeleteConnectionForOrgParams) error
 	DeleteDestinationForOrg(ctx context.Context, arg DeleteDestinationForOrgParams) error
-	DeleteExpiredMagicLinkTokens(ctx context.Context) error
 	DeleteOrgInvite(ctx context.Context, arg DeleteOrgInviteParams) error
 	DeleteOrgMember(ctx context.Context, arg DeleteOrgMemberParams) error
+	// Atomic remove: delete the owner row ONLY IF at least one other owner
+	// remains. Same race-free invariant as DemoteOrgOwnerIfNotLast.
 	DeleteOrgOwnerIfNotLast(ctx context.Context, arg DeleteOrgOwnerIfNotLastParams) (int64, error)
 	DeleteOrganization(ctx context.Context, id pgtype.UUID) error
-	DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error)
 	DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrgParams) error
+	// Atomic demote: change role to $3 ONLY IF at least one other owner
+	// remains. The whole operation is one statement, so two concurrent
+	// demote requests can't both pass a count-then-update race.
+	DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error)
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error)
 	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
-	GetDestinationByID(ctx context.Context, id pgtype.UUID) (Destination, error)
 	GetDestinationForOrg(ctx context.Context, arg GetDestinationForOrgParams) (Destination, error)
 	GetEventByID(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetEventForDeliveryRow, error)
+	// org_id lives on events now, so this is a direct two-column lookup (PK + org)
+	// instead of a join through connections/sources.
 	GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (Event, error)
 	GetFirstOrgForUser(ctx context.Context, userID pgtype.UUID) (pgtype.UUID, error)
 	GetOrgMember(ctx context.Context, arg GetOrgMemberParams) (OrgMember, error)
 	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error)
 	GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error)
 	GetRequestBody(ctx context.Context, requestID pgtype.UUID) ([]byte, error)
-	GetRequestByID(ctx context.Context, id pgtype.UUID) (Request, error)
-	GetSourceByID(ctx context.Context, id pgtype.UUID) (Source, error)
 	GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error)
 	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -67,10 +73,16 @@ type Querier interface {
 	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
 	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
 	ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error)
-	ListConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
 	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)
 	ListEnabledConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
+	// Keyset pagination on (created_at DESC, id DESC), backed by
+	// events_org_created_idx. First page passes NULL cursor; each subsequent page
+	// passes the last row's (created_at, id). No OFFSET, so page cost is constant
+	// regardless of depth.
 	ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams) ([]Event, error)
+	// Explicit column list (no SELECT i.*) — token_hash is a secret-adjacent
+	// value (sha256 of the bearer token) and must never leave the database.
+	// invited_by UUID is omitted; we surface invited_by_email for the UI.
 	ListOrgInvitesByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgInvitesByOrgRow, error)
 	ListOrgMembersByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgMembersByOrgRow, error)
 	ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error)
@@ -90,12 +102,21 @@ type Querier interface {
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
+	// Debounced: skip the write (and the WAL row / heap update / index churn)
+	// when the key was already touched within the past minute. Authenticated
+	// API traffic can exceed 1 req/s per key; without this gate the api_keys
+	// table is a write hotspot on the hot path. last_used_at accuracy at
+	// 1-minute granularity is the trade-off — good enough for "when did this
+	// key last work?" answer in the UI.
 	TouchAPIKey(ctx context.Context, id pgtype.UUID) error
+	// Atomic transfer: promote $2 to owner, demote the CURRENT owner (which
+	// must be the caller, $3) to admin. The two EXISTS guards make the whole
+	// thing self-cancelling under races — if the caller has been demoted by a
+	// concurrent op, or the target has been removed, the UPDATE matches 0
+	// rows and the handler returns 403/400. No SELECT-then-UPDATE TOCTOU.
 	TransferOrgOwnership(ctx context.Context, arg TransferOrgOwnershipParams) (int64, error)
-	UpdateConnection(ctx context.Context, arg UpdateConnectionParams) (Connection, error)
 	UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error
 	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (Organization, error)
-	UpdateSourceForOrg(ctx context.Context, arg UpdateSourceForOrgParams) (Source, error)
 }
 
 var _ Querier = (*Queries)(nil)

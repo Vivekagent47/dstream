@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/queue"
@@ -92,7 +93,10 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		h.Log.Warn("ingest: dedup check failed (ignored)", "err", err)
 	}
 
-	reqID := uuid.New()
+	// v7 so the request id sorts by creation time and clusters in the PK
+	// B-tree (matches the uuidv7() column defaults). NewV7 only errs if the
+	// system RNG fails, which is catastrophic — Must is appropriate.
+	reqID := uuid.Must(uuid.NewV7())
 	bodyRef := "pg:" + reqID.String()
 
 	req, err := h.Queries.CreateRequest(ctx, store.CreateRequestParams{
@@ -134,16 +138,39 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if len(conns) == 0 {
+		// Source has no enabled connections — nothing to fan out to. Still a
+		// successful ingest (the request + body are persisted for replay).
+		writeJSON(w, http.StatusAccepted, resp)
+		return
+	}
 
-	for _, c := range conns {
-		ev, err := h.Queries.CreateEvent(ctx, store.CreateEventParams{
-			RequestID:    req.ID,
-			ConnectionID: c.ID,
-		})
-		if err != nil {
-			h.Log.Error("ingest: create event", "err", err, "connection_id", store.GoUUID(c.ID))
-			continue
-		}
+	// Fan out all events in ONE insert instead of a per-connection roundtrip.
+	// RETURNING order is unspecified, so we key the per-connection retry
+	// policy by connection_id rather than positional index.
+	connIDs := make([]pgtype.UUID, len(conns))
+	connByID := make(map[uuid.UUID]store.Connection, len(conns))
+	for i, c := range conns {
+		connIDs[i] = c.ID
+		connByID[store.GoUUID(c.ID)] = c
+	}
+
+	events, err := h.Queries.CreateEventsBatch(ctx, store.CreateEventsBatchParams{
+		RequestID:     req.ID,
+		OrgID:         src.OrgID,
+		ConnectionIds: connIDs,
+	})
+	if err != nil {
+		h.Log.Error("ingest: create events batch", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// asynq exposes no batch-enqueue API, so deliveries are still enqueued
+	// one task at a time — but these are local-Redis roundtrips, not the
+	// per-connection Postgres roundtrips the batch insert above eliminated.
+	for _, ev := range events {
+		c := connByID[store.GoUUID(ev.ConnectionID)]
 		if _, err := h.Queue.EnqueueDeliver(ctx, queue.DeliverPayload{
 			EventID:             store.GoUUID(ev.ID),
 			Attempt:             0,

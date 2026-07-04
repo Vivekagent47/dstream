@@ -1,6 +1,12 @@
--- name: CreateEvent :one
-INSERT INTO events (request_id, connection_id, status)
-VALUES ($1, $2, 'queued')
+-- name: CreateEventsBatch :many
+-- Fan-out insert: one queued event per connection_id, all sharing the same
+-- request_id and org_id (a source belongs to exactly one org). One statement
+-- instead of a roundtrip per destination. RETURNING order is not guaranteed,
+-- so callers key the returned rows by connection_id rather than positional
+-- index.
+INSERT INTO events (request_id, connection_id, org_id, status)
+SELECT @request_id, conn_id, @org_id, 'queued'
+FROM unnest(@connection_ids::uuid[]) AS conn_id
 RETURNING *;
 
 -- name: GetEventByID :one
@@ -76,18 +82,24 @@ SET status        = 'queued',
 WHERE id = $1;
 
 -- name: ListEventsByOrg :many
+-- Keyset pagination on (created_at DESC, id DESC), backed by
+-- events_org_created_idx. First page passes NULL cursor; each subsequent page
+-- passes the last row's (created_at, id). No OFFSET, so page cost is constant
+-- regardless of depth.
 SELECT e.*
 FROM events e
-JOIN connections c ON c.id = e.connection_id
-JOIN sources s     ON s.id = c.source_id
-WHERE s.org_id = $1
-ORDER BY e.created_at DESC
-LIMIT $2 OFFSET $3;
+WHERE e.org_id = @org_id
+  AND (
+    @before_created_at::timestamptz IS NULL
+    OR (e.created_at, e.id) < (@before_created_at::timestamptz, @before_id::uuid)
+  )
+ORDER BY e.created_at DESC, e.id DESC
+LIMIT @page_limit;
 
 -- name: GetEventForOrg :one
+-- org_id lives on events now, so this is a direct two-column lookup (PK + org)
+-- instead of a join through connections/sources.
 SELECT e.*
   FROM events e
-  JOIN connections c ON c.id = e.connection_id
-  JOIN sources s     ON s.id = c.source_id
  WHERE e.id = $1
-   AND s.org_id = $2;
+   AND e.org_id = $2;

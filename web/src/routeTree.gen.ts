@@ -21,6 +21,7 @@ import { Route as SettingsApiKeysRouteImport } from './routes/settings.api-keys'
 import { Route as OrgsNewRouteImport } from './routes/orgs.new'
 import { Route as InvitesTokenRouteImport } from './routes/invites.$token'
 import { Route as EventsIdRouteImport } from './routes/events.$id'
+import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 
 const SourcesRoute = SourcesRouteImport.update({
   id: '/sources',
@@ -82,12 +83,18 @@ const EventsIdRoute = EventsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => EventsRoute,
 } as any)
+const AuthVerifyRoute = AuthVerifyRouteImport.update({
+  id: '/auth/verify',
+  path: '/auth/verify',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/events': typeof EventsRouteWithChildren
   '/login': typeof LoginRoute
   '/sources': typeof SourcesRoute
+  '/auth/verify': typeof AuthVerifyRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
   '/orgs/new': typeof OrgsNewRoute
@@ -102,6 +109,7 @@ export interface FileRoutesByTo {
   '/events': typeof EventsRouteWithChildren
   '/login': typeof LoginRoute
   '/sources': typeof SourcesRoute
+  '/auth/verify': typeof AuthVerifyRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
   '/orgs/new': typeof OrgsNewRoute
@@ -117,6 +125,7 @@ export interface FileRoutesById {
   '/events': typeof EventsRouteWithChildren
   '/login': typeof LoginRoute
   '/sources': typeof SourcesRoute
+  '/auth/verify': typeof AuthVerifyRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
   '/orgs/new': typeof OrgsNewRoute
@@ -133,6 +142,7 @@ export interface FileRouteTypes {
     | '/events'
     | '/login'
     | '/sources'
+    | '/auth/verify'
     | '/events/$id'
     | '/invites/$token'
     | '/orgs/new'
@@ -147,6 +157,7 @@ export interface FileRouteTypes {
     | '/events'
     | '/login'
     | '/sources'
+    | '/auth/verify'
     | '/events/$id'
     | '/invites/$token'
     | '/orgs/new'
@@ -161,6 +172,7 @@ export interface FileRouteTypes {
     | '/events'
     | '/login'
     | '/sources'
+    | '/auth/verify'
     | '/events/$id'
     | '/invites/$token'
     | '/orgs/new'
@@ -176,6 +188,7 @@ export interface RootRouteChildren {
   EventsRoute: typeof EventsRouteWithChildren
   LoginRoute: typeof LoginRoute
   SourcesRoute: typeof SourcesRoute
+  AuthVerifyRoute: typeof AuthVerifyRoute
   InvitesTokenRoute: typeof InvitesTokenRoute
   OrgsNewRoute: typeof OrgsNewRoute
   SettingsApiKeysRoute: typeof SettingsApiKeysRoute
@@ -271,6 +284,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EventsIdRouteImport
       parentRoute: typeof EventsRoute
     }
+    '/auth/verify': {
+      id: '/auth/verify'
+      path: '/auth/verify'
+      fullPath: '/auth/verify'
+      preLoaderRoute: typeof AuthVerifyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -290,6 +310,7 @@ const rootRouteChildren: RootRouteChildren = {
   EventsRoute: EventsRouteWithChildren,
   LoginRoute: LoginRoute,
   SourcesRoute: SourcesRoute,
+  AuthVerifyRoute: AuthVerifyRoute,
   InvitesTokenRoute: InvitesTokenRoute,
   OrgsNewRoute: OrgsNewRoute,
   SettingsApiKeysRoute: SettingsApiKeysRoute,

@@ -27,7 +27,6 @@ type Config struct {
 
 	DB     DBConfig     `mapstructure:"db"`
 	Redis  RedisConfig  `mapstructure:"redis"`
-	S3     S3Config     `mapstructure:"s3"`
 	Worker WorkerConfig `mapstructure:"worker"`
 	SMTP   SMTPConfig   `mapstructure:"smtp"`
 }
@@ -41,15 +40,6 @@ type RedisConfig struct {
 	Addr     string `mapstructure:"addr"`
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
-}
-
-type S3Config struct {
-	Endpoint     string `mapstructure:"endpoint"`
-	Region       string `mapstructure:"region"`
-	Bucket       string `mapstructure:"bucket"`
-	AccessKey    string `mapstructure:"access_key"`
-	SecretKey    string `mapstructure:"secret_key"`
-	UsePathStyle bool   `mapstructure:"use_path_style"`
 }
 
 type WorkerConfig struct {
@@ -86,13 +76,6 @@ func Load() (Config, error) {
 	v.SetDefault("redis.addr", "localhost:6379")
 	v.SetDefault("redis.password", "")
 	v.SetDefault("redis.db", 0)
-
-	v.SetDefault("s3.endpoint", "http://localhost:9000")
-	v.SetDefault("s3.region", "us-east-1")
-	v.SetDefault("s3.bucket", "dstream-bodies")
-	v.SetDefault("s3.access_key", "minioadmin")
-	v.SetDefault("s3.secret_key", "minioadmin")
-	v.SetDefault("s3.use_path_style", true)
 
 	v.SetDefault("worker.concurrency", 50)
 	v.SetDefault("smtp.host", "")

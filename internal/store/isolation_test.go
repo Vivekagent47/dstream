@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -344,23 +345,23 @@ func TestIsolation_ListEventsByOrg_DoesNotLeak(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s create request: %v", label, err)
 		}
-		ev, err := q.CreateEvent(ctx, store.CreateEventParams{
-			RequestID:    req.ID,
-			ConnectionID: conn.ID,
+		evs, err := q.CreateEventsBatch(ctx, store.CreateEventsBatchParams{
+			RequestID:     req.ID,
+			OrgID:         store.UUID(org.OrgID),
+			ConnectionIds: []pgtype.UUID{conn.ID},
 		})
 		if err != nil {
 			t.Fatalf("%s create event: %v", label, err)
 		}
-		return store.GoUUID(ev.ID)
+		return store.GoUUID(evs[0].ID)
 	}
 
 	evA := seedEvent(t, orgA, "isoevA")
 	evB := seedEvent(t, orgB, "isoevB")
 
 	rows, err := q.ListEventsByOrg(ctx, store.ListEventsByOrgParams{
-		OrgID:  store.UUID(orgA.OrgID),
-		Limit:  100,
-		Offset: 0,
+		OrgID:     store.UUID(orgA.OrgID),
+		PageLimit: 100,
 	})
 	if err != nil {
 		t.Fatalf("list events A: %v", err)

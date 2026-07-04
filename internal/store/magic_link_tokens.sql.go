@@ -37,15 +37,6 @@ func (q *Queries) CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkT
 	return i, err
 }
 
-const deleteExpiredMagicLinkTokens = `-- name: DeleteExpiredMagicLinkTokens :exec
-DELETE FROM magic_link_tokens WHERE expires_at < now() - interval '1 day'
-`
-
-func (q *Queries) DeleteExpiredMagicLinkTokens(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteExpiredMagicLinkTokens)
-	return err
-}
-
 const getActiveMagicLinkToken = `-- name: GetActiveMagicLinkToken :one
 SELECT id, email, token_hash, expires_at, used_at, created_at FROM magic_link_tokens
 WHERE token_hash = $1

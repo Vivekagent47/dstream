@@ -54,6 +54,13 @@ export interface Event {
   created_at: string
 }
 
+// Keyset-paginated events page. `next_cursor` is an opaque token; pass it back
+// as `cursor` to fetch the following page. Absent when there are no more rows.
+export interface EventsPage {
+  events: Event[]
+  next_cursor?: string
+}
+
 export interface Attempt {
   id: string
   attempt_num: number
@@ -166,32 +173,29 @@ export const api = {
 
   requestMagicLink: (email: string) =>
     http.post<void>('/api/auth/magic-link/request', { email }).then((r) => r.data),
+  // Consumes the single-use token same-origin so the Set-Cookie lands on the
+  // web origin. The server 302s to "/"; axios follows it (200), which we
+  // ignore — the caller drives navigation.
+  verifyMagicLink: (token: string) =>
+    http.get<void>('/api/auth/magic-link/verify', { params: { token } }).then((r) => r.data),
   logout: () => http.post<void>('/api/auth/logout').then((r) => r.data),
 
   // Orgs
   listMyOrgs: () => http.get<Org[]>('/api/orgs').then((r) => r.data),
-  createOrg: (input: { name: string }) =>
-    http.post<Org>('/api/orgs', input).then((r) => r.data),
+  createOrg: (input: { name: string }) => http.post<Org>('/api/orgs', input).then((r) => r.data),
   selectOrg: (org_id: string) =>
-    http
-      .post<{ active_org_id: string }>('/api/orgs/select', { org_id })
-      .then((r) => r.data),
+    http.post<{ active_org_id: string }>('/api/orgs/select', { org_id }).then((r) => r.data),
   updateOrg: (org_id: string, input: { name: string }) =>
     http.patch<Org>(`/api/orgs/${org_id}`, input).then((r) => r.data),
-  deleteOrg: (org_id: string) =>
-    http.delete<void>(`/api/orgs/${org_id}`).then((r) => r.data),
+  deleteOrg: (org_id: string) => http.delete<void>(`/api/orgs/${org_id}`).then((r) => r.data),
   transferOrg: (org_id: string, to_user_id: string) =>
-    http
-      .post<void>(`/api/orgs/${org_id}/transfer`, { to_user_id })
-      .then((r) => r.data),
+    http.post<void>(`/api/orgs/${org_id}/transfer`, { to_user_id }).then((r) => r.data),
 
   // Members
   listMembers: (org_id: string) =>
     http.get<Member[]>(`/api/orgs/${org_id}/members`).then((r) => r.data),
   patchMember: (org_id: string, user_id: string, role: Role) =>
-    http
-      .patch<Member>(`/api/orgs/${org_id}/members/${user_id}`, { role })
-      .then((r) => r.data),
+    http.patch<Member>(`/api/orgs/${org_id}/members/${user_id}`, { role }).then((r) => r.data),
   removeMember: (org_id: string, user_id: string) =>
     http.delete<void>(`/api/orgs/${org_id}/members/${user_id}`).then((r) => r.data),
 
@@ -202,8 +206,7 @@ export const api = {
     http.post<Invite>(`/api/orgs/${org_id}/invites`, input).then((r) => r.data),
   revokeInvite: (org_id: string, id: string) =>
     http.delete<void>(`/api/orgs/${org_id}/invites/${id}`).then((r) => r.data),
-  peekInvite: (token: string) =>
-    http.get<InvitePeek>(`/api/invites/${token}`).then((r) => r.data),
+  peekInvite: (token: string) => http.get<InvitePeek>(`/api/invites/${token}`).then((r) => r.data),
   acceptInvite: (token: string) =>
     http.post<InviteAcceptResult>(`/api/invites/${token}/accept`).then((r) => r.data),
 
@@ -211,9 +214,7 @@ export const api = {
   listAPIKeys: (org_id: string) =>
     http.get<APIKey[]>(`/api/orgs/${org_id}/api-keys`).then((r) => r.data),
   createAPIKey: (org_id: string, name: string) =>
-    http
-      .post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name })
-      .then((r) => r.data),
+    http.post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name }).then((r) => r.data),
   revokeAPIKey: (org_id: string, id: string) =>
     http.delete<void>(`/api/orgs/${org_id}/api-keys/${id}`).then((r) => r.data),
 
@@ -221,9 +222,7 @@ export const api = {
   listAudit: (filters?: AuditFilters) =>
     http.get<AuditPage>('/api/audit', { params: filters }).then((r) => r.data),
   listOrgAudit: (org_id: string, filters?: AuditFilters) =>
-    http
-      .get<AuditPage>(`/api/orgs/${org_id}/audit`, { params: filters })
-      .then((r) => r.data),
+    http.get<AuditPage>(`/api/orgs/${org_id}/audit`, { params: filters }).then((r) => r.data),
 
   // Sources
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
@@ -248,8 +247,8 @@ export const api = {
     http.patch<Connection>(`/api/connections/${id}`, input).then((r) => r.data),
 
   // Events
-  listEvents: (params?: { limit?: number; offset?: number }) =>
-    http.get<Event[]>('/api/events', { params }).then((r) => r.data),
+  listEvents: (params?: { limit?: number; cursor?: string }) =>
+    http.get<EventsPage>('/api/events', { params }).then((r) => r.data),
   getEvent: (id: string) =>
     http.get<Event & { attempts: Attempt[] }>(`/api/events/${id}`).then((r) => r.data),
   retryEvent: (id: string) => http.post<void>(`/api/events/${id}/retry`).then((r) => r.data),
@@ -267,6 +266,6 @@ export const qk = {
   sources: () => ['sources'] as const,
   destinations: () => ['destinations'] as const,
   connections: (sourceId: string) => ['connections', sourceId] as const,
-  events: (params?: { limit?: number; offset?: number }) => ['events', params ?? {}] as const,
+  events: (params?: { limit?: number; cursor?: string }) => ['events', params ?? {}] as const,
   event: (id: string) => ['event', id] as const,
 }

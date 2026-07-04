@@ -9,9 +9,6 @@ SELECT * FROM destinations
 WHERE org_id = $1
 ORDER BY created_at DESC;
 
--- name: GetDestinationByID :one
-SELECT * FROM destinations WHERE id = $1;
-
 -- name: GetDestinationForOrg :one
 SELECT * FROM destinations WHERE id = $1 AND org_id = $2;
 

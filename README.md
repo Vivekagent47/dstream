@@ -47,10 +47,10 @@ Combined positioning: **the dev IDE for webhooks**.
 
 - **Backend**: Go modular monolith, single binary, subcommands (`server`, `worker`, `cli`, `migrate`, `admin`)
 - **Frontend**: Tanstack Start (React 19, Vite, Tailwind 4, Nitro nightly, file-based routing)
-- **State**: Postgres (sqlc-generated access, goose-managed migrations)
+- **State**: Postgres 18+ (sqlc-generated access, Atlas-managed migrations). Requires 18 for the native `uuidv7()` used as the default for all UUID primary keys — time-ordered ids keep insert-heavy tables (`requests`, `events`, `attempts`) clustered in the PK B-tree instead of scattering like random v4.
 - **Queue**: Redis via `hibiken/asynq` (retries, scheduling, dead-letter) + `asynqmon` ops UI
 - **Rate limiting**: Redis token bucket via `go-redis/redis_rate`
-- **Object storage**: MinIO in dev; S3-compatible in prod (request body store)
+- **Request bodies**: stored in Postgres (`bytea`), behind a `BodyStore` interface so an S3/object-store backend can drop in later
 
 Distribution model: OSS-first, SaaS-able, self-hostable — one codebase. Modeled on PostHog / Convoy.
 
@@ -61,17 +61,30 @@ Distribution model: OSS-first, SaaS-able, self-hostable — one codebase. Modele
 ### 0. Prerequisites
 
 - Go 1.22+
-- Node 20+ and one of `bun` / `pnpm` / `npm`
-- Docker (or OrbStack / Colima)
+- Node 22+ (TanStack Start requires ≥22.12) and one of `bun` / `pnpm` / `npm`
+- Docker (or OrbStack / Colima) — the compose file pins **Postgres 18** (needed for `uuidv7()`)
 - `openssl` for the session secret
+
+> **Upgrading from a pre-18 checkout:** Postgres 18 will not start on a data
+> directory created by an older major version. If you have an existing dev
+> volume, reset it (dev data is disposable):
+> ```bash
+> docker compose -f deploy/docker/docker-compose.yml down
+> rm -rf deploy/docker/.data/postgres
+> docker compose -f deploy/docker/docker-compose.yml up -d
+> ```
+> Then re-run the migrate step below.
 
 Optional helpers:
 
 ```bash
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-go install github.com/pressly/goose/v3/cmd/goose@latest
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest   # regenerate db access (`make sqlc`)
 # add $HOME/go/bin to your PATH
 ```
+
+Migrations are embedded in the binary and applied by `dstream migrate up` — no
+external tool needed to run them. The [`atlas`](https://atlasgo.io) CLI is only
+required to *author* new migrations (`make schema-diff`, `make migrate-hash`).
 
 ### 1. Env
 
@@ -82,28 +95,51 @@ sed -i '' "s|DSTREAM_SESSION_SECRET=.*|DSTREAM_SESSION_SECRET=$SECRET|" .env
 set -a; source .env; set +a
 ```
 
-### 2. Bring up infra
+### 2. Bring up the stack
+
+The compose file defines both the infra (Postgres, Redis) and the app
+(`migrate`, `server`, `worker`). Pick a mode:
+
+**Mode A — everything in Docker, one command.** Builds the app image, runs
+migrations, then starts server + worker + the Vite frontend:
 
 ```bash
-docker compose -f deploy/docker/docker-compose.yml up -d
-docker compose -f deploy/docker/docker-compose.yml ps   # all healthy
+docker compose -f deploy/docker/docker-compose.yml up -d --build
+docker compose -f deploy/docker/docker-compose.yml ps          # all healthy / migrate exited 0
+docker compose -f deploy/docker/docker-compose.yml logs -f server   # magic-link URL lands here
 ```
 
-Services started: Postgres :5432, Redis :6379, MinIO :9000 + :9001 console. Bucket `dstream-bodies` auto-created.
+Dashboard on http://localhost:3000. Then just **step 4** (bootstrap —
+`docker compose ... exec server dstream admin bootstrap --email you@example.com --org acme`).
+The host `migrate`/`server`/`worker` and step 6 don't apply.
 
-### 3. Migrate
+**Mode B — infra in Docker, app on the host** (faster iteration; hot rebuilds
+with `make server`). Bring up only the infra services:
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml up -d postgres redis
+docker compose -f deploy/docker/docker-compose.yml ps          # all healthy
+```
+
+Either way: Postgres :5432, Redis :6379. The app reads config from `.env`; in
+Docker the DB/Redis hosts are overridden to the in-network service names
+automatically.
+
+> `env_file` points at `.env`, so step 1 must run before `up`.
+
+### 3. Migrate *(Mode B only — Mode A runs the `migrate` service for you)*
 
 ```bash
 go run ./cmd/dstream migrate up
 ```
 
-### 4. Bootstrap the first user + org + project + API key
+### 4. Bootstrap the first user + org + API key
 
 ```bash
-go run ./cmd/dstream admin bootstrap \
-  --email you@example.com \
-  --org acme \
-  --project main
+# Mode B (host):
+go run ./cmd/dstream admin bootstrap --email you@example.com --org acme
+# Mode A (Docker): docker compose -f deploy/docker/docker-compose.yml \
+#   exec server dstream admin bootstrap --email you@example.com --org acme
 # prints: api key: dsk_<prefix>_<secret>
 export DSTREAM_API_KEY=dsk_<prefix>_<secret>
 ```
@@ -114,7 +150,7 @@ Optional — promote yourself to super-admin (unlocks `/admin/queues`):
 go run ./cmd/dstream admin promote you@example.com
 ```
 
-### 5. Run backend
+### 5. Run backend *(Mode B only — in Mode A these run as containers)*
 
 Terminal A — HTTP server:
 
@@ -222,7 +258,6 @@ All config via env vars (see `.env.example` for the full list). Highlights:
 | `DSTREAM_HTTP_ADDR`          | `:8080`                                                             | Server bind address                |
 | `DSTREAM_DB_URL`             | `postgres://dstream:dstream@localhost:5432/dstream?sslmode=disable` | Postgres DSN                       |
 | `DSTREAM_REDIS_ADDR`         | `localhost:6379`                                                    | Redis (queue + dedup + rate limit) |
-| `DSTREAM_S3_*`               | MinIO defaults                                                      | Request-body storage               |
 | `DSTREAM_WORKER_CONCURRENCY` | `50`                                                                | Per-process delivery worker pool   |
 | `DSTREAM_SESSION_SECRET`     | (required, ≥32 bytes)                                               | HMAC secret for session cookies    |
 | `DSTREAM_MAGIC_LINK_TTL`     | `15m`                                                               | Sign-in link validity              |

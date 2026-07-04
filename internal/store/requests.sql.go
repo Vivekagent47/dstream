@@ -65,27 +65,3 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 	)
 	return i, err
 }
-
-const getRequestByID = `-- name: GetRequestByID :one
-SELECT id, source_id, http_method, http_path, headers, body_hash, body_ref, body_size, content_type, sig_verified, ingest_ip, received_at FROM requests WHERE id = $1
-`
-
-func (q *Queries) GetRequestByID(ctx context.Context, id pgtype.UUID) (Request, error) {
-	row := q.db.QueryRow(ctx, getRequestByID, id)
-	var i Request
-	err := row.Scan(
-		&i.ID,
-		&i.SourceID,
-		&i.HTTPMethod,
-		&i.HTTPPath,
-		&i.Headers,
-		&i.BodyHash,
-		&i.BodyRef,
-		&i.BodySize,
-		&i.ContentType,
-		&i.SigVerified,
-		&i.IngestIP,
-		&i.ReceivedAt,
-	)
-	return i, err
-}

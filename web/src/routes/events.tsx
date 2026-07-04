@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { queryOptions, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery } from '@tanstack/react-query'
 
-import { api, qk } from '#/lib/api'
+import { api, qk, type EventsPage as EventsPageData } from '#/lib/api'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { Badge } from '#/components/ui/badge'
+import { Button } from '#/components/ui/button'
 import { Card } from '#/components/ui/card'
 import {
   Table,
@@ -14,15 +15,9 @@ import {
   TableRow,
 } from '#/components/ui/table'
 
-const eventsQuery = (params: { limit: number }) =>
-  queryOptions({
-    queryKey: qk.events(params),
-    queryFn: () => api.listEvents(params),
-    refetchInterval: 5000,
-  })
+const PAGE_SIZE = 100
 
 export const Route = createFileRoute('/events')({
-  loader: ({ context }) => context.queryClient.ensureQueryData(eventsQuery({ limit: 100 })),
   component: EventsPage,
   errorComponent: AuthErrorBoundary,
 })
@@ -37,7 +32,17 @@ const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant'
 }
 
 function EventsPage() {
-  const { data: events, error } = useQuery(eventsQuery({ limit: 100 }))
+  const { data, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: qk.events({ limit: PAGE_SIZE }),
+    queryFn: ({ pageParam }) => api.listEvents({ limit: PAGE_SIZE, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage: EventsPageData) => lastPage.next_cursor,
+    // Poll for live status. react-query refetches all loaded pages; the first
+    // page (newest events) is where status churn happens.
+    refetchInterval: 5000,
+  })
+
+  const events = data?.pages.flatMap((p) => p.events) ?? []
 
   return (
     <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
@@ -58,7 +63,7 @@ function EventsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {events?.map((e) => (
+            {events.map((e) => (
               <TableRow key={e.id}>
                 <TableCell className="font-mono text-xs">
                   <Link
@@ -84,7 +89,7 @@ function EventsPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {events && events.length === 0 && (
+            {events.length === 0 && (
               <TableRow>
                 <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
                   No events yet.
@@ -94,6 +99,14 @@ function EventsPage() {
           </TableBody>
         </Table>
       </Card>
+
+      {hasNextPage && (
+        <div className="flex justify-center">
+          <Button variant="outline" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+            {isFetchingNextPage ? 'Loading…' : 'Load more'}
+          </Button>
+        </div>
+      )}
     </main>
   )
 }

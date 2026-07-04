@@ -45,6 +45,7 @@ type AuditLog struct {
 	TargetID           pgtype.UUID        `json:"target_id"`
 	Metadata           []byte             `json:"metadata"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	OrgNameSnapshot    *string            `json:"org_name_snapshot"`
 }
 
 type CliSession struct {
@@ -95,6 +96,7 @@ type Event struct {
 	NextRetryAt   pgtype.Timestamptz `json:"next_retry_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	OrgID         pgtype.UUID        `json:"org_id"`
 }
 
 type MagicLinkToken struct {

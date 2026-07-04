@@ -79,7 +79,7 @@ func (d Deps) requestMagicLink(w http.ResponseWriter, r *http.Request) {
 		if d.DevMode {
 			d.Log.Info("magic link issued (dev: open in browser)",
 				"email", email,
-				"link", "/api/auth/magic-link/verify?token="+url.QueryEscape(token))
+				"link", "/auth/verify?token="+url.QueryEscape(token))
 		} else {
 			d.Log.Info("magic link issued", "email", email)
 		}
@@ -97,8 +97,11 @@ func clientIP(r *http.Request) string {
 
 // GET /api/auth/magic-link/verify?token=... — consumes the token, runs the
 // org-bootstrap step (auto-join invites, mint a personal workspace if the
-// user is new), sets the session cookie carrying (user_id, active_org_id),
-// and redirects to the dashboard root.
+// user is new), and sets the session cookie carrying (user_id, active_org_id).
+//
+// Returns 204 (no redirect): the SPA calls this via XHR from /auth/verify and
+// drives navigation itself. A 3xx here would be followed internally by the
+// dev proxy to the API root (404), swallowing the Set-Cookie header.
 func (d Deps) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
@@ -111,7 +114,7 @@ func (d Deps) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Signer.Issue(w, store.GoUUID(u.ID), orgID)
-	http.Redirect(w, r, "/", http.StatusFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (d Deps) logout(w http.ResponseWriter, _ *http.Request) {

@@ -37,17 +37,6 @@ func (q *Queries) CountOrgMembershipsForUser(ctx context.Context, userID pgtype.
 	return count, err
 }
 
-const countOrgOwners = `-- name: CountOrgOwners :one
-SELECT count(*) FROM org_members WHERE org_id = $1 AND role = 'owner'
-`
-
-func (q *Queries) CountOrgOwners(ctx context.Context, orgID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countOrgOwners, orgID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createOrganization = `-- name: CreateOrganization :one
 INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at, updated_at
 `
@@ -108,13 +97,13 @@ func (q *Queries) DeleteOrgMember(ctx context.Context, arg DeleteOrgMemberParams
 }
 
 const deleteOrgOwnerIfNotLast = `-- name: DeleteOrgOwnerIfNotLast :execrows
-DELETE FROM org_members
- WHERE org_id = $1
-   AND user_id = $2
-   AND role = 'owner'
+DELETE FROM org_members m
+ WHERE m.org_id = $1
+   AND m.user_id = $2
+   AND m.role = 'owner'
    AND (
-     SELECT count(*) FROM org_members
-      WHERE org_id = $1 AND role = 'owner'
+     SELECT count(*) FROM org_members om
+      WHERE om.org_id = $1 AND om.role = 'owner'
    ) > 1
 `
 
@@ -123,34 +112,10 @@ type DeleteOrgOwnerIfNotLastParams struct {
 	UserID pgtype.UUID `json:"user_id"`
 }
 
+// Atomic remove: delete the owner row ONLY IF at least one other owner
+// remains. Same race-free invariant as DemoteOrgOwnerIfNotLast.
 func (q *Queries) DeleteOrgOwnerIfNotLast(ctx context.Context, arg DeleteOrgOwnerIfNotLastParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteOrgOwnerIfNotLast, arg.OrgID, arg.UserID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const demoteOrgOwnerIfNotLast = `-- name: DemoteOrgOwnerIfNotLast :execrows
-UPDATE org_members
-   SET role = $3
- WHERE org_id = $1
-   AND user_id = $2
-   AND role = 'owner'
-   AND (
-     SELECT count(*) FROM org_members
-      WHERE org_id = $1 AND role = 'owner'
-   ) > 1
-`
-
-type DemoteOrgOwnerIfNotLastParams struct {
-	OrgID  pgtype.UUID `json:"org_id"`
-	UserID pgtype.UUID `json:"user_id"`
-	Role   string      `json:"role"`
-}
-
-func (q *Queries) DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error) {
-	result, err := q.db.Exec(ctx, demoteOrgOwnerIfNotLast, arg.OrgID, arg.UserID, arg.Role)
 	if err != nil {
 		return 0, err
 	}
@@ -164,6 +129,35 @@ DELETE FROM organizations WHERE id = $1
 func (q *Queries) DeleteOrganization(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteOrganization, id)
 	return err
+}
+
+const demoteOrgOwnerIfNotLast = `-- name: DemoteOrgOwnerIfNotLast :execrows
+UPDATE org_members m
+   SET role = $3
+ WHERE m.org_id = $1
+   AND m.user_id = $2
+   AND m.role = 'owner'
+   AND (
+     SELECT count(*) FROM org_members om
+      WHERE om.org_id = $1 AND om.role = 'owner'
+   ) > 1
+`
+
+type DemoteOrgOwnerIfNotLastParams struct {
+	OrgID  pgtype.UUID `json:"org_id"`
+	UserID pgtype.UUID `json:"user_id"`
+	Role   string      `json:"role"`
+}
+
+// Atomic demote: change role to $3 ONLY IF at least one other owner
+// remains. The whole operation is one statement, so two concurrent
+// demote requests can't both pass a count-then-update race.
+func (q *Queries) DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error) {
+	result, err := q.db.Exec(ctx, demoteOrgOwnerIfNotLast, arg.OrgID, arg.UserID, arg.Role)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getFirstOrgForUser = `-- name: GetFirstOrgForUser :one
@@ -371,31 +365,36 @@ func (q *Queries) PromoteUserToSuperAdmin(ctx context.Context, email string) err
 }
 
 const transferOrgOwnership = `-- name: TransferOrgOwnership :execrows
-UPDATE org_members
+UPDATE org_members m
    SET role = CASE
-     WHEN user_id = $2 THEN 'owner'
-     WHEN role   = 'owner' AND user_id = $3 THEN 'admin'
-     ELSE role
+     WHEN m.user_id = $1 THEN 'owner'
+     WHEN m.role   = 'owner' AND m.user_id = $2 THEN 'admin'
+     ELSE m.role
    END
- WHERE org_id = $1
+ WHERE m.org_id = $3
    AND EXISTS (
-     SELECT 1 FROM org_members
-      WHERE org_id = $1 AND user_id = $3 AND role = 'owner'
+     SELECT 1 FROM org_members om
+      WHERE om.org_id = $3 AND om.user_id = $2 AND om.role = 'owner'
    )
    AND EXISTS (
-     SELECT 1 FROM org_members
-      WHERE org_id = $1 AND user_id = $2
+     SELECT 1 FROM org_members om
+      WHERE om.org_id = $3 AND om.user_id = $1
    )
 `
 
 type TransferOrgOwnershipParams struct {
-	OrgID        pgtype.UUID `json:"org_id"`
 	ToUserID     pgtype.UUID `json:"to_user_id"`
 	CallerUserID pgtype.UUID `json:"caller_user_id"`
+	OrgID        pgtype.UUID `json:"org_id"`
 }
 
+// Atomic transfer: promote $2 to owner, demote the CURRENT owner (which
+// must be the caller, $3) to admin. The two EXISTS guards make the whole
+// thing self-cancelling under races — if the caller has been demoted by a
+// concurrent op, or the target has been removed, the UPDATE matches 0
+// rows and the handler returns 403/400. No SELECT-then-UPDATE TOCTOU.
 func (q *Queries) TransferOrgOwnership(ctx context.Context, arg TransferOrgOwnershipParams) (int64, error) {
-	result, err := q.db.Exec(ctx, transferOrgOwnership, arg.OrgID, arg.ToUserID, arg.CallerUserID)
+	result, err := q.db.Exec(ctx, transferOrgOwnership, arg.ToUserID, arg.CallerUserID, arg.OrgID)
 	if err != nil {
 		return 0, err
 	}

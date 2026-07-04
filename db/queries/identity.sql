@@ -51,33 +51,30 @@ UPDATE org_members SET role = $3 WHERE org_id = $1 AND user_id = $2;
 -- name: DeleteOrgMember :exec
 DELETE FROM org_members WHERE org_id = $1 AND user_id = $2;
 
--- name: CountOrgOwners :one
-SELECT count(*) FROM org_members WHERE org_id = $1 AND role = 'owner';
-
 -- name: DemoteOrgOwnerIfNotLast :execrows
 -- Atomic demote: change role to $3 ONLY IF at least one other owner
 -- remains. The whole operation is one statement, so two concurrent
 -- demote requests can't both pass a count-then-update race.
-UPDATE org_members
+UPDATE org_members m
    SET role = $3
- WHERE org_id = $1
-   AND user_id = $2
-   AND role = 'owner'
+ WHERE m.org_id = $1
+   AND m.user_id = $2
+   AND m.role = 'owner'
    AND (
-     SELECT count(*) FROM org_members
-      WHERE org_id = $1 AND role = 'owner'
+     SELECT count(*) FROM org_members om
+      WHERE om.org_id = $1 AND om.role = 'owner'
    ) > 1;
 
 -- name: DeleteOrgOwnerIfNotLast :execrows
 -- Atomic remove: delete the owner row ONLY IF at least one other owner
 -- remains. Same race-free invariant as DemoteOrgOwnerIfNotLast.
-DELETE FROM org_members
- WHERE org_id = $1
-   AND user_id = $2
-   AND role = 'owner'
+DELETE FROM org_members m
+ WHERE m.org_id = $1
+   AND m.user_id = $2
+   AND m.role = 'owner'
    AND (
-     SELECT count(*) FROM org_members
-      WHERE org_id = $1 AND role = 'owner'
+     SELECT count(*) FROM org_members om
+      WHERE om.org_id = $1 AND om.role = 'owner'
    ) > 1;
 
 -- name: ListOrgsForUser :many
@@ -100,18 +97,18 @@ SELECT m.org_id
 -- thing self-cancelling under races — if the caller has been demoted by a
 -- concurrent op, or the target has been removed, the UPDATE matches 0
 -- rows and the handler returns 403/400. No SELECT-then-UPDATE TOCTOU.
-UPDATE org_members
+UPDATE org_members m
    SET role = CASE
-     WHEN user_id = $2 THEN 'owner'
-     WHEN role   = 'owner' AND user_id = $3 THEN 'admin'
-     ELSE role
+     WHEN m.user_id = @to_user_id THEN 'owner'
+     WHEN m.role   = 'owner' AND m.user_id = @caller_user_id THEN 'admin'
+     ELSE m.role
    END
- WHERE org_id = $1
+ WHERE m.org_id = @org_id
    AND EXISTS (
-     SELECT 1 FROM org_members
-      WHERE org_id = $1 AND user_id = $3 AND role = 'owner'
+     SELECT 1 FROM org_members om
+      WHERE om.org_id = @org_id AND om.user_id = @caller_user_id AND om.role = 'owner'
    )
    AND EXISTS (
-     SELECT 1 FROM org_members
-      WHERE org_id = $1 AND user_id = $2
+     SELECT 1 FROM org_members om
+      WHERE om.org_id = @org_id AND om.user_id = @to_user_id
    );

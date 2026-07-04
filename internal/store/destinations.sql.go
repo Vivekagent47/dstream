@@ -71,29 +71,6 @@ func (q *Queries) DeleteDestinationForOrg(ctx context.Context, arg DeleteDestina
 	return err
 }
 
-const getDestinationByID = `-- name: GetDestinationByID :one
-SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations WHERE id = $1
-`
-
-func (q *Queries) GetDestinationByID(ctx context.Context, id pgtype.UUID) (Destination, error) {
-	row := q.db.QueryRow(ctx, getDestinationByID, id)
-	var i Destination
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.Name,
-		&i.Type,
-		&i.Url,
-		&i.AuthConfig,
-		&i.RateLimitRps,
-		&i.RateLimitBurst,
-		&i.MaxInflight,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getDestinationForOrg = `-- name: GetDestinationForOrg :one
 SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations WHERE id = $1 AND org_id = $2
 `
