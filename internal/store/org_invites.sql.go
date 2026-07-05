@@ -50,6 +50,21 @@ func (q *Queries) CreateOrgInvite(ctx context.Context, arg CreateOrgInviteParams
 	return i, err
 }
 
+const deleteExpiredOrgInvites = `-- name: DeleteExpiredOrgInvites :execrows
+DELETE FROM org_invites WHERE expires_at < $1
+`
+
+// Reclaim invites whose expiry passed before @cutoff (accepted or not — an
+// accepted invite is consumed, a lapsed one is dead). Backed by
+// org_invites_expires_idx.
+func (q *Queries) DeleteExpiredOrgInvites(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredOrgInvites, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteOrgInvite = `-- name: DeleteOrgInvite :exec
 DELETE FROM org_invites WHERE id = $1 AND org_id = $2
 `

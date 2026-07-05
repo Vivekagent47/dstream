@@ -39,3 +39,9 @@ SELECT i.id,
 
 -- name: DeleteOrgInvite :exec
 DELETE FROM org_invites WHERE id = $1 AND org_id = $2;
+
+-- name: DeleteExpiredOrgInvites :execrows
+-- Reclaim invites whose expiry passed before @cutoff (accepted or not — an
+-- accepted invite is consumed, a lapsed one is dead). Backed by
+-- org_invites_expires_idx.
+DELETE FROM org_invites WHERE expires_at < @cutoff;

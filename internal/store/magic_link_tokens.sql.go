@@ -37,6 +37,21 @@ func (q *Queries) CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkT
 	return i, err
 }
 
+const deleteExpiredMagicLinkTokens = `-- name: DeleteExpiredMagicLinkTokens :execrows
+DELETE FROM magic_link_tokens WHERE expires_at < $1
+`
+
+// Reclaim spent + lapsed tokens: expires_at is set at creation, so both used
+// and never-used tokens become deletable once their expiry is older than
+// @cutoff. Backed by magic_link_tokens_expires_idx.
+func (q *Queries) DeleteExpiredMagicLinkTokens(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMagicLinkTokens, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getActiveMagicLinkToken = `-- name: GetActiveMagicLinkToken :one
 SELECT id, email, token_hash, expires_at, used_at, created_at FROM magic_link_tokens
 WHERE token_hash = $1

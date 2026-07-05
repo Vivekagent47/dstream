@@ -72,6 +72,9 @@ func workerCmd() *cobra.Command {
 			// dead CLI tunnels. Stops when ctx is cancelled (worker shutdown).
 			go h.RunReaper(ctx)
 
+			// Background maintenance: purge expired magic-link tokens + invites.
+			go runMaintenance(ctx, q, log)
+
 			return srv.Run(mux)
 		},
 	}

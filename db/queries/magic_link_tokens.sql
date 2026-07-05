@@ -15,3 +15,9 @@ FOR UPDATE;
 
 -- name: MarkMagicLinkUsed :exec
 UPDATE magic_link_tokens SET used_at = now() WHERE id = $1;
+
+-- name: DeleteExpiredMagicLinkTokens :execrows
+-- Reclaim spent + lapsed tokens: expires_at is set at creation, so both used
+-- and never-used tokens become deletable once their expiry is older than
+-- @cutoff. Backed by magic_link_tokens_expires_idx.
+DELETE FROM magic_link_tokens WHERE expires_at < @cutoff;

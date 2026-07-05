@@ -52,6 +52,14 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteConnectionForOrg(ctx context.Context, arg DeleteConnectionForOrgParams) error
 	DeleteDestinationForOrg(ctx context.Context, arg DeleteDestinationForOrgParams) error
+	// Reclaim spent + lapsed tokens: expires_at is set at creation, so both used
+	// and never-used tokens become deletable once their expiry is older than
+	// @cutoff. Backed by magic_link_tokens_expires_idx.
+	DeleteExpiredMagicLinkTokens(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// Reclaim invites whose expiry passed before @cutoff (accepted or not — an
+	// accepted invite is consumed, a lapsed one is dead). Backed by
+	// org_invites_expires_idx.
+	DeleteExpiredOrgInvites(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	DeleteOrgInvite(ctx context.Context, arg DeleteOrgInviteParams) error
 	DeleteOrgMember(ctx context.Context, arg DeleteOrgMemberParams) error
 	// Atomic remove: delete the owner row ONLY IF at least one other owner
