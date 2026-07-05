@@ -11,3 +11,8 @@ dist-ssr
 .vinxi
 __unconfig*
 todos.json
+
+# bun is the only package manager here — never commit npm/pnpm/yarn lockfiles
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
