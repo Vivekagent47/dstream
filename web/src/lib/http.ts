@@ -46,9 +46,9 @@ http.interceptors.response.use(
 
 // isUnauthorized is a small helper for route-level error boundaries that
 // need to distinguish "session expired / kicked out" from a regular 5xx.
-// We treat both 401 and 403 as "send the user back to /login": 403 is what
-// the server returns when the session cookie HMAC verifies but the user is
-// no longer in any org / has been removed.
+// We treat both 401 and 403 as "send the user back to the homepage": 403 is
+// what the server returns when the session cookie HMAC verifies but the user
+// is no longer in any org / has been removed.
 export function isUnauthorized(err: unknown): boolean {
   if (err instanceof ApiError) {
     return err.status === 401 || err.status === 403

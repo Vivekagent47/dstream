@@ -1,9 +1,11 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 
 import { api, qk } from '#/lib/api'
+import { capitalize } from '#/lib/utils'
+import { PageHeader } from '#/components/TopBar'
 import { Button } from '#/components/ui/button'
-import { Card } from '#/components/ui/card'
 import {
   Table,
   TableBody,
@@ -35,54 +37,53 @@ function InvitesPage() {
 
   const revoke = useMutation({
     mutationFn: (id: string) => api.revokeInvite(orgId as string, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.invites(orgId as string) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.invites(orgId as string) })
+      toast.success('Invite revoked')
+    },
+    onError: (e) => toast.error((e as Error).message),
   })
 
-  if (meError) return <Navigate to="/login" />
+  if (meError) return <Navigate to="/" />
   if (me && !orgId) return <Navigate to="/orgs/new" />
 
-  return (
-    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
-      <h1 className="text-2xl font-semibold">Pending invites</h1>
-      <p className="text-sm text-muted-foreground">
-        Issue new invites from the{' '}
-        <a href="/settings/members" className="underline">
-          Members
-        </a>{' '}
-        page.
-      </p>
+  const rows = invites.data ?? []
 
-      <Card>
+  return (
+    <div className="flex flex-1 flex-col">
+      <PageHeader title="Pending invites" />
+
+      <div className="flex-1 overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Email</TableHead>
+              <TableHead className="pl-6">Email</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Invited by</TableHead>
               <TableHead>Expires</TableHead>
-              <TableHead className="w-[100px]" />
+              <TableHead className="w-[90px] pr-6" />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {invites.data?.map((inv) => {
+            {rows.map((inv) => {
               const accepted = !!inv.accepted_at
               return (
                 <TableRow key={inv.id}>
-                  <TableCell className="font-medium">{inv.email}</TableCell>
-                  <TableCell>{inv.role}</TableCell>
+                  <TableCell className="pl-6 font-medium">{inv.email}</TableCell>
+                  <TableCell>{capitalize(inv.role)}</TableCell>
                   <TableCell>
                     <Badge variant={accepted ? 'success' : 'secondary'}>
-                      {accepted ? 'accepted' : 'pending'}
+                      {accepted ? 'Accepted' : 'Pending'}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {inv.invited_by_email ?? '—'}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
                     {new Date(inv.expires_at).toLocaleString()}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="pr-6 text-right">
                     {canManage && !accepted && (
                       <Button
                         size="sm"
@@ -97,16 +98,20 @@ function InvitesPage() {
                 </TableRow>
               )
             })}
-            {invites.data && invites.data.length === 0 && (
+            {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
-                  No invites.
+                <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
+                  No pending invites — issue one from the Members page.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
-      </Card>
-    </main>
+      </div>
+
+      <footer className="border-t border-border px-6 py-3 text-sm text-muted-foreground">
+        Viewing {rows.length} {rows.length === 1 ? 'invite' : 'invites'}
+      </footer>
+    </div>
   )
 }

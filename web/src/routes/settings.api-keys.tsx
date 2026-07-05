@@ -1,17 +1,13 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { toast } from 'sonner'
+import { Plus } from 'lucide-react'
 
 import { api, qk, type APIKeyCreateResult } from '#/lib/api'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
+import { PageHeader } from '#/components/TopBar'
 import { Button } from '#/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '#/components/ui/card'
 import { Input } from '#/components/ui/input'
 import { Label } from '#/components/ui/label'
 import {
@@ -50,110 +46,75 @@ function APIKeysPage() {
     enabled: !!orgId,
   })
 
-  const [name, setName] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
   const [created, setCreated] = useState<APIKeyCreateResult | null>(null)
   const [copied, setCopied] = useState(false)
 
-  const create = useMutation({
-    mutationFn: () => api.createAPIKey(orgId as string, name),
-    onSuccess: (result) => {
-      setCreated(result)
-      setName('')
-      qc.invalidateQueries({ queryKey: qk.apiKeys(orgId as string) })
-    },
-  })
-
   const revoke = useMutation({
     mutationFn: (id: string) => api.revokeAPIKey(orgId as string, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.apiKeys(orgId as string) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.apiKeys(orgId as string) })
+      toast.success('API key revoked')
+    },
+    onError: (e) => toast.error((e as Error).message),
   })
 
-  if (meError) return <Navigate to="/login" />
+  if (meError) return <Navigate to="/" />
   if (me && !orgId) return <Navigate to="/orgs/new" />
 
-  const [copyError, setCopyError] = useState(false)
-  async function copyKey() {
+  function copyKey() {
     if (!created) return
-    setCopyError(false)
-    try {
-      await navigator.clipboard.writeText(created.key)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // navigator.clipboard fails on non-https origins, iframes, or when
-      // permission is denied. Surface the failure so the user can hand-
-      // select the key text instead of silently believing it's copied.
-      setCopyError(true)
-    }
+    navigator.clipboard
+      .writeText(created.key)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2000)
+      })
+      .catch(() =>
+        toast.error('Couldn’t access the clipboard. Select the key and copy it manually.'),
+      )
   }
 
+  const rows = keys.data ?? []
+
   return (
-    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
-      <h1 className="text-2xl font-semibold">API keys</h1>
+    <div className="flex flex-1 flex-col">
+      <PageHeader
+        title="API keys"
+        actions={
+          canManage ? (
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="h-4 w-4" /> New key
+            </Button>
+          ) : undefined
+        }
+      />
 
-      {canManage && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Create an API key</CardTitle>
-            <CardDescription>
-              API keys are scoped to this organization. Store the secret somewhere safe — it
-              won&rsquo;t be shown again.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                create.mutate()
-              }}
-              className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end"
-            >
-              <div className="space-y-2">
-                <Label htmlFor="api-name">Name</Label>
-                <Input
-                  id="api-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="ci-prod"
-                  required
-                />
-              </div>
-              <Button type="submit" disabled={create.isPending || !name.trim()}>
-                {create.isPending ? 'Creating…' : 'Create key'}
-              </Button>
-            </form>
-            {create.error && (
-              <p className="mt-3 text-sm text-destructive">{(create.error as Error).message}</p>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
+      <div className="flex-1 overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Name</TableHead>
+              <TableHead className="pl-6">Name</TableHead>
               <TableHead>Prefix</TableHead>
               <TableHead>Last used</TableHead>
               <TableHead>Created</TableHead>
-              <TableHead className="w-[100px]" />
+              <TableHead className="w-[100px] pr-6" />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {keys.data?.map((k) => (
+            {rows.map((k) => (
               <TableRow key={k.id}>
-                <TableCell className="font-medium">{k.name}</TableCell>
+                <TableCell className="pl-6 font-medium">{k.name}</TableCell>
                 <TableCell>
                   <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{k.prefix}…</code>
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="whitespace-nowrap text-muted-foreground">
                   {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="whitespace-nowrap text-muted-foreground">
                   {new Date(k.created_at).toLocaleDateString()}
                 </TableCell>
-                <TableCell>
+                <TableCell className="pr-6 text-right">
                   {canManage && (
                     <ConfirmDialog
                       title="Revoke API key?"
@@ -173,24 +134,34 @@ function APIKeysPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {keys.data && keys.data.length === 0 && (
+            {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-sm text-muted-foreground">
+                <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
                   No API keys yet.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
-      </Card>
+      </div>
+
+      <footer className="border-t border-border px-6 py-3 text-sm text-muted-foreground">
+        Viewing {rows.length} {rows.length === 1 ? 'key' : 'keys'}
+      </footer>
+
+      {orgId && (
+        <CreateKeyDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          orgId={orgId}
+          onCreated={setCreated}
+        />
+      )}
 
       {/*
-        The secret-reveal dialog must NOT close on Esc or outside-click —
-        the plaintext key is shown exactly once and a stray Esc would lose
-        it forever. We only close via the "I've saved it" button. To enforce
-        this we (a) drop the onOpenChange handler so Base UI's internal
-        close requests can't drive state, and (b) ignore the Esc keydown at
-        the wrapper level.
+        The secret-reveal dialog must NOT close on Esc or outside-click — the
+        plaintext key is shown exactly once and a stray Esc would lose it
+        forever. We only close via the "I've saved it" button.
       */}
       <Dialog open={!!created}>
         <DialogContent
@@ -206,7 +177,7 @@ function APIKeysPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+            <Label className="text-xs tracking-wide text-muted-foreground uppercase">
               Secret key
             </Label>
             <div className="flex items-center gap-2">
@@ -217,17 +188,81 @@ function APIKeysPage() {
                 {copied ? 'Copied' : 'Copy'}
               </Button>
             </div>
-            {copyError && (
-              <p className="text-xs text-destructive">
-                Couldn&rsquo;t access the clipboard. Select the key above and copy it manually.
-              </p>
-            )}
           </div>
           <DialogFooter>
             <Button onClick={() => setCreated(null)}>I&rsquo;ve saved it</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </main>
+    </div>
+  )
+}
+
+function CreateKeyDialog({
+  open,
+  onOpenChange,
+  orgId,
+  onCreated,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  orgId: string
+  onCreated: (result: APIKeyCreateResult) => void
+}) {
+  const qc = useQueryClient()
+  const [name, setName] = useState('')
+
+  const create = useMutation({
+    mutationFn: () => api.createAPIKey(orgId, name),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: qk.apiKeys(orgId) })
+      onOpenChange(false)
+      setName('')
+      onCreated(result)
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>New API key</DialogTitle>
+          <DialogDescription>
+            API keys are scoped to this organization. The secret is shown once on creation.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            create.mutate()
+          }}
+          className="space-y-4"
+        >
+          <div>
+            <Label htmlFor="api-name" className="mb-2 block">
+              Name
+            </Label>
+            <Input
+              id="api-name"
+              className="w-full"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="ci-prod"
+              required
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={create.isPending || !name.trim()}>
+              {create.isPending ? 'Creating…' : 'Create key'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

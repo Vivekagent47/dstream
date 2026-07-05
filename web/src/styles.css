@@ -173,3 +173,13 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Centered content column for app pages. Without this the class was a no-op
+   and every page rendered full-bleed (buttons/inputs stretched across the
+   whole viewport). 64rem suits the data tables (events, sources); settings
+   forms use a tighter max-w-3xl directly. */
+@utility page-wrap {
+  margin-inline: auto;
+  width: 100%;
+  max-width: 64rem;
+}

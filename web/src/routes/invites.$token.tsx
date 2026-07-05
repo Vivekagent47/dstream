@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { toast } from 'sonner'
+
 import { api, qk } from '#/lib/api'
 import { Button } from '#/components/ui/button'
 import {
@@ -43,8 +45,10 @@ function InvitePage() {
       qc.removeQueries({
         predicate: (q) => q.queryKey[0] !== 'me',
       })
+      toast.success(`Joined ${peek.data?.org_name ?? 'the organization'}`)
       navigate({ to: '/events' })
     },
+    onError: (e) => toast.error((e as Error).message),
   })
 
   return (
@@ -80,9 +84,6 @@ function InvitePage() {
               <Button onClick={() => accept.mutate()} disabled={accept.isPending}>
                 {accept.isPending ? 'Accepting…' : 'Accept invite'}
               </Button>
-              {accept.error && (
-                <p className="text-sm text-destructive">{(accept.error as Error).message}</p>
-              )}
             </>
           )}
 

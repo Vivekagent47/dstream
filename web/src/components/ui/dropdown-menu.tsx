@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { Menu as BaseMenu } from '@base-ui-components/react/menu'
 
-import { cn } from '#/lib/utils'
+import { cn } from '#/lib/utils.ts'
 
 const DropdownMenu = BaseMenu.Root
 const DropdownMenuGroup = BaseMenu.Group
@@ -14,7 +14,10 @@ const DropdownMenuTrigger = React.forwardRef<
     return (
       <BaseMenu.Trigger
         ref={ref}
-        nativeButton={false}
+        // Our triggers are always a real <button> (Button / SidebarMenuButton),
+        // so tell Base UI that — nativeButton={false} made it warn and apply
+        // the wrong a11y attributes on every dropdown.
+        nativeButton
         render={children as React.ReactElement<Record<string, unknown>>}
         {...props}
       />

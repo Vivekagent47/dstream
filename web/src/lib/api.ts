@@ -232,6 +232,7 @@ export const api = {
     http.post<Source>('/api/sources', input).then((r) => r.data),
   patchSource: (id: string, input: { enabled: boolean }) =>
     http.patch<Source>(`/api/sources/${id}`, input).then((r) => r.data),
+  deleteSource: (id: string) => http.delete<void>(`/api/sources/${id}`).then((r) => r.data),
 
   // Destinations
   listDestinations: () => http.get<Destination[]>('/api/destinations').then((r) => r.data),
@@ -239,6 +240,8 @@ export const api = {
     http.post<Destination>('/api/destinations', input).then((r) => r.data),
   patchDestination: (id: string, input: Partial<Destination>) =>
     http.patch<Destination>(`/api/destinations/${id}`, input).then((r) => r.data),
+  deleteDestination: (id: string) =>
+    http.delete<void>(`/api/destinations/${id}`).then((r) => r.data),
 
   // Connections
   listConnections: (sourceId: string) =>

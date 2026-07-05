@@ -5,8 +5,8 @@ import { isUnauthorized } from '#/lib/http'
 
 // AuthErrorBoundary is the per-route `errorComponent` for authenticated
 // pages. If the underlying loader/query failed with 401/403 we send the
-// user to /login (their cookie likely expired or they were removed from
-// the org). Other errors render a plain message — they're rare and
+// user to the homepage (their cookie likely expired or they were removed
+// from the org). Other errors render a plain message — they're rare and
 // usually transient.
 //
 // Tanstack Router's errorComponent receives the thrown error from
@@ -18,14 +18,14 @@ export function AuthErrorBoundary({ error }: { error: unknown }) {
 
   useEffect(() => {
     if (unauth) {
-      navigate({ to: '/login' })
+      navigate({ to: '/' })
     }
   }, [unauth, navigate])
 
   if (unauth) {
     return (
       <main className="page-wrap mx-auto px-4 pt-10 pb-16">
-        <p className="text-sm text-muted-foreground">Redirecting to sign in…</p>
+        <p className="text-sm text-muted-foreground">Redirecting…</p>
       </main>
     )
   }

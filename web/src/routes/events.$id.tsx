@@ -1,6 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { toast } from 'sonner'
+
 import { api, qk } from '#/lib/api'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { Badge } from '#/components/ui/badge'
@@ -22,7 +24,11 @@ const eventQuery = (id: string) =>
   })
 
 export const Route = createFileRoute('/events/$id')({
-  loader: ({ context, params }) => context.queryClient.ensureQueryData(eventQuery(params.id)),
+  // Client-only prefetch — SSR can't forward the session cookie (see sources).
+  loader: ({ context, params }) =>
+    typeof window === 'undefined'
+      ? undefined
+      : context.queryClient.ensureQueryData(eventQuery(params.id)),
   component: EventDetail,
   errorComponent: AuthErrorBoundary,
 })
@@ -34,7 +40,11 @@ function EventDetail() {
 
   const retry = useMutation({
     mutationFn: () => api.retryEvent(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.event(id) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.event(id) })
+      toast.success('Retry queued')
+    },
+    onError: (e) => toast.error((e as Error).message),
   })
 
   if (error) {
@@ -63,7 +73,6 @@ function EventDetail() {
         </Button>
       </div>
 
-      {retry.error && <p className="text-sm text-destructive">{(retry.error as Error).message}</p>}
 
       <Card>
         <CardContent className="grid grid-cols-2 gap-x-6 gap-y-3 p-6 sm:grid-cols-4">

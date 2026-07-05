@@ -3,6 +3,8 @@ import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 import { ArrowRight, CheckCircle2, MailCheck } from 'lucide-react'
 
+import { toast } from 'sonner'
+
 import { api } from '#/lib/api'
 import ThemeToggle from '#/components/ThemeToggle'
 import { Button } from '#/components/ui/button'
@@ -60,6 +62,7 @@ function Login() {
     // per-email rate-limit key is stable across casing variations the
     // user might type.
     mutationFn: (e: string) => api.requestMagicLink(e.trim().toLowerCase()),
+    onError: (e) => toast.error((e as Error).message),
   })
 
   function submit(e: React.FormEvent) {
@@ -127,9 +130,6 @@ function Login() {
                     placeholder="you@example.com"
                   />
                 </div>
-                {request.error && (
-                  <p className="text-sm text-destructive">{(request.error as Error).message}</p>
-                )}
                 <Button type="submit" className="w-full" disabled={request.isPending}>
                   {request.isPending ? (
                     'Sending…'

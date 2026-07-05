@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { toast } from 'sonner'
+
 import { api, qk } from '#/lib/api'
 import { Button } from '#/components/ui/button'
 import {
@@ -33,8 +35,10 @@ function NewOrgPage() {
       qc.removeQueries({
         predicate: (q) => q.queryKey[0] !== 'me',
       })
+      toast.success('Organization created')
       navigate({ to: '/sources' })
     },
+    onError: (e) => toast.error((e as Error).message),
   })
 
   function submit(e: React.FormEvent) {
@@ -70,9 +74,6 @@ function NewOrgPage() {
             <Button type="submit" disabled={create.isPending || !name.trim()}>
               {create.isPending ? 'Creating…' : 'Create organization'}
             </Button>
-            {create.error && (
-              <p className="text-sm text-destructive">{(create.error as Error).message}</p>
-            )}
           </form>
         </CardContent>
       </Card>

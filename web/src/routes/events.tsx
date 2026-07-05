@@ -2,10 +2,11 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useInfiniteQuery } from '@tanstack/react-query'
 
 import { api, qk, type EventsPage as EventsPageData } from '#/lib/api'
+import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
+import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
 import { Button } from '#/components/ui/button'
-import { Card } from '#/components/ui/card'
 import {
   Table,
   TableBody,
@@ -45,27 +46,28 @@ function EventsPage() {
   const events = data?.pages.flatMap((p) => p.events) ?? []
 
   return (
-    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
-      <h1 className="text-2xl font-semibold">Events</h1>
+    <div className="flex flex-1 flex-col">
+      <PageHeader title="Events" />
 
-      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
-
-      <Card>
+      <div className="flex-1 overflow-x-auto">
+        {error && (
+          <p className="px-6 py-3 text-sm text-destructive">{(error as Error).message}</p>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>ID</TableHead>
+              <TableHead className="pl-6">ID</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Attempts</TableHead>
               <TableHead>Last attempt</TableHead>
               <TableHead>Next retry</TableHead>
-              <TableHead>Created</TableHead>
+              <TableHead className="pr-6">Created</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {events.map((e) => (
               <TableRow key={e.id}>
-                <TableCell className="font-mono text-xs">
+                <TableCell className="pl-6 font-mono text-xs">
                   <Link
                     to="/events/$id"
                     params={{ id: e.id }}
@@ -75,38 +77,49 @@ function EventsPage() {
                   </Link>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant[e.status] || 'secondary'}>{e.status}</Badge>
+                  <Badge variant={statusVariant[e.status] || 'secondary'}>
+                    {capitalize(e.status)}
+                  </Badge>
                 </TableCell>
                 <TableCell>{e.attempt_count}</TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="whitespace-nowrap text-muted-foreground">
                   {e.last_attempt_at ? new Date(e.last_attempt_at).toLocaleString() : '—'}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="whitespace-nowrap text-muted-foreground">
                   {e.next_retry_at ? new Date(e.next_retry_at).toLocaleString() : '—'}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="pr-6 whitespace-nowrap text-muted-foreground">
                   {new Date(e.created_at).toLocaleString()}
                 </TableCell>
               </TableRow>
             ))}
             {events.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
+                <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
                   No events yet.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
-      </Card>
+      </div>
 
-      {hasNextPage && (
-        <div className="flex justify-center">
-          <Button variant="outline" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+      <footer className="flex items-center gap-3 border-t border-border px-6 py-3 text-sm text-muted-foreground">
+        <span>
+          Viewing {events.length} {events.length === 1 ? 'event' : 'events'}
+        </span>
+        {hasNextPage && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+          >
             {isFetchingNextPage ? 'Loading…' : 'Load more'}
           </Button>
-        </div>
-      )}
-    </main>
+        )}
+      </footer>
+    </div>
   )
 }

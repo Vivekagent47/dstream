@@ -3,10 +3,10 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Fragment, useMemo, useState } from 'react'
 
 import { api, qk, type AuditFilters, type AuditPage } from '#/lib/api'
+import { capitalize } from '#/lib/utils'
+import { PageHeader } from '#/components/TopBar'
 import { Button } from '#/components/ui/button'
-import { Card } from '#/components/ui/card'
 import { Input } from '#/components/ui/input'
-import { Label } from '#/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -27,7 +27,13 @@ export const Route = createFileRoute('/settings/audit')({ component: AuditPage }
 
 const PAGE_SIZE = 50
 
-const TARGET_TYPES = ['', 'source', 'destination', 'connection', 'org', 'invite', 'member', 'api_key']
+const TARGET_TYPES = ['source', 'destination', 'connection', 'org', 'invite', 'member', 'api_key']
+
+// Friendly labels for target types (capitalize() would give "Api_key").
+const TARGET_LABELS: Record<string, string> = {
+  api_key: 'API key',
+}
+const targetLabel = (t: string) => TARGET_LABELS[t] ?? capitalize(t)
 
 function AuditPage() {
   const { data: me, error: meError } = useQuery({
@@ -66,101 +72,87 @@ function AuditPage() {
         before_id: pageParam ?? undefined,
       }),
     initialPageParam: undefined as number | undefined,
-    // Server returns {entries, next_before_id} — the cursor is server-driven
-    // (server omits next_before_id on the final page). We surface it as the
-    // pageParam for fetchNextPage; if undefined, react-query knows we're done.
     getNextPageParam: (lastPage: AuditPage) => lastPage.next_before_id,
     enabled: !!orgId,
   })
 
-  if (meError) return <Navigate to="/login" />
+  if (meError) return <Navigate to="/" />
   if (me && !orgId) return <Navigate to="/orgs/new" />
 
   const rows = audit.data?.pages.flatMap((p) => p.entries) ?? []
 
   return (
-    <main className="page-wrap mx-auto space-y-6 px-4 pt-10 pb-16">
-      <h1 className="text-2xl font-semibold">Audit log</h1>
+    <div className="flex flex-1 flex-col">
+      <PageHeader title="Audit log" />
 
-      <Card className="p-4">
-        <div className="grid gap-4 sm:grid-cols-3">
-          <div className="space-y-2">
-            <Label>Actor</Label>
-            <Select
-              value={actorId || 'all'}
-              onValueChange={(v) => setActorId(v === 'all' || !v ? '' : v)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All actors</SelectItem>
-                {members.data?.map((m) => (
-                  <SelectItem key={m.user_id} value={m.user_id}>
-                    {m.email}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Target type</Label>
-            <Select
-              value={targetType || 'all'}
-              onValueChange={(v) => setTargetType(v === 'all' || !v ? '' : v)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All targets</SelectItem>
-                {TARGET_TYPES.filter((t) => t).map((t) => (
-                  <SelectItem key={t} value={t}>
-                    {t}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="action-filter">Action</Label>
-            <Input
-              id="action-filter"
-              value={action}
-              onChange={(e) => setAction(e.target.value)}
-              placeholder="org.update, member.remove…"
-            />
-          </div>
-        </div>
-      </Card>
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3">
+        <Select value={actorId || 'all'} onValueChange={(v) => setActorId(v === 'all' || !v ? '' : v)}>
+          <SelectTrigger className="w-[200px]">
+            <SelectValue>
+              {(v: string | null) => {
+                if (!v || v === 'all') return 'All actors'
+                return members.data?.find((m) => m.user_id === v)?.email ?? v
+              }}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All actors</SelectItem>
+            {members.data?.map((m) => (
+              <SelectItem key={m.user_id} value={m.user_id}>
+                {m.email}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={targetType || 'all'}
+          onValueChange={(v) => setTargetType(v === 'all' || !v ? '' : v)}
+        >
+          <SelectTrigger className="w-[160px]">
+            <SelectValue>
+              {(v: string | null) => (!v || v === 'all' ? 'All targets' : targetLabel(v))}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All targets</SelectItem>
+            {TARGET_TYPES.map((t) => (
+              <SelectItem key={t} value={t}>
+                {targetLabel(t)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          className="max-w-xs"
+          value={action}
+          onChange={(e) => setAction(e.target.value)}
+          placeholder="Filter action (e.g. org.update)…"
+        />
+      </div>
 
-      <Card>
+      <div className="flex-1 overflow-x-auto">
+        {audit.error && (
+          <p className="px-6 py-3 text-sm text-destructive">{(audit.error as Error).message}</p>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>When</TableHead>
+              <TableHead className="w-[180px] pl-6">When</TableHead>
               <TableHead>Actor</TableHead>
               <TableHead>Action</TableHead>
               <TableHead>Target</TableHead>
-              <TableHead className="w-[80px]" />
+              <TableHead className="w-[90px] pr-6" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.map((row) => {
               const open = !!expanded[row.id]
-              const actor = row.actor as
-                | { email?: string; name?: string; type?: string }
-                | null
-              const target = row.target as
-                | { type?: string; id?: string; name?: string }
-                | null
+              const actor = row.actor as { email?: string; name?: string; type?: string } | null
+              const target = row.target as { type?: string; id?: string; name?: string } | null
               return (
-                // Keyed Fragment so React reconciles row pairs by audit id.
-                // A bare <> without a key was reusing the wrong DOM nodes
-                // when filters changed, leaving stale expand state.
                 <Fragment key={row.id}>
                   <TableRow>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className="pl-6 text-xs whitespace-nowrap text-muted-foreground">
                       {new Date(row.created_at).toLocaleString()}
                     </TableCell>
                     <TableCell>
@@ -169,27 +161,21 @@ function AuditPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                        {row.action}
-                      </code>
+                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{row.action}</code>
                     </TableCell>
                     <TableCell>
                       <div className="text-sm">
-                        {target?.type ? `${target.type}` : '—'}
+                        {target?.type ? targetLabel(target.type) : '—'}
                         {target?.name && (
-                          <span className="ml-1 text-muted-foreground">
-                            ({target.name})
-                          </span>
+                          <span className="ml-1 text-muted-foreground">({target.name})</span>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="pr-6 text-right">
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() =>
-                          setExpanded((prev) => ({ ...prev, [row.id]: !prev[row.id] }))
-                        }
+                        onClick={() => setExpanded((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
                       >
                         {open ? 'Hide' : 'Details'}
                       </Button>
@@ -197,7 +183,7 @@ function AuditPage() {
                   </TableRow>
                   {open && (
                     <TableRow>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={5} className="px-6">
                         <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">
                           {JSON.stringify(
                             { actor: row.actor, target: row.target, metadata: row.metadata },
@@ -213,32 +199,31 @@ function AuditPage() {
             })}
             {rows.length === 0 && !audit.isLoading && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-sm text-muted-foreground">
+                <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
                   No audit entries match these filters.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+      </div>
 
+      <footer className="flex items-center gap-3 border-t border-border px-6 py-3 text-sm text-muted-foreground">
+        <span>
+          Viewing {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
+        </span>
         {audit.hasNextPage && (
-          <div className="border-t p-3">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => audit.fetchNextPage()}
-              disabled={audit.isFetchingNextPage}
-            >
-              {audit.isFetchingNextPage ? 'Loading…' : 'Load more'}
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => audit.fetchNextPage()}
+            disabled={audit.isFetchingNextPage}
+          >
+            {audit.isFetchingNextPage ? 'Loading…' : 'Load more'}
+          </Button>
         )}
-        {audit.error && (
-          <div className="border-t p-3 text-sm text-destructive">
-            {(audit.error as Error).message}
-          </div>
-        )}
-      </Card>
-    </main>
+      </footer>
+    </div>
   )
 }

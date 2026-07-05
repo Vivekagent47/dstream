@@ -54,7 +54,7 @@ export default function Header() {
     mutationFn: api.logout,
     onSuccess: async () => {
       qc.clear()
-      navigate({ to: '/login' })
+      navigate({ to: '/' })
     },
   })
 
