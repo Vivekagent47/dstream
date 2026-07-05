@@ -13,14 +13,15 @@ import (
 
 const insertAuditLog = `-- name: InsertAuditLog :exec
 INSERT INTO audit_logs (
-    org_id, actor_user_id, actor_api_key_id, actor_email_snapshot,
+    org_id, org_name_snapshot, actor_user_id, actor_api_key_id, actor_email_snapshot,
     action, target_type, target_id, metadata
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertAuditLogParams struct {
 	OrgID              pgtype.UUID `json:"org_id"`
+	OrgNameSnapshot    *string     `json:"org_name_snapshot"`
 	ActorUserID        pgtype.UUID `json:"actor_user_id"`
 	ActorApiKeyID      pgtype.UUID `json:"actor_api_key_id"`
 	ActorEmailSnapshot *string     `json:"actor_email_snapshot"`
@@ -33,6 +34,7 @@ type InsertAuditLogParams struct {
 func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error {
 	_, err := q.db.Exec(ctx, insertAuditLog,
 		arg.OrgID,
+		arg.OrgNameSnapshot,
 		arg.ActorUserID,
 		arg.ActorApiKeyID,
 		arg.ActorEmailSnapshot,

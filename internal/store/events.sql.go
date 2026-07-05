@@ -11,6 +11,73 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimStuckEvents = `-- name: ClaimStuckEvents :many
+UPDATE events
+   SET status = 'queued', next_retry_at = now(), updated_at = now()
+ WHERE id IN (
+   SELECT e.id
+     FROM events e
+     JOIN connections c  ON c.id = e.connection_id
+     JOIN destinations d ON d.id = c.destination_id
+    WHERE e.updated_at < $1
+      AND (
+        e.status = 'queued'
+        OR (e.status = 'in_flight' AND d.type = 'cli')
+      )
+    ORDER BY e.updated_at ASC
+    LIMIT $2
+    FOR UPDATE OF e SKIP LOCKED
+ )
+RETURNING id, connection_id, attempt_count
+`
+
+type ClaimStuckEventsParams struct {
+	StuckBefore pgtype.Timestamptz `json:"stuck_before"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+type ClaimStuckEventsRow struct {
+	ID           pgtype.UUID `json:"id"`
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	AttemptCount int32       `json:"attempt_count"`
+}
+
+// Reaper: atomically re-queue events that have NO pending asynq task and are
+// therefore genuinely stuck. Two cases:
+//   - 'queued' older than @stuck_before — the ingest enqueue failed, so asynq
+//     never received a task for it.
+//   - 'in_flight' on a CLI destination — the CLI dispatch path returns
+//     asynq.SkipRetry (handing off to the WS), so if the tunnel died mid-flight
+//     nothing will ever retry it.
+//
+// HTTP 'in_flight' events are deliberately excluded: asynq owns their retry
+// backoff AND their worker-death recovery, so reaping them would double-deliver
+// and bypass the backoff schedule. @stuck_before must exceed the delivery + CLI
+// response timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently
+// without double-claiming (and locks only events, not the joined rows).
+// ponytail: a pathologically low rate limit (refill > @stuck_before) could let
+// a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
+// acceptable under the system's at-least-once contract.
+func (q *Queries) ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsParams) ([]ClaimStuckEventsRow, error) {
+	rows, err := q.db.Query(ctx, claimStuckEvents, arg.StuckBefore, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimStuckEventsRow{}
+	for rows.Next() {
+		var i ClaimStuckEventsRow
+		if err := rows.Scan(&i.ID, &i.ConnectionID, &i.AttemptCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createEventsBatch = `-- name: CreateEventsBatch :many
 INSERT INTO events (request_id, connection_id, org_id, status)
 SELECT $1, conn_id, $2, 'queued'
@@ -258,13 +325,15 @@ func (q *Queries) ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams
 const markEventDelivered = `-- name: MarkEventDelivered :exec
 UPDATE events
 SET status          = 'delivered',
-    attempt_count   = attempt_count + 1,
     last_attempt_at = now(),
     next_retry_at   = NULL,
     updated_at      = now()
 WHERE id = $1
 `
 
+// attempt_count is bumped once per delivery cycle by MarkEventInFlight; the
+// terminal transitions must NOT increment again (that double-counted attempts
+// and made recorded attempt_num values skip).
 func (q *Queries) MarkEventDelivered(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markEventDelivered, id)
 	return err
@@ -273,7 +342,6 @@ func (q *Queries) MarkEventDelivered(ctx context.Context, id pgtype.UUID) error 
 const markEventFailed = `-- name: MarkEventFailed :exec
 UPDATE events
 SET status          = 'failed',
-    attempt_count   = attempt_count + 1,
     last_attempt_at = now(),
     next_retry_at   = NULL,
     updated_at      = now()
@@ -294,6 +362,8 @@ SET status          = 'in_flight',
 WHERE id = $1
 `
 
+// The single attempt_count incrementer. recordAttempt derives attempt_num from
+// the pre-increment count, so this keeps attempt_num monotonic and gap-free.
 func (q *Queries) MarkEventInFlight(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markEventInFlight, id)
 	return err
@@ -302,12 +372,15 @@ func (q *Queries) MarkEventInFlight(ctx context.Context, id pgtype.UUID) error {
 const resetEventForManualRetry = `-- name: ResetEventForManualRetry :exec
 UPDATE events
 SET status        = 'queued',
-    attempt_count = 0,
     next_retry_at = NULL,
     updated_at    = now()
 WHERE id = $1
 `
 
+// Do NOT reset attempt_count: zeroing it made the next attempt reuse
+// attempt_num=1, colliding with the original attempt on UNIQUE(event_id,
+// attempt_num) and silently dropping the retry's attempt row. Keep it monotonic;
+// asynq's own retry budget is reset separately by re-enqueuing with Attempt=0.
 func (q *Queries) ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, resetEventForManualRetry, id)
 	return err

@@ -27,6 +27,12 @@ function Verify() {
     }
     ran.current = true
 
+    // Drop the token from the address bar immediately so it doesn't linger in
+    // browser history or leak via the Referer header. We already captured it.
+    if (typeof window !== 'undefined' && window.location.search) {
+      window.history.replaceState({}, '', '/auth/verify')
+    }
+
     if (!token) {
       setError('This link is missing its token. Request a new one.')
       return

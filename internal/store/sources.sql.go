@@ -14,7 +14,7 @@ import (
 const createSource = `-- name: CreateSource :one
 INSERT INTO sources (org_id, name, type, ingest_token, signing_config)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at
+RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled
 `
 
 type CreateSourceParams struct {
@@ -43,6 +43,7 @@ func (q *Queries) CreateSource(ctx context.Context, arg CreateSourceParams) (Sou
 		&i.SigningConfig,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Enabled,
 	)
 	return i, err
 }
@@ -62,7 +63,7 @@ func (q *Queries) DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrg
 }
 
 const getSourceByIngestToken = `-- name: GetSourceByIngestToken :one
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at FROM sources WHERE ingest_token = $1
+SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled FROM sources WHERE ingest_token = $1 AND enabled = TRUE
 `
 
 func (q *Queries) GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error) {
@@ -77,12 +78,13 @@ func (q *Queries) GetSourceByIngestToken(ctx context.Context, ingestToken string
 		&i.SigningConfig,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Enabled,
 	)
 	return i, err
 }
 
 const getSourceForOrg = `-- name: GetSourceForOrg :one
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at FROM sources WHERE id = $1 AND org_id = $2
+SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled FROM sources WHERE id = $1 AND org_id = $2
 `
 
 type GetSourceForOrgParams struct {
@@ -102,12 +104,13 @@ func (q *Queries) GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams
 		&i.SigningConfig,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Enabled,
 	)
 	return i, err
 }
 
 const listSourcesByOrg = `-- name: ListSourcesByOrg :many
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at FROM sources
+SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled FROM sources
 WHERE org_id = $1
 ORDER BY created_at DESC
 `
@@ -130,6 +133,7 @@ func (q *Queries) ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]So
 			&i.SigningConfig,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Enabled,
 		); err != nil {
 			return nil, err
 		}
@@ -139,4 +143,34 @@ func (q *Queries) ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]So
 		return nil, err
 	}
 	return items, nil
+}
+
+const setSourceEnabled = `-- name: SetSourceEnabled :one
+UPDATE sources
+   SET enabled = $3, updated_at = now()
+ WHERE id = $1 AND org_id = $2
+ RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled
+`
+
+type SetSourceEnabledParams struct {
+	ID      pgtype.UUID `json:"id"`
+	OrgID   pgtype.UUID `json:"org_id"`
+	Enabled bool        `json:"enabled"`
+}
+
+func (q *Queries) SetSourceEnabled(ctx context.Context, arg SetSourceEnabledParams) (Source, error) {
+	row := q.db.QueryRow(ctx, setSourceEnabled, arg.ID, arg.OrgID, arg.Enabled)
+	var i Source
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.Type,
+		&i.IngestToken,
+		&i.SigningConfig,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Enabled,
+	)
+	return i, err
 }

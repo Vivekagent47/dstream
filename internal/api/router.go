@@ -46,7 +46,10 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		// Unauthenticated.
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/magic-link/request", d.requestMagicLink)
-			r.Get("/magic-link/verify", d.verifyMagicLink)
+			// POST (not GET) so a session-establishing request can't be
+			// triggered cross-site via <img>/navigation — the JSON body forces a
+			// CORS preflight, blocking login-CSRF / session fixation.
+			r.Post("/magic-link/verify", d.verifyMagicLink)
 			r.Post("/logout", d.logout)
 		})
 
@@ -105,6 +108,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/", d.listSources)
 					r.Post("/", d.createSource)
 					r.Get("/{id}", d.getSource)
+					r.Patch("/{id}", d.patchSource)
 					r.Delete("/{id}", d.deleteSource)
 				})
 				r.Route("/destinations", func(r chi.Router) {

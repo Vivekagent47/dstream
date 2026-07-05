@@ -309,7 +309,7 @@ func (d Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			d.Log.Warn("self-leave: lookup next org", "err", err)
 		}
-		d.Signer.Issue(w, p.UserID, nextOrg)
+		d.Signer.Issue(w, p.UserID, nextOrg, p.SessionEpoch)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

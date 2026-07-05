@@ -48,7 +48,7 @@ func workerCmd() *cobra.Command {
 			defer qc.Close()
 
 			bs := ingest.NewPostgresBodyStore(q)
-			h := deliver.New(log, q, rdb, bs, qc)
+			h := deliver.New(log, q, rdb, bs, qc, cfg.AllowPrivateDestinations)
 
 			redisOpt := asynq.RedisClientOpt{
 				Addr:     cfg.Redis.Addr,
@@ -67,6 +67,10 @@ func workerCmd() *cobra.Command {
 
 			mux := asynq.NewServeMux()
 			h.Register(mux)
+
+			// Background reaper: re-queues events stuck from failed enqueues or
+			// dead CLI tunnels. Stops when ctx is cancelled (worker shutdown).
+			go h.RunReaper(ctx)
 
 			return srv.Run(mux)
 		},

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
@@ -47,6 +49,7 @@ func (d Deps) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 			"name":         k.Name,
 			"prefix":       k.Prefix,
 			"last_used_at": k.LastUsedAt,
+			"expires_at":   k.ExpiresAt,
 			"created_at":   k.CreatedAt,
 		})
 	}
@@ -81,6 +84,9 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Name string `json:"name"`
+		// Optional: key auto-expires after this many days. Omit / <=0 for a
+		// non-expiring key (NULL). Bounds a leaked key's exposure window.
+		ExpiresInDays *int `json:"expires_in_days,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpErr(w, http.StatusBadRequest, "invalid json")
@@ -98,12 +104,19 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusInternalServerError, "gen key")
 		return
 	}
-	row, err := d.Queries.CreateAPIKey(r.Context(), store.CreateAPIKeyParams{
+	params := store.CreateAPIKeyParams{
 		OrgID:   store.UUID(orgID),
 		Name:    body.Name,
 		Prefix:  prefix,
 		KeyHash: hash,
-	})
+	}
+	if body.ExpiresInDays != nil && *body.ExpiresInDays > 0 {
+		params.ExpiresAt = pgtype.Timestamptz{
+			Time:  time.Now().Add(time.Duration(*body.ExpiresInDays) * 24 * time.Hour),
+			Valid: true,
+		}
+	}
+	row, err := d.Queries.CreateAPIKey(r.Context(), params)
 	if err != nil {
 		d.Log.Error("create api key", "err", err)
 		httpErr(w, http.StatusInternalServerError, "create key")

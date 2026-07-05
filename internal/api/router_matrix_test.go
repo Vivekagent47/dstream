@@ -286,7 +286,7 @@ func TestRoleMatrix(t *testing.T) {
 func attachSession(t *testing.T, req *http.Request, s *auth.SessionSigner, userID, orgID uuid.UUID) {
 	t.Helper()
 	w := httptest.NewRecorder()
-	s.Issue(w, userID, orgID)
+	s.Issue(w, userID, orgID, 0)
 	for _, c := range w.Result().Cookies() {
 		if c.Name == auth.SessionCookieName {
 			req.AddCookie(c)

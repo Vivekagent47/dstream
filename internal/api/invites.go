@@ -341,9 +341,9 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Path A — session present + matches invite email.
-	if uid, _, err := d.Signer.Parse(r); err == nil {
+	if uid, _, epoch, err := d.Signer.Parse(r); err == nil {
 		u, gerr := d.Queries.GetUserByID(r.Context(), store.UUID(uid))
-		if gerr == nil && strings.EqualFold(u.Email, inv.Email) {
+		if gerr == nil && int64(u.SessionEpoch) == epoch && strings.EqualFold(u.Email, inv.Email) {
 			row, cerr := auth.ConsumeOrgInvite(r.Context(), d.Queries, token, uid)
 			if cerr != nil {
 				if errors.Is(cerr, auth.ErrInvalidOrgInvite) {
@@ -357,7 +357,7 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 			// Re-issue cookie so subsequent requests land in the newly-joined
 			// org without a manual /orgs/select hop.
 			orgUUID := store.GoUUID(row.OrgID)
-			d.Signer.Issue(w, uid, orgUUID)
+			d.Signer.Issue(w, uid, orgUUID, int64(u.SessionEpoch))
 			// Construct ctx with refreshed principal so audit.Log records
 			// the right active_org_id (the request still carries the old
 			// cookie). We rebuild Principal minimally — just enough for

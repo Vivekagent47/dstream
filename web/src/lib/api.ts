@@ -9,6 +9,7 @@ export interface Source {
   org_id: string
   name: string
   type: string
+  enabled: boolean
   ingest_token: string
   created_at: string
 }
@@ -105,6 +106,7 @@ export interface APIKey {
   prefix: string
   created_at: string
   last_used_at: string | null
+  expires_at: string | null
 }
 
 export interface APIKeyCreateResult {
@@ -174,10 +176,10 @@ export const api = {
   requestMagicLink: (email: string) =>
     http.post<void>('/api/auth/magic-link/request', { email }).then((r) => r.data),
   // Consumes the single-use token same-origin so the Set-Cookie lands on the
-  // web origin. The server 302s to "/"; axios follows it (200), which we
-  // ignore — the caller drives navigation.
+  // web origin. POST (with JSON body) so the request is not a cross-site-
+  // reachable GET — protects against login-CSRF / session fixation.
   verifyMagicLink: (token: string) =>
-    http.get<void>('/api/auth/magic-link/verify', { params: { token } }).then((r) => r.data),
+    http.post<void>('/api/auth/magic-link/verify', { token }).then((r) => r.data),
   logout: () => http.post<void>('/api/auth/logout').then((r) => r.data),
 
   // Orgs
@@ -228,6 +230,8 @@ export const api = {
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
   createSource: (input: { name: string; type?: string }) =>
     http.post<Source>('/api/sources', input).then((r) => r.data),
+  patchSource: (id: string, input: { enabled: boolean }) =>
+    http.patch<Source>(`/api/sources/${id}`, input).then((r) => r.data),
 
   // Destinations
   listDestinations: () => http.get<Destination[]>('/api/destinations').then((r) => r.data),

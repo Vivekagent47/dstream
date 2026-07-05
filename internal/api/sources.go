@@ -111,6 +111,52 @@ func (d Deps) getSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sourceView(row))
 }
 
+type patchSourceReq struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// patchSource serves PATCH /api/sources/{id} — currently just enable/disable.
+// A disabled source rejects ingest (GetSourceByIngestToken filters enabled);
+// note the change takes up to SourceCacheTTL (60s) to propagate through the
+// ingest source cache.
+func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpErr(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var body patchSourceReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Enabled == nil {
+		httpErr(w, http.StatusBadRequest, "nothing to update")
+		return
+	}
+	row, err := d.Queries.SetSourceEnabled(r.Context(), store.SetSourceEnabledParams{
+		ID:      store.UUID(id),
+		OrgID:   store.UUID(p.OrgID),
+		Enabled: *body.Enabled,
+	})
+	if err != nil {
+		httpErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "source.update",
+		TargetType: "source",
+		TargetID:   audit.PtrUUID(id),
+		Metadata:   map[string]any{"enabled": *body.Enabled},
+	})
+	writeJSON(w, http.StatusOK, sourceView(row))
+}
+
 func (d Deps) deleteSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
@@ -145,6 +191,7 @@ func sourceView(s store.Source) map[string]any {
 		"org_id":         store.GoUUID(s.OrgID).String(),
 		"name":           s.Name,
 		"type":           s.Type,
+		"enabled":        s.Enabled,
 		"ingest_token":   s.IngestToken,
 		"signing_config": json.RawMessage(s.SigningConfig),
 		"created_at":     s.CreatedAt.Time,

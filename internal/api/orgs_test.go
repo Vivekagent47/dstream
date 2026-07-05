@@ -51,7 +51,7 @@ func requestWithSessionBody(
 		}
 	}
 	w := httptest.NewRecorder()
-	s.Issue(w, userID, orgID)
+	s.Issue(w, userID, orgID, 0)
 	res := w.Result()
 	defer res.Body.Close()
 	r := httptest.NewRequest(method, path, &buf)

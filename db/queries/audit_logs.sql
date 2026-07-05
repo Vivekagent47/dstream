@@ -1,9 +1,9 @@
 -- name: InsertAuditLog :exec
 INSERT INTO audit_logs (
-    org_id, actor_user_id, actor_api_key_id, actor_email_snapshot,
+    org_id, org_name_snapshot, actor_user_id, actor_api_key_id, actor_email_snapshot,
     action, target_type, target_id, metadata
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: ListAuditLogsByOrg :many
 -- LEFT JOIN may yield NULL for u/k columns; COALESCE so sqlc generates

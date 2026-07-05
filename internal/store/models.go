@@ -19,6 +19,7 @@ type ApiKey struct {
 	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Attempt struct {
@@ -165,6 +166,7 @@ type Source struct {
 	SigningConfig []byte             `json:"signing_config"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Enabled       bool               `json:"enabled"`
 }
 
 type User struct {
@@ -174,4 +176,5 @@ type User struct {
 	IsSuperAdmin bool               `json:"is_super_admin"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	SessionEpoch int32              `json:"session_epoch"`
 }

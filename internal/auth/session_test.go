@@ -45,10 +45,10 @@ func TestSession_Roundtrip(t *testing.T) {
 	oid := uuid.New()
 
 	w := httptest.NewRecorder()
-	s.Issue(w, uid, oid)
+	s.Issue(w, uid, oid, 0)
 
 	r := readSetCookie(t, w)
-	gotU, gotO, err := s.Parse(r)
+	gotU, gotO, _, err := s.Parse(r)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -65,10 +65,10 @@ func TestSession_Roundtrip_NilOrg(t *testing.T) {
 	uid := uuid.New()
 
 	w := httptest.NewRecorder()
-	s.Issue(w, uid, uuid.Nil)
+	s.Issue(w, uid, uuid.Nil, 0)
 
 	r := readSetCookie(t, w)
-	gotU, gotO, err := s.Parse(r)
+	gotU, gotO, _, err := s.Parse(r)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -80,10 +80,31 @@ func TestSession_Roundtrip_NilOrg(t *testing.T) {
 	}
 }
 
+func TestSession_EpochRoundtrip(t *testing.T) {
+	s := newSigner(t)
+	uid := uuid.New()
+	oid := uuid.New()
+
+	w := httptest.NewRecorder()
+	s.Issue(w, uid, oid, 42)
+
+	r := readSetCookie(t, w)
+	gotU, gotO, gotEpoch, err := s.Parse(r)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if gotU != uid || gotO != oid {
+		t.Errorf("id mismatch: got (%s,%s) want (%s,%s)", gotU, gotO, uid, oid)
+	}
+	if gotEpoch != 42 {
+		t.Errorf("epoch mismatch: got %d want 42", gotEpoch)
+	}
+}
+
 func TestSession_TamperFailsHMAC(t *testing.T) {
 	s := newSigner(t)
 	w := httptest.NewRecorder()
-	s.Issue(w, uuid.New(), uuid.New())
+	s.Issue(w, uuid.New(), uuid.New(), 0)
 
 	res := w.Result()
 	defer res.Body.Close()
@@ -109,7 +130,7 @@ func TestSession_TamperFailsHMAC(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: tampered})
 
-	if _, _, err := s.Parse(r); err != ErrInvalidSession {
+	if _, _, _, err := s.Parse(r); err != ErrInvalidSession {
 		t.Fatalf("Parse(tampered) = %v, want ErrInvalidSession", err)
 	}
 }
@@ -124,7 +145,7 @@ func TestSession_Expired(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: val})
 
-	if _, _, err := s.Parse(r); err != ErrExpiredSession {
+	if _, _, _, err := s.Parse(r); err != ErrExpiredSession {
 		t.Fatalf("Parse(expired) = %v, want ErrExpiredSession", err)
 	}
 }
@@ -133,18 +154,19 @@ func TestSession_TruncatedFailsLength(t *testing.T) {
 	s := newSigner(t)
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "abc"})
-	if _, _, err := s.Parse(r); err != ErrInvalidSession {
+	if _, _, _, err := s.Parse(r); err != ErrInvalidSession {
 		t.Fatalf("Parse(short) = %v, want ErrInvalidSession", err)
 	}
 }
 
 // encodeWithExp duplicates SessionSigner.encode with a caller-chosen exp so
-// the expired-cookie test doesn't depend on time mocking.
+// the expired-cookie test doesn't depend on time mocking. Epoch fixed at 0.
 func encodeWithExp(s *SessionSigner, userID, orgID uuid.UUID, exp int64) string {
-	var payload [16 + 16 + 8]byte
+	var payload [sessionPayloadLen]byte
 	copy(payload[:16], userID[:])
 	copy(payload[16:32], orgID[:])
-	binary.BigEndian.PutUint64(payload[32:], uint64(exp))
+	binary.BigEndian.PutUint64(payload[32:40], uint64(exp))
+	binary.BigEndian.PutUint64(payload[40:48], 0)
 
 	mac := hmac.New(sha256.New, s.Secret)
 	mac.Write(payload[:])

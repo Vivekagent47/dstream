@@ -95,15 +95,23 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// GET /api/auth/magic-link/verify?token=... — consumes the token, runs the
+// POST /api/auth/magic-link/verify {token} — consumes the token, runs the
 // org-bootstrap step (auto-join invites, mint a personal workspace if the
 // user is new), and sets the session cookie carrying (user_id, active_org_id).
 //
-// Returns 204 (no redirect): the SPA calls this via XHR from /auth/verify and
-// drives navigation itself. A 3xx here would be followed internally by the
-// dev proxy to the API root (404), swallowing the Set-Cookie header.
+// POST with a JSON body (not GET): a GET would be reachable cross-site and
+// CSRF-exempt, enabling login-CSRF / session fixation. The JSON body forces a
+// CORS preflight so a foreign origin can't drive it. Returns 204; the SPA calls
+// this via XHR from /auth/verify and drives navigation itself.
 func (d Deps) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	token := strings.TrimSpace(body.Token)
 	if token == "" {
 		httpErr(w, http.StatusBadRequest, "missing token")
 		return
@@ -113,11 +121,19 @@ func (d Deps) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusUnauthorized, "invalid or expired link")
 		return
 	}
-	d.Signer.Issue(w, store.GoUUID(u.ID), orgID)
+	d.Signer.Issue(w, store.GoUUID(u.ID), orgID, int64(u.SessionEpoch))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (d Deps) logout(w http.ResponseWriter, _ *http.Request) {
+// logout clears the cookie AND bumps the user's session_epoch, invalidating
+// every outstanding session for that user (logout-all), not just this cookie.
+// Unauthenticated route, so we parse the cookie ourselves for the user id.
+func (d Deps) logout(w http.ResponseWriter, r *http.Request) {
+	if uid, _, _, err := d.Signer.Parse(r); err == nil {
+		if err := d.Queries.BumpUserSessionEpoch(r.Context(), store.UUID(uid)); err != nil {
+			d.Log.Warn("logout: bump session epoch", "err", err)
+		}
+	}
 	d.Signer.Clear(w)
 	w.WriteHeader(http.StatusNoContent)
 }

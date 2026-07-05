@@ -24,7 +24,23 @@ import (
 
 const (
 	DeliveryTimeout = 30 * time.Second
+
+	// Reaper cadence + safety window. reapStuckAfter must exceed the delivery
+	// timeout AND the CLI response timeout so live deliveries are never reaped.
+	reapInterval   = 30 * time.Second
+	reapStuckAfter = 2 * time.Minute
+	reapBatch      = 100
 )
+
+// inflightIncrScript atomically increments the per-destination in-flight
+// counter and (re)sets its TTL, so the slot lease can never be left without an
+// expiry — the non-atomic INCR-then-EXPIRE it replaces could leak a slot
+// permanently (wedging the destination) if the worker died between the calls.
+var inflightIncrScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return n
+`)
 
 type Handler struct {
 	Log       *slog.Logger
@@ -42,6 +58,7 @@ func New(
 	rdb *redis.Client,
 	bs ingest.BodyStore,
 	enq *queue.Client,
+	allowPrivateDestinations bool,
 ) *Handler {
 	return &Handler{
 		Log:       log,
@@ -49,7 +66,7 @@ func New(
 		Redis:     rdb,
 		Limiter:   redis_rate.NewLimiter(rdb),
 		BodyStore: bs,
-		HTTP:      &http.Client{Timeout: DeliveryTimeout},
+		HTTP:      newSafeHTTPClient(DeliveryTimeout, allowPrivateDestinations),
 		Enqueuer:  enq,
 	}
 }
@@ -82,6 +99,16 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	}
 	if row.DestinationUrl == nil || *row.DestinationUrl == "" {
 		return fmt.Errorf("destination has no URL")
+	}
+	// Reject structurally-unsafe URLs up front. A bad scheme can never
+	// succeed, so don't burn the retry budget on it — record and skip. IP-level
+	// blocking (internal/metadata addresses, DNS-rebinding) is enforced at dial
+	// time by the SSRF guard in newSafeHTTPClient and surfaces as a normal
+	// delivery failure below.
+	if err := ValidateDestinationURL(*row.DestinationUrl); err != nil {
+		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
+		_ = h.Queries.MarkEventFailed(ctx, row.ID)
+		return asynq.SkipRetry
 	}
 
 	// Rate-limit gate (per destination).
@@ -121,10 +148,11 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	// Max in-flight gate (per destination).
 	if row.DestinationMaxInflight != nil && *row.DestinationMaxInflight > 0 {
 		inflightKey := "inflight:dest:" + store.GoUUID(row.DestinationID).String()
-		count, err := h.Redis.Incr(ctx, inflightKey).Result()
+		// Slot lease: INCR + EXPIRE atomically (~5x delivery timeout) so the
+		// counter always carries a TTL and a crashed worker can't leak a slot.
+		ttlSec := int(DeliveryTimeout * 5 / time.Second)
+		count, err := inflightIncrScript.Run(ctx, h.Redis, []string{inflightKey}, ttlSec).Int64()
 		if err == nil {
-			// Slot lease: ~5x delivery timeout so a crashed worker eventually frees it.
-			h.Redis.Expire(ctx, inflightKey, DeliveryTimeout*5)
 			if count > int64(*row.DestinationMaxInflight) {
 				_, _ = h.Redis.Decr(ctx, inflightKey).Result()
 				if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
@@ -161,6 +189,11 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 		return err
 	}
 	for k, vs := range headers {
+		// Never forward credentials meant for dstream (Authorization, Cookie)
+		// or hop-by-hop headers to a user-controlled destination URL.
+		if !forwardableHeader(k) {
+			continue
+		}
 		for _, v := range vs {
 			httpReq.Header.Add(k, v)
 		}
@@ -321,6 +354,63 @@ func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDelive
 	}
 	// CLI WS handler will record attempt + update status; we hand off.
 	return asynq.SkipRetry
+}
+
+// RunReaper periodically re-queues stuck events until ctx is cancelled. Run one
+// per worker process; ClaimStuckEvents is safe across replicas.
+func (h *Handler) RunReaper(ctx context.Context) {
+	t := time.NewTicker(reapInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := h.ReapStuckEvents(ctx); err != nil {
+				h.Log.Error("reaper: sweep failed", "err", err)
+			}
+		}
+	}
+}
+
+// ReapStuckEvents re-enqueues events that are stuck with no forward progress:
+// an ingest enqueue that failed (status stays 'queued') or a worker/CLI that
+// died mid-delivery (stuck 'in_flight'). Returns the count reclaimed. The claim
+// is atomic (FOR UPDATE SKIP LOCKED) so concurrent reapers don't double-claim.
+func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
+	rows, err := h.Queries.ClaimStuckEvents(ctx, store.ClaimStuckEventsParams{
+		StuckBefore: pgtype.Timestamptz{Time: time.Now().Add(-reapStuckAfter), Valid: true},
+		RowLimit:    reapBatch,
+	})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, ev := range rows {
+		conn, cerr := h.Queries.GetConnectionByID(ctx, ev.ConnectionID)
+		if cerr != nil {
+			h.Log.Error("reaper: load connection", "err", cerr, "event_id", store.GoUUID(ev.ID))
+			continue
+		}
+		if _, eerr := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
+			EventID:             store.GoUUID(ev.ID),
+			Attempt:             0,
+			EnqueuedAt:          time.Now().UnixMilli(),
+			RetryStrategy:       conn.RetryStrategy,
+			RetryBaseMs:         conn.RetryBaseMs,
+			RetryCapMs:          conn.RetryCapMs,
+			RetryJitterPct:      conn.RetryJitterPct,
+			CustomRetrySchedule: conn.CustomRetrySchedule,
+		}, int(conn.MaxRetries)); eerr != nil {
+			h.Log.Error("reaper: re-enqueue", "err", eerr, "event_id", store.GoUUID(ev.ID))
+			continue
+		}
+		n++
+	}
+	if n > 0 {
+		h.Log.Info("reaper: re-queued stuck events", "count", n)
+	}
+	return n, nil
 }
 
 func unmarshalHeaders(raw []byte) (map[string][]string, error) {

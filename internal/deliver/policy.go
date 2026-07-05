@@ -18,15 +18,19 @@ func RetryDelay(c store.Connection, attempt int) time.Duration {
 	var d time.Duration
 	switch c.RetryStrategy {
 	case "linear":
-		d = base * time.Duration(attempt)
+		// Clamp in float space: base*attempt can overflow int64 for a large
+		// max_retries, wrapping negative and skipping the cap below.
+		d = clampToCap(float64(base)*float64(attempt), cap)
 	case "fixed":
 		d = base
 	case "custom":
 		d = customDelay(c.CustomRetrySchedule, attempt, base)
 	default: // exponential
-		// 2^(attempt-1) so the first retry waits `base`.
-		exp := math.Pow(2, float64(attempt-1))
-		d = time.Duration(float64(base) * exp)
+		// 2^(attempt-1) so the first retry waits `base`. Clamp in float space —
+		// float64(base)*2^n overflows int64 at high attempts, which would wrap
+		// negative and, after the (now-skipped) cap check, floor to 0 → a retry
+		// storm hammering the destination.
+		d = clampToCap(float64(base)*math.Pow(2, float64(attempt-1)), cap)
 	}
 
 	if d > cap {
@@ -37,6 +41,18 @@ func RetryDelay(c store.Connection, attempt int) time.Duration {
 		d = 0
 	}
 	return d
+}
+
+// clampToCap converts a nanosecond count (as float64, to survive intermediate
+// overflow) to a Duration bounded to [0, cap].
+func clampToCap(ns float64, cap time.Duration) time.Duration {
+	if ns >= float64(cap) {
+		return cap
+	}
+	if ns <= 0 {
+		return 0
+	}
+	return time.Duration(ns)
 }
 
 func customDelay(raw []byte, attempt int, fallback time.Duration) time.Duration {
@@ -51,7 +67,16 @@ func customDelay(raw []byte, attempt int, fallback time.Duration) time.Duration 
 	if idx >= len(schedule) {
 		idx = len(schedule) - 1
 	}
-	return time.Duration(schedule[idx]) * time.Millisecond
+	ms := schedule[idx]
+	if ms < 0 {
+		ms = 0
+	}
+	// Bound an operator typo so ms*time.Millisecond can't overflow Duration.
+	const maxMs = int64(365 * 24 * 60 * 60 * 1000) // 1 year
+	if ms > maxMs {
+		ms = maxMs
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func applyJitter(d time.Duration, pct int) time.Duration {

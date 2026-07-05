@@ -91,7 +91,7 @@ func newTestRouter(q *store.Queries) (*chi.Mux, *auth.SessionSigner) {
 func requestWithSession(t *testing.T, s *auth.SessionSigner, method, path string, userID, orgID uuid.UUID) *http.Request {
 	t.Helper()
 	w := httptest.NewRecorder()
-	s.Issue(w, userID, orgID)
+	s.Issue(w, userID, orgID, 0)
 	res := w.Result()
 	defer res.Body.Close()
 	r := httptest.NewRequest(method, path, nil)

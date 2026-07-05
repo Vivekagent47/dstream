@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -21,6 +22,13 @@ import (
 const (
 	cliSessionTTL = 30 * time.Second
 	cliPingEvery  = 10 * time.Second
+	// cliReadLimit caps a single inbound WS frame (CLI response). Matches the
+	// 1 MiB attempt-body cap; without it the library's 32 KiB default tears the
+	// whole tunnel down on a larger local response.
+	cliReadLimit = 1 << 20
+	// maxConcurrentDispatch bounds in-flight event goroutines per tunnel so an
+	// event burst can't spawn unbounded goroutines.
+	maxConcurrentDispatch = 64
 )
 
 // SessionKey returns the Redis key marking that a CLI is currently
@@ -30,6 +38,17 @@ func SessionKey(sourceID uuid.UUID) string { return "cli:source:" + sourceID.Str
 // DispatchKey returns the Redis list key where the delivery worker pushes
 // events destined for the CLI tunnel.
 func DispatchKey(sourceID uuid.UUID) string { return "cli:dispatch:" + sourceID.String() }
+
+// originHost extracts the host[:port] from the configured public base URL, used
+// to pin the WebSocket Origin allowlist. Returns "" if unparseable, in which
+// case Accept falls back to its default same-origin (Origin host == Host) check.
+func originHost(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
 
 // GET /api/cli/sources — minimal lookup used by the CLI to resolve `--source <name>`.
 func (d Deps) cliListSources(w http.ResponseWriter, r *http.Request) {
@@ -86,12 +105,20 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	// Origin check defeats cross-site WebSocket hijacking: without it, a page on
+	// any origin could open this socket riding the victim's session cookie and
+	// exfiltrate their webhook payloads. Browsers send Origin; the Go CLI client
+	// (Bearer-authed, no Origin header) is unaffected. OriginPatterns pins to the
+	// dashboard host so the check survives reverse-proxy Host rewrites.
+	acceptOpts := &websocket.AcceptOptions{}
+	if host := originHost(d.PublicBaseURL); host != "" {
+		acceptOpts.OriginPatterns = []string{host}
+	}
+	conn, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(cliReadLimit)
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
 	// Detach from r.Context() — the router-wide chi.Timeout(30s) middleware
@@ -102,6 +129,17 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// coder/websocket forbids concurrent writers; we write from the ping loop
+	// plus one goroutine per dispatched event. Serialize every write behind this
+	// mutex. sem bounds the dispatch goroutines.
+	var writeMu sync.Mutex
+	writeJSON := func(v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return wsjson.Write(ctx, conn, v)
+	}
+	sem := make(chan struct{}, maxConcurrentDispatch)
+
 	sessionKey := SessionKey(sid)
 	if err := d.Redis.Set(ctx, sessionKey, "active", cliSessionTTL).Err(); err != nil {
 		d.Log.Error("cli: register session", "err", err)
@@ -109,7 +147,7 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer d.Redis.Del(context.Background(), sessionKey)
 
-	_ = wsjson.Write(ctx, conn, map[string]any{
+	_ = writeJSON(map[string]any{
 		"type":      "hello",
 		"source_id": sid.String(),
 		"now":       time.Now().UTC(),
@@ -125,7 +163,7 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			case <-t.C:
 				d.Redis.Expire(ctx, sessionKey, cliSessionTTL)
-				if err := wsjson.Write(ctx, conn, map[string]any{"type": "ping"}); err != nil {
+				if err := writeJSON(map[string]any{"type": "ping"}); err != nil {
 					return
 				}
 			}
@@ -184,13 +222,23 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		go d.dispatchEventToCLI(ctx, conn, bs, pending, evUUID)
+		// Bound concurrent dispatch goroutines; block (not drop) so no event is
+		// lost, but bail if the session is shutting down.
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		go func() {
+			defer func() { <-sem }()
+			d.dispatchEventToCLI(ctx, writeJSON, bs, pending, evUUID)
+		}()
 	}
 }
 
 func (d Deps) dispatchEventToCLI(
 	ctx context.Context,
-	conn *websocket.Conn,
+	writeFn func(any) error,
 	bs ingest.BodyStore,
 	pending *pendingMap,
 	eventID uuid.UUID,
@@ -221,7 +269,7 @@ func (d Deps) dispatchEventToCLI(
 		"headers":  headers,
 		"body":     body,
 	}
-	if err := wsjson.Write(ctx, conn, frame); err != nil {
+	if err := writeFn(frame); err != nil {
 		d.recordCLIFailure(ctx, row.ID, row.AttemptCount+1, err)
 		return
 	}

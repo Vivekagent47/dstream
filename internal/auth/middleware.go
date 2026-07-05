@@ -47,14 +47,21 @@ func Authenticate(q *store.Queries, s *SessionSigner) func(http.Handler) http.Ha
 			// Session path. Resolve the user's email NOW so downstream
 			// audit.Log calls don't each fire a fresh GetUserByID — every
 			// authenticated mutation pays for that lookup otherwise.
-			if userID, orgID, err := s.Parse(r); err == nil {
+			if userID, orgID, epoch, err := s.Parse(r); err == nil {
 				p := Principal{
 					Source: SourceSession,
 					UserID: userID,
 					OrgID:  orgID, // may be uuid.Nil if user has no active org yet
 				}
 				if u, uerr := q.GetUserByID(r.Context(), store.UUID(userID)); uerr == nil {
+					// Epoch mismatch means the session was revoked (logout-all /
+					// disable) after this cookie was issued — reject it.
+					if int64(u.SessionEpoch) != epoch {
+						http.Error(w, "unauthorized", http.StatusUnauthorized)
+						return
+					}
 					p.UserEmail = u.Email
+					p.SessionEpoch = int64(u.SessionEpoch)
 				}
 				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 				return
@@ -117,17 +124,17 @@ func RequireOrg(q *store.Queries) func(http.Handler) http.Handler {
 func SuperAdminOnly(q *store.Queries, s *SessionSigner) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			uid, _, err := s.Parse(r) // active_org_id unused for super-admin
+			uid, _, epoch, err := s.Parse(r) // active_org_id unused for super-admin
 			if err != nil {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			u, err := q.GetUserByID(r.Context(), store.UUID(uid))
-			if err != nil || !u.IsSuperAdmin {
+			if err != nil || !u.IsSuperAdmin || int64(u.SessionEpoch) != epoch {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			p := Principal{Source: SourceSession, UserID: uid}
+			p := Principal{Source: SourceSession, UserID: uid, SessionEpoch: int64(u.SessionEpoch)}
 			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 		})
 	}

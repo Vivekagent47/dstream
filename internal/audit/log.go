@@ -91,6 +91,14 @@ func Log(ctx context.Context, q *store.Queries, log *slog.Logger, e Entry) {
 		return
 	}
 
+	// Snapshot the org name so the row stays human-readable after the org is
+	// deleted (audit_logs.org_id is ON DELETE SET NULL). Best-effort.
+	var orgNameSnap *string
+	if org, oerr := q.GetOrganizationByID(ctx, store.UUID(orgID)); oerr == nil {
+		n := org.Name
+		orgNameSnap = &n
+	}
+
 	meta := []byte("{}")
 	if e.Metadata != nil {
 		if b, jerr := json.Marshal(e.Metadata); jerr == nil {
@@ -102,6 +110,7 @@ func Log(ctx context.Context, q *store.Queries, log *slog.Logger, e Entry) {
 
 	if err := q.InsertAuditLog(ctx, store.InsertAuditLogParams{
 		OrgID:              store.UUID(orgID),
+		OrgNameSnapshot:    orgNameSnap,
 		ActorUserID:        actorUser,
 		ActorApiKeyID:      actorKey,
 		ActorEmailSnapshot: emailSnap,

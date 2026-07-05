@@ -126,7 +126,7 @@ func (d Deps) selectOrg(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusInternalServerError, "membership lookup")
 		return
 	}
-	d.Signer.Issue(w, p.UserID, orgID)
+	d.Signer.Issue(w, p.UserID, orgID, p.SessionEpoch)
 	writeJSON(w, http.StatusOK, map[string]any{"active_org_id": orgID.String()})
 }
 
@@ -271,7 +271,7 @@ func (d Deps) deleteOrg(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(nerr, pgx.ErrNoRows) {
 			d.Log.Warn("delete org: lookup next org", "err", nerr)
 		}
-		d.Signer.Issue(w, p.UserID, nextOrg)
+		d.Signer.Issue(w, p.UserID, nextOrg, p.SessionEpoch)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

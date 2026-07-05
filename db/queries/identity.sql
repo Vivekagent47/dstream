@@ -28,6 +28,11 @@ SELECT * FROM users WHERE id = $1;
 -- name: PromoteUserToSuperAdmin :exec
 UPDATE users SET is_super_admin = TRUE, updated_at = now() WHERE email = $1;
 
+-- name: BumpUserSessionEpoch :exec
+-- Invalidate all of a user's outstanding signed session cookies by advancing
+-- their epoch. Used by logout (logout-all) and future disable/security flows.
+UPDATE users SET session_epoch = session_epoch + 1, updated_at = now() WHERE id = $1;
+
 -- name: CountOrgMembershipsForUser :one
 SELECT count(*) FROM org_members WHERE user_id = $1;
 

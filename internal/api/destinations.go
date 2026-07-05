@@ -9,6 +9,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -44,6 +45,12 @@ func (d Deps) createDestination(w http.ResponseWriter, r *http.Request) {
 	if body.Type == "http" && (body.URL == nil || *body.URL == "") {
 		httpErr(w, http.StatusBadRequest, "url required for http destination")
 		return
+	}
+	if body.Type == "http" {
+		if err := deliver.ValidateDestinationURL(*body.URL); err != nil {
+			httpErr(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
+			return
+		}
 	}
 	authCfg := body.AuthConfig
 	if len(authCfg) == 0 {
@@ -172,6 +179,12 @@ func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
 	if effectiveType == "http" && (effectiveURL == nil || *effectiveURL == "") {
 		httpErr(w, http.StatusBadRequest, "url required for http destination")
 		return
+	}
+	if effectiveType == "http" {
+		if err := deliver.ValidateDestinationURL(*effectiveURL); err != nil {
+			httpErr(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
+			return
+		}
 	}
 	params := store.PatchDestinationForOrgParams{
 		ID:             store.UUID(id),

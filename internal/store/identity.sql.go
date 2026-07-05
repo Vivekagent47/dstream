@@ -26,6 +26,17 @@ func (q *Queries) AddOrgMember(ctx context.Context, arg AddOrgMemberParams) erro
 	return err
 }
 
+const bumpUserSessionEpoch = `-- name: BumpUserSessionEpoch :exec
+UPDATE users SET session_epoch = session_epoch + 1, updated_at = now() WHERE id = $1
+`
+
+// Invalidate all of a user's outstanding signed session cookies by advancing
+// their epoch. Used by logout (logout-all) and future disable/security flows.
+func (q *Queries) BumpUserSessionEpoch(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, bumpUserSessionEpoch, id)
+	return err
+}
+
 const countOrgMembershipsForUser = `-- name: CountOrgMembershipsForUser :one
 SELECT count(*) FROM org_members WHERE user_id = $1
 `
@@ -60,7 +71,7 @@ func (q *Queries) CreateOrganization(ctx context.Context, arg CreateOrganization
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (email, name) VALUES ($1, $2) RETURNING id, email, name, is_super_admin, created_at, updated_at
+INSERT INTO users (email, name) VALUES ($1, $2) RETURNING id, email, name, is_super_admin, created_at, updated_at, session_epoch
 `
 
 type CreateUserParams struct {
@@ -78,6 +89,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.IsSuperAdmin,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SessionEpoch,
 	)
 	return i, err
 }
@@ -231,7 +243,7 @@ func (q *Queries) GetOrganizationBySlug(ctx context.Context, slug string) (Organ
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, name, is_super_admin, created_at, updated_at FROM users WHERE email = $1
+SELECT id, email, name, is_super_admin, created_at, updated_at, session_epoch FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -244,12 +256,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.IsSuperAdmin,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SessionEpoch,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, name, is_super_admin, created_at, updated_at FROM users WHERE id = $1
+SELECT id, email, name, is_super_admin, created_at, updated_at, session_epoch FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -262,6 +275,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 		&i.IsSuperAdmin,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SessionEpoch,
 	)
 	return i, err
 }

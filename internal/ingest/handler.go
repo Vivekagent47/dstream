@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -36,6 +38,13 @@ type Handler struct {
 	Redis     *redis.Client
 	Queue     *queue.Client
 	BodyStore BodyStore
+
+	// Per-source ingest rate limit (token bucket in Redis). Limiter is nil or
+	// RateLimitRPS<=0 → disabled. Guards the DB/queue from a single source
+	// (or a leaked ingest token) flooding the endpoint.
+	Limiter        *redis_rate.Limiter
+	RateLimitRPS   int
+	RateLimitBurst int
 
 	// In-process cache for source lookups keyed by ingest_token. The
 	// ingest hot path was hitting Postgres on every webhook (~0.5–1ms per
@@ -78,6 +87,28 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceID := store.GoUUID(src.ID)
+
+	// Per-source rate limit BEFORE reading the (up to 5 MiB) body, so a flood
+	// can't force large reads. Fail-open on limiter error — availability beats
+	// strict limiting for inbound webhooks.
+	if h.Limiter != nil && h.RateLimitRPS > 0 {
+		burst := h.RateLimitBurst
+		if burst <= 0 {
+			burst = h.RateLimitRPS
+		}
+		res, rlErr := h.Limiter.Allow(ctx, "ingest:src:"+sourceID.String(), redis_rate.Limit{
+			Rate:   h.RateLimitRPS,
+			Burst:  burst,
+			Period: time.Second,
+		})
+		if rlErr == nil && res.Allowed == 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
 		http.Error(w, "body too large or unreadable", http.StatusRequestEntityTooLarge)
@@ -86,7 +117,6 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	sum := sha256.Sum256(body)
 	bodyHash := hex.EncodeToString(sum[:])
-	sourceID := store.GoUUID(src.ID)
 
 	dup, err := h.checkDedup(ctx, sourceID, bodyHash)
 	if err != nil {
@@ -109,7 +139,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		BodyRef:     bodyRef,
 		BodySize:    int32(len(body)),
 		ContentType: optStr(r.Header.Get("Content-Type")),
-		SigVerified: false, // TODO(phase-2): signature verify
+		// Observability, not enforcement: record whether the source's HMAC
+		// signing config validates this request; ingest proceeds either way.
+		SigVerified: verifySignature(src.SigningConfig, r.Header, body),
 		IngestIP:    parseRemoteAddr(r),
 	})
 	if err != nil {

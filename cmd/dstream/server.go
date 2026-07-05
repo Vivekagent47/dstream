@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
@@ -27,6 +30,18 @@ import (
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
+// isLocalBaseURL reports whether raw points at a loopback host, used to allow
+// the insecure-cookie dev opt-out only for local origins.
+func isLocalBaseURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.HasSuffix(host, ".localhost")
+}
+
 func serverCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "server",
@@ -38,6 +53,17 @@ func serverCmd() *cobra.Command {
 			}
 			if len(cfg.SessionSecret) < 32 {
 				return errors.New("DSTREAM_SESSION_SECRET must be at least 32 bytes")
+			}
+			// Refuse to issue session cookies without the Secure attribute over a
+			// non-local origin — that would ship the 30-day session token in
+			// cleartext on any plaintext hop. Local HTTP dev may opt out.
+			if !cfg.CookieSecure && !isLocalBaseURL(cfg.PublicBaseURL) {
+				return errors.New("DSTREAM_COOKIE_SECURE must be true when DSTREAM_PUBLIC_BASE_URL is not localhost")
+			}
+			// DevMode logs plaintext magic-link tokens — an auth-bypass vector if
+			// left on in production. Refuse to boot outside localhost.
+			if cfg.DevMode && !isLocalBaseURL(cfg.PublicBaseURL) {
+				return errors.New("DSTREAM_DEV_MODE must be false when DSTREAM_PUBLIC_BASE_URL is not localhost (it logs plaintext magic-link tokens)")
 			}
 			log := logging.New(cfg.LogLevel, cfg.LogFormat)
 			log.Info("starting server", "addr", cfg.HTTPAddr, "version", version)
@@ -92,11 +118,14 @@ func serverCmd() *cobra.Command {
 			})
 
 			ih := &ingest.Handler{
-				Log:       log,
-				Queries:   q,
-				Redis:     rdb,
-				Queue:     qc,
-				BodyStore: bodyStore,
+				Log:            log,
+				Queries:        q,
+				Redis:          rdb,
+				Queue:          qc,
+				BodyStore:      bodyStore,
+				Limiter:        redis_rate.NewLimiter(rdb),
+				RateLimitRPS:   cfg.IngestRateLimitRPS,
+				RateLimitBurst: cfg.IngestRateLimitBurst,
 			}
 			ih.Mount(r)
 

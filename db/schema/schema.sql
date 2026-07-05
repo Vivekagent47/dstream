@@ -22,6 +22,9 @@ CREATE TABLE users (
     email           CITEXT NOT NULL UNIQUE,
     name            TEXT,
     is_super_admin  BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Bumped to invalidate all of a user's outstanding session cookies
+    -- (logout-all / disable / security events). Embedded in the signed cookie.
+    session_epoch   INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -51,6 +54,8 @@ CREATE TABLE api_keys (
     key_hash      BYTEA NOT NULL,
     last_used_at  TIMESTAMPTZ,
     revoked_at    TIMESTAMPTZ,
+    -- Optional expiry; NULL = never expires. Enforced in GetAPIKeyByPrefix.
+    expires_at    TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX api_keys_org_idx ON api_keys (org_id);
@@ -129,6 +134,7 @@ CREATE TABLE sources (
     type            TEXT NOT NULL,
     ingest_token    TEXT NOT NULL UNIQUE,
     signing_config  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (org_id, name)

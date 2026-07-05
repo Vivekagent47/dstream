@@ -12,16 +12,17 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :one
-INSERT INTO api_keys (org_id, name, prefix, key_hash)
-VALUES ($1, $2, $3, $4)
-RETURNING id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at
+INSERT INTO api_keys (org_id, name, prefix, key_hash, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at, expires_at
 `
 
 type CreateAPIKeyParams struct {
-	OrgID   pgtype.UUID `json:"org_id"`
-	Name    string      `json:"name"`
-	Prefix  string      `json:"prefix"`
-	KeyHash []byte      `json:"key_hash"`
+	OrgID     pgtype.UUID        `json:"org_id"`
+	Name      string             `json:"name"`
+	Prefix    string             `json:"prefix"`
+	KeyHash   []byte             `json:"key_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
@@ -30,6 +31,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		arg.Name,
 		arg.Prefix,
 		arg.KeyHash,
+		arg.ExpiresAt,
 	)
 	var i ApiKey
 	err := row.Scan(
@@ -41,13 +43,16 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		&i.LastUsedAt,
 		&i.RevokedAt,
 		&i.CreatedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
-SELECT id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at FROM api_keys
-WHERE prefix = $1 AND revoked_at IS NULL
+SELECT id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at, expires_at FROM api_keys
+WHERE prefix = $1
+  AND revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
 `
 
 func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error) {
@@ -62,12 +67,13 @@ func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey,
 		&i.LastUsedAt,
 		&i.RevokedAt,
 		&i.CreatedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
 const listAPIKeysByOrg = `-- name: ListAPIKeysByOrg :many
-SELECT id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at FROM api_keys
+SELECT id, org_id, name, prefix, key_hash, last_used_at, revoked_at, created_at, expires_at FROM api_keys
 WHERE org_id = $1 AND revoked_at IS NULL
 ORDER BY created_at DESC
 `
@@ -90,6 +96,7 @@ func (q *Queries) ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]Ap
 			&i.LastUsedAt,
 			&i.RevokedAt,
 			&i.CreatedAt,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}

@@ -59,6 +59,10 @@ type Principal struct {
 	Role       Role
 	UserEmail  string
 	APIKeyName string
+	// SessionEpoch is the user's session_epoch at auth time, captured so
+	// re-issue paths (org switch, self-leave) mint cookies with the current
+	// epoch rather than resetting it.
+	SessionEpoch int64
 }
 
 type ctxKey int

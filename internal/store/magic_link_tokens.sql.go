@@ -42,8 +42,12 @@ SELECT id, email, token_hash, expires_at, used_at, created_at FROM magic_link_to
 WHERE token_hash = $1
   AND used_at IS NULL
   AND expires_at > now()
+FOR UPDATE
 `
 
+// FOR UPDATE locks the row for the consume transaction so two concurrent
+// verifies can't both see it active: the second blocks, then re-checks the
+// WHERE after the first commits used_at and finds no row (single-use enforced).
 func (q *Queries) GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error) {
 	row := q.db.QueryRow(ctx, getActiveMagicLinkToken, tokenHash)
 	var i MagicLinkToken

@@ -12,6 +12,25 @@ import (
 
 type Querier interface {
 	AddOrgMember(ctx context.Context, arg AddOrgMemberParams) error
+	// Invalidate all of a user's outstanding signed session cookies by advancing
+	// their epoch. Used by logout (logout-all) and future disable/security flows.
+	BumpUserSessionEpoch(ctx context.Context, id pgtype.UUID) error
+	// Reaper: atomically re-queue events that have NO pending asynq task and are
+	// therefore genuinely stuck. Two cases:
+	//   * 'queued' older than @stuck_before — the ingest enqueue failed, so asynq
+	//     never received a task for it.
+	//   * 'in_flight' on a CLI destination — the CLI dispatch path returns
+	//     asynq.SkipRetry (handing off to the WS), so if the tunnel died mid-flight
+	//     nothing will ever retry it.
+	// HTTP 'in_flight' events are deliberately excluded: asynq owns their retry
+	// backoff AND their worker-death recovery, so reaping them would double-deliver
+	// and bypass the backoff schedule. @stuck_before must exceed the delivery + CLI
+	// response timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently
+	// without double-claiming (and locks only events, not the joined rows).
+	// ponytail: a pathologically low rate limit (refill > @stuck_before) could let
+	// a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
+	// acceptable under the system's at-least-once contract.
+	ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsParams) ([]ClaimStuckEventsRow, error)
 	CountOrgMembershipsForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -45,6 +64,9 @@ type Querier interface {
 	// demote requests can't both pass a count-then-update race.
 	DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error)
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
+	// FOR UPDATE locks the row for the consume transaction so two concurrent
+	// verifies can't both see it active: the second blocks, then re-checks the
+	// WHERE after the first commits used_at and finds no row (single-use enforced).
 	GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error)
 	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
@@ -88,8 +110,13 @@ type Querier interface {
 	ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error)
 	ListPendingOrgInvitesByEmail(ctx context.Context, email string) ([]OrgInvite, error)
 	ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]Source, error)
+	// attempt_count is bumped once per delivery cycle by MarkEventInFlight; the
+	// terminal transitions must NOT increment again (that double-counted attempts
+	// and made recorded attempt_num values skip).
 	MarkEventDelivered(ctx context.Context, id pgtype.UUID) error
 	MarkEventFailed(ctx context.Context, id pgtype.UUID) error
+	// The single attempt_count incrementer. recordAttempt derives attempt_num from
+	// the pre-increment count, so this keeps attempt_num monotonic and gap-free.
 	MarkEventInFlight(ctx context.Context, id pgtype.UUID) error
 	MarkMagicLinkUsed(ctx context.Context, id pgtype.UUID) error
 	MarkOrgInviteAccepted(ctx context.Context, id pgtype.UUID) error
@@ -99,9 +126,14 @@ type Querier interface {
 	// COALESCE pattern so unspecified fields keep current values.
 	PatchDestinationForOrg(ctx context.Context, arg PatchDestinationForOrgParams) (Destination, error)
 	PromoteUserToSuperAdmin(ctx context.Context, email string) error
+	// Do NOT reset attempt_count: zeroing it made the next attempt reuse
+	// attempt_num=1, colliding with the original attempt on UNIQUE(event_id,
+	// attempt_num) and silently dropping the retry's attempt row. Keep it monotonic;
+	// asynq's own retry budget is reset separately by re-enqueuing with Attempt=0.
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
+	SetSourceEnabled(ctx context.Context, arg SetSourceEnabledParams) (Source, error)
 	// Debounced: skip the write (and the WAL row / heap update / index churn)
 	// when the key was already touched within the past minute. Authenticated
 	// API traffic can exceed 1 req/s per key; without this gate the api_keys

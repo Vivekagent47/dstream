@@ -144,7 +144,7 @@ func TestAuthenticate_Session_PopulatesPrincipal(t *testing.T) {
 
 	s := newSigner(t)
 	w := httptest.NewRecorder()
-	s.Issue(w, uid, oid)
+	s.Issue(w, uid, oid, 0)
 	r := readSetCookie(t, w)
 
 	cap := &captured{}
