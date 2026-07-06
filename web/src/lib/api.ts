@@ -9,6 +9,8 @@ export interface Source {
   org_id: string
   name: string
   type: string
+  description: string
+  allowed_methods: string[]
   enabled: boolean
   ingest_token: string
   created_at: string
@@ -228,10 +230,13 @@ export const api = {
 
   // Sources
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
-  createSource: (input: { name: string; type?: string }) =>
+  getSource: (id: string) => http.get<Source>(`/api/sources/${id}`).then((r) => r.data),
+  createSource: (input: { name: string; description?: string }) =>
     http.post<Source>('/api/sources', input).then((r) => r.data),
-  patchSource: (id: string, input: { enabled: boolean }) =>
-    http.patch<Source>(`/api/sources/${id}`, input).then((r) => r.data),
+  updateSource: (
+    id: string,
+    input: { name?: string; description?: string; allowed_methods?: string[]; enabled?: boolean },
+  ) => http.patch<Source>(`/api/sources/${id}`, input).then((r) => r.data),
   deleteSource: (id: string) => http.delete<void>(`/api/sources/${id}`).then((r) => r.data),
 
   // Destinations
@@ -271,6 +276,7 @@ export const qk = {
   apiKeys: (org_id: string) => ['api-keys', org_id] as const,
   audit: (filters?: AuditFilters) => ['audit', filters ?? {}] as const,
   sources: () => ['sources'] as const,
+  source: (id: string) => ['sources', id] as const,
   destinations: () => ['destinations'] as const,
   connections: (sourceId: string) => ['connections', sourceId] as const,
   events: (params?: { limit?: number; cursor?: string }) => ['events', params ?? {}] as const,

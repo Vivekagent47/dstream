@@ -158,15 +158,17 @@ type RequestBody struct {
 }
 
 type Source struct {
-	ID            pgtype.UUID        `json:"id"`
-	OrgID         pgtype.UUID        `json:"org_id"`
-	Name          string             `json:"name"`
-	Type          string             `json:"type"`
-	IngestToken   string             `json:"ingest_token"`
-	SigningConfig []byte             `json:"signing_config"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	Enabled       bool               `json:"enabled"`
+	ID             pgtype.UUID        `json:"id"`
+	OrgID          pgtype.UUID        `json:"org_id"`
+	Name           string             `json:"name"`
+	Type           string             `json:"type"`
+	IngestToken    string             `json:"ingest_token"`
+	SigningConfig  []byte             `json:"signing_config"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Enabled        bool               `json:"enabled"`
+	Description    string             `json:"description"`
+	AllowedMethods []string           `json:"allowed_methods"`
 }
 
 type User struct {

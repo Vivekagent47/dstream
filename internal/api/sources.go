@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
@@ -17,6 +19,7 @@ import (
 type createSourceReq struct {
 	Name          string          `json:"name"`
 	Type          string          `json:"type"`
+	Description   string          `json:"description"`
 	SigningConfig json.RawMessage `json:"signing_config,omitempty"`
 }
 
@@ -51,6 +54,7 @@ func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
 		OrgID:         store.UUID(p.OrgID),
 		Name:          body.Name,
 		Type:          body.Type,
+		Description:   body.Description,
 		IngestToken:   token,
 		SigningConfig: signing,
 	})
@@ -112,13 +116,16 @@ func (d Deps) getSource(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchSourceReq struct {
-	Enabled *bool `json:"enabled,omitempty"`
+	Name           *string   `json:"name,omitempty"`
+	Description    *string   `json:"description,omitempty"`
+	AllowedMethods *[]string `json:"allowed_methods,omitempty"`
+	Enabled        *bool     `json:"enabled,omitempty"`
 }
 
-// patchSource serves PATCH /api/sources/{id} — currently just enable/disable.
-// A disabled source rejects ingest (GetSourceByIngestToken filters enabled);
-// note the change takes up to SourceCacheTTL (60s) to propagate through the
-// ingest source cache.
+// patchSource serves PATCH /api/sources/{id}: partial update of name,
+// description, allowed_methods, or enabled. On success it evicts the ingest
+// source cache so the change is effective immediately (not after the 60s
+// SourceCacheTTL).
 func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
@@ -135,24 +142,52 @@ func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if body.Enabled == nil {
+	if body.Name == nil && body.Description == nil && body.AllowedMethods == nil && body.Enabled == nil {
 		httpErr(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
-	row, err := d.Queries.SetSourceEnabled(r.Context(), store.SetSourceEnabledParams{
-		ID:      store.UUID(id),
-		OrgID:   store.UUID(p.OrgID),
-		Enabled: *body.Enabled,
+
+	var methods []string
+	if body.AllowedMethods != nil {
+		methods, err = validateMethods(*body.AllowedMethods)
+		if err != nil {
+			httpErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	row, err := d.Queries.UpdateSource(r.Context(), store.UpdateSourceParams{
+		ID:             store.UUID(id),
+		OrgID:          store.UUID(p.OrgID),
+		Name:           body.Name,
+		Description:    body.Description,
+		AllowedMethods: methods, // nil when not provided → COALESCE keeps existing
+		Enabled:        body.Enabled,
 	})
 	if err != nil {
-		httpErr(w, http.StatusNotFound, "not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		d.Log.Error("update source", "err", err)
+		httpErr(w, http.StatusInternalServerError, "update source")
 		return
 	}
+
+	if d.EvictSourceCache != nil {
+		d.EvictSourceCache(row.IngestToken)
+	}
+
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
 		Action:     "source.update",
 		TargetType: "source",
 		TargetID:   audit.PtrUUID(id),
-		Metadata:   map[string]any{"enabled": *body.Enabled},
+		Metadata: map[string]any{
+			"name":            row.Name,
+			"description":     row.Description,
+			"allowed_methods": row.AllowedMethods,
+			"enabled":         row.Enabled,
+		},
 	})
 	writeJSON(w, http.StatusOK, sourceView(row))
 }
@@ -168,13 +203,21 @@ func (d Deps) deleteSource(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if err := d.Queries.DeleteSourceForOrg(r.Context(), store.DeleteSourceForOrgParams{
+	token, err := d.Queries.DeleteSourceForOrg(r.Context(), store.DeleteSourceForOrgParams{
 		ID:    store.UUID(id),
 		OrgID: store.UUID(p.OrgID),
-	}); err != nil {
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpErr(w, http.StatusNotFound, "not found")
+			return
+		}
 		d.Log.Error("delete source", "err", err)
 		httpErr(w, http.StatusInternalServerError, "delete source")
 		return
+	}
+	if d.EvictSourceCache != nil {
+		d.EvictSourceCache(token)
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
 		Action:     "source.delete",
@@ -187,15 +230,17 @@ func (d Deps) deleteSource(w http.ResponseWriter, r *http.Request) {
 
 func sourceView(s store.Source) map[string]any {
 	return map[string]any{
-		"id":             store.GoUUID(s.ID).String(),
-		"org_id":         store.GoUUID(s.OrgID).String(),
-		"name":           s.Name,
-		"type":           s.Type,
-		"enabled":        s.Enabled,
-		"ingest_token":   s.IngestToken,
-		"signing_config": json.RawMessage(s.SigningConfig),
-		"created_at":     s.CreatedAt.Time,
-		"updated_at":     s.UpdatedAt.Time,
+		"id":              store.GoUUID(s.ID).String(),
+		"org_id":          store.GoUUID(s.OrgID).String(),
+		"name":            s.Name,
+		"type":            s.Type,
+		"description":     s.Description,
+		"allowed_methods": s.AllowedMethods,
+		"enabled":         s.Enabled,
+		"ingest_token":    s.IngestToken,
+		"signing_config":  json.RawMessage(s.SigningConfig),
+		"created_at":      s.CreatedAt.Time,
+		"updated_at":      s.UpdatedAt.Time,
 	}
 }
 

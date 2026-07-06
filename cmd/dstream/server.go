@@ -130,14 +130,15 @@ func serverCmd() *cobra.Command {
 			ih.Mount(r)
 
 			api.Mount(r, api.Deps{
-				Log:           log,
-				Queries:       q,
-				Pool:          pool,
-				Redis:         rdb,
-				Queue:         qc,
-				Signer:        signer,
-				PublicBaseURL: cfg.PublicBaseURL,
-				DevMode:       cfg.DevMode,
+				Log:              log,
+				Queries:          q,
+				Pool:             pool,
+				Redis:            rdb,
+				Queue:            qc,
+				Signer:           signer,
+				PublicBaseURL:    cfg.PublicBaseURL,
+				DevMode:          cfg.DevMode,
+				EvictSourceCache: ih.InvalidateSource,
 			}, mw.CSRF(cfg.CookieSecure))
 
 			admin.Mount(r, admin.Deps{

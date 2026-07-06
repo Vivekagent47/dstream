@@ -33,6 +33,10 @@ type Deps struct {
 	// magic-link and invite tokens to the server log). Production must
 	// leave this off, since the server log is then an audit-bypass vector.
 	DevMode bool
+	// EvictSourceCache drops a source from the ingest in-process cache so
+	// enable/disable and allowed-methods edits take effect immediately.
+	// nil-safe: nil means no cache to evict.
+	EvictSourceCache func(token string)
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
