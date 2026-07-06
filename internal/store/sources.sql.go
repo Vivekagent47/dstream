@@ -12,15 +12,16 @@ import (
 )
 
 const createSource = `-- name: CreateSource :one
-INSERT INTO sources (org_id, name, type, ingest_token, signing_config)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled
+INSERT INTO sources (org_id, name, type, description, ingest_token, signing_config)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled, description, allowed_methods
 `
 
 type CreateSourceParams struct {
 	OrgID         pgtype.UUID `json:"org_id"`
 	Name          string      `json:"name"`
 	Type          string      `json:"type"`
+	Description   string      `json:"description"`
 	IngestToken   string      `json:"ingest_token"`
 	SigningConfig []byte      `json:"signing_config"`
 }
@@ -30,6 +31,7 @@ func (q *Queries) CreateSource(ctx context.Context, arg CreateSourceParams) (Sou
 		arg.OrgID,
 		arg.Name,
 		arg.Type,
+		arg.Description,
 		arg.IngestToken,
 		arg.SigningConfig,
 	)
@@ -44,12 +46,14 @@ func (q *Queries) CreateSource(ctx context.Context, arg CreateSourceParams) (Sou
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Enabled,
+		&i.Description,
+		&i.AllowedMethods,
 	)
 	return i, err
 }
 
-const deleteSourceForOrg = `-- name: DeleteSourceForOrg :exec
-DELETE FROM sources WHERE id = $1 AND org_id = $2
+const deleteSourceForOrg = `-- name: DeleteSourceForOrg :one
+DELETE FROM sources WHERE id = $1 AND org_id = $2 RETURNING ingest_token
 `
 
 type DeleteSourceForOrgParams struct {
@@ -57,13 +61,15 @@ type DeleteSourceForOrgParams struct {
 	OrgID pgtype.UUID `json:"org_id"`
 }
 
-func (q *Queries) DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrgParams) error {
-	_, err := q.db.Exec(ctx, deleteSourceForOrg, arg.ID, arg.OrgID)
-	return err
+func (q *Queries) DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrgParams) (string, error) {
+	row := q.db.QueryRow(ctx, deleteSourceForOrg, arg.ID, arg.OrgID)
+	var ingest_token string
+	err := row.Scan(&ingest_token)
+	return ingest_token, err
 }
 
 const getSourceByIngestToken = `-- name: GetSourceByIngestToken :one
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled FROM sources WHERE ingest_token = $1 AND enabled = TRUE
+SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled, description, allowed_methods FROM sources WHERE ingest_token = $1 AND enabled = TRUE
 `
 
 func (q *Queries) GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error) {
@@ -79,12 +85,14 @@ func (q *Queries) GetSourceByIngestToken(ctx context.Context, ingestToken string
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Enabled,
+		&i.Description,
+		&i.AllowedMethods,
 	)
 	return i, err
 }
 
 const getSourceForOrg = `-- name: GetSourceForOrg :one
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled FROM sources WHERE id = $1 AND org_id = $2
+SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled, description, allowed_methods FROM sources WHERE id = $1 AND org_id = $2
 `
 
 type GetSourceForOrgParams struct {
@@ -105,12 +113,14 @@ func (q *Queries) GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Enabled,
+		&i.Description,
+		&i.AllowedMethods,
 	)
 	return i, err
 }
 
 const listSourcesByOrg = `-- name: ListSourcesByOrg :many
-SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled FROM sources
+SELECT id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled, description, allowed_methods FROM sources
 WHERE org_id = $1
 ORDER BY created_at DESC
 `
@@ -134,6 +144,8 @@ func (q *Queries) ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]So
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Enabled,
+			&i.Description,
+			&i.AllowedMethods,
 		); err != nil {
 			return nil, err
 		}
@@ -145,21 +157,35 @@ func (q *Queries) ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]So
 	return items, nil
 }
 
-const setSourceEnabled = `-- name: SetSourceEnabled :one
+const updateSource = `-- name: UpdateSource :one
 UPDATE sources
-   SET enabled = $3, updated_at = now()
- WHERE id = $1 AND org_id = $2
- RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled
+   SET name            = COALESCE($1, name),
+       description     = COALESCE($2, description),
+       allowed_methods = COALESCE($3::text[], allowed_methods),
+       enabled         = COALESCE($4, enabled),
+       updated_at      = now()
+ WHERE id = $5 AND org_id = $6
+ RETURNING id, org_id, name, type, ingest_token, signing_config, created_at, updated_at, enabled, description, allowed_methods
 `
 
-type SetSourceEnabledParams struct {
-	ID      pgtype.UUID `json:"id"`
-	OrgID   pgtype.UUID `json:"org_id"`
-	Enabled bool        `json:"enabled"`
+type UpdateSourceParams struct {
+	Name           *string     `json:"name"`
+	Description    *string     `json:"description"`
+	AllowedMethods []string    `json:"allowed_methods"`
+	Enabled        *bool       `json:"enabled"`
+	ID             pgtype.UUID `json:"id"`
+	OrgID          pgtype.UUID `json:"org_id"`
 }
 
-func (q *Queries) SetSourceEnabled(ctx context.Context, arg SetSourceEnabledParams) (Source, error) {
-	row := q.db.QueryRow(ctx, setSourceEnabled, arg.ID, arg.OrgID, arg.Enabled)
+func (q *Queries) UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error) {
+	row := q.db.QueryRow(ctx, updateSource,
+		arg.Name,
+		arg.Description,
+		arg.AllowedMethods,
+		arg.Enabled,
+		arg.ID,
+		arg.OrgID,
+	)
 	var i Source
 	err := row.Scan(
 		&i.ID,
@@ -171,6 +197,8 @@ func (q *Queries) SetSourceEnabled(ctx context.Context, arg SetSourceEnabledPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Enabled,
+		&i.Description,
+		&i.AllowedMethods,
 	)
 	return i, err
 }

@@ -66,7 +66,7 @@ type Querier interface {
 	// remains. Same race-free invariant as DemoteOrgOwnerIfNotLast.
 	DeleteOrgOwnerIfNotLast(ctx context.Context, arg DeleteOrgOwnerIfNotLastParams) (int64, error)
 	DeleteOrganization(ctx context.Context, id pgtype.UUID) error
-	DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrgParams) error
+	DeleteSourceForOrg(ctx context.Context, arg DeleteSourceForOrgParams) (string, error)
 	// Atomic demote: change role to $3 ONLY IF at least one other owner
 	// remains. The whole operation is one statement, so two concurrent
 	// demote requests can't both pass a count-then-update race.
@@ -141,7 +141,6 @@ type Querier interface {
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
-	SetSourceEnabled(ctx context.Context, arg SetSourceEnabledParams) (Source, error)
 	// Debounced: skip the write (and the WAL row / heap update / index churn)
 	// when the key was already touched within the past minute. Authenticated
 	// API traffic can exceed 1 req/s per key; without this gate the api_keys
@@ -157,6 +156,7 @@ type Querier interface {
 	TransferOrgOwnership(ctx context.Context, arg TransferOrgOwnershipParams) (int64, error)
 	UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error
 	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (Organization, error)
+	UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error)
 }
 
 var _ Querier = (*Queries)(nil)

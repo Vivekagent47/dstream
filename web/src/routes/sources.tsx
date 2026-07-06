@@ -1,11 +1,10 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Copy, Inbox, MoreHorizontal, Plus, Search } from 'lucide-react'
 
 import { api, qk, type Source } from '#/lib/api'
-import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
@@ -58,8 +57,6 @@ export const Route = createFileRoute('/sources')({
   errorComponent: AuthErrorBoundary,
 })
 
-const SOURCE_TYPES = ['generic', 'stripe', 'github', 'shopify'] as const
-
 function ingestUrl(token: string): string {
   const origin = typeof window === 'undefined' ? '' : window.location.origin
   return `${origin}/e/${token}`
@@ -71,7 +68,6 @@ function SourcesPage() {
 
   const [q, setQ] = useState('')
   const [status, setStatus] = useState('all')
-  const [type, setType] = useState('all')
   const [order, setOrder] = useState<'newest' | 'oldest'>('newest')
   const [createOpen, setCreateOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Source | null>(null)
@@ -81,15 +77,14 @@ function SourcesPage() {
     const needle = q.trim().toLowerCase()
     if (needle) list = list.filter((s) => s.name.toLowerCase().includes(needle))
     if (status !== 'all') list = list.filter((s) => (status === 'active' ? s.enabled : !s.enabled))
-    if (type !== 'all') list = list.filter((s) => s.type === type)
     return [...list].sort((a, b) => {
       const d = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       return order === 'newest' ? -d : d
     })
-  }, [sources, q, status, type, order])
+  }, [sources, q, status, order])
 
   const patch = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.patchSource(id, { enabled }),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.updateSource(id, { enabled }),
     onSuccess: (_r, v) => {
       qc.invalidateQueries({ queryKey: qk.sources() })
       toast.success(v.enabled ? 'Source enabled' : 'Source disabled')
@@ -145,21 +140,6 @@ function SourcesPage() {
             <SelectItem value="disabled">Disabled</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={type} onValueChange={(v) => setType(v ?? 'all')}>
-          <SelectTrigger className="w-[150px]">
-            <SelectValue>
-              {(v: string | null) => (!v || v === 'all' ? 'All types' : capitalize(v))}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            {SOURCE_TYPES.map((t) => (
-              <SelectItem key={t} value={t}>
-                {capitalize(t)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
         <Select value={order} onValueChange={(v) => setOrder(v as 'newest' | 'oldest')}>
           <SelectTrigger className="ml-auto w-[170px]">
             <SelectValue />
@@ -176,7 +156,6 @@ function SourcesPage() {
           <TableHeader>
             <TableRow>
               <TableHead className="pl-6">Source</TableHead>
-              <TableHead>Type</TableHead>
               <TableHead>Ingest URL</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Created</TableHead>
@@ -187,12 +166,15 @@ function SourcesPage() {
             {rows.map((s) => (
               <TableRow key={s.id}>
                 <TableCell className="pl-6">
-                  <div className="flex items-center gap-2.5 font-medium">
+                  <Link
+                    to="/sources/$id"
+                    params={{ id: s.id }}
+                    className="flex items-center gap-2.5 font-medium hover:underline"
+                  >
                     <Inbox className="h-4 w-4 shrink-0 text-muted-foreground" />
                     {s.name}
-                  </div>
+                  </Link>
                 </TableCell>
-                <TableCell className="text-muted-foreground">{capitalize(s.type)}</TableCell>
                 <TableCell>
                   <button
                     type="button"
@@ -227,7 +209,7 @@ function SourcesPage() {
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
                   {sources && sources.length > 0
                     ? 'No sources match these filters.'
                     : 'No sources yet — create one to get a webhook URL.'}
@@ -313,16 +295,16 @@ function CreateSourceDialog({
 }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
-  const [type, setType] = useState<string>('generic')
+  const [description, setDescription] = useState('')
 
   const create = useMutation({
-    mutationFn: () => api.createSource({ name, type }),
+    mutationFn: () => api.createSource({ name, description }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.sources() })
       toast.success('Source created')
       onOpenChange(false)
       setName('')
-      setType('generic')
+      setDescription('')
     },
     onError: (e) => toast.error((e as Error).message),
   })
@@ -358,19 +340,16 @@ function CreateSourceDialog({
             />
           </div>
           <div>
-            <Label className="mb-2 block">Type</Label>
-            <Select value={type} onValueChange={(v) => setType(v as string)}>
-              <SelectTrigger className="w-full">
-                <SelectValue>{(v: string | null) => (v ? capitalize(v) : 'Select a type')}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {SOURCE_TYPES.map((t) => (
-                  <SelectItem key={t} value={t}>
-                    {capitalize(t)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label htmlFor="src-description" className="mb-2 block">
+              Description <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="src-description"
+              className="w-full"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Production Stripe webhooks"
+            />
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>

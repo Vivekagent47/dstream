@@ -134,6 +134,8 @@ CREATE TABLE sources (
     type            TEXT NOT NULL,
     ingest_token    TEXT NOT NULL UNIQUE,
     signing_config  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    description     TEXT NOT NULL DEFAULT '',
+    allowed_methods TEXT[] NOT NULL DEFAULT '{POST,PUT,PATCH,DELETE}',
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

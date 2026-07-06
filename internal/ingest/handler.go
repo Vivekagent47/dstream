@@ -63,7 +63,10 @@ type sourceCacheEntry struct {
 }
 
 func (h *Handler) Mount(r chi.Router) {
-	r.Post("/e/{token}", h.handleIngest)
+	// GET is intentionally not registered — dstream never ingests over GET.
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		r.Method(m, "/e/{token}", http.HandlerFunc(h.handleIngest))
+	}
 }
 
 type ingestResponse struct {
@@ -88,6 +91,11 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourceID := store.GoUUID(src.ID)
+
+	if !methodAllowed(src.AllowedMethods, r.Method) {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
 	// Per-source rate limit BEFORE reading the (up to 5 MiB) body, so a flood
 	// can't force large reads. Fail-open on limiter error — availability beats
@@ -220,6 +228,15 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// InvalidateSource drops a source from the in-process cache so enable/disable
+// and allowed-methods edits take effect immediately instead of after
+// SourceCacheTTL.
+// ponytail: in-process only. If ingest is ever split into its own process,
+// this must become a Redis pub/sub invalidation.
+func (h *Handler) InvalidateSource(token string) {
+	h.sourceCache.Delete(token)
 }
 
 func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source, error) {
