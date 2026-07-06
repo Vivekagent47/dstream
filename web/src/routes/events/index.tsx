@@ -18,7 +18,7 @@ import {
 
 const PAGE_SIZE = 100
 
-export const Route = createFileRoute('/events')({
+export const Route = createFileRoute('/events/')({
   component: EventsPage,
   errorComponent: AuthErrorBoundary,
 })

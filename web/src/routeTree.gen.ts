@@ -9,40 +9,26 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as EventsRouteImport } from './routes/events'
-import { Route as DestinationsRouteImport } from './routes/destinations'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as SourcesIdRouteImport } from './routes/sources.$id'
-import { Route as SettingsOrgRouteImport } from './routes/settings.org'
-import { Route as SettingsMembersRouteImport } from './routes/settings.members'
-import { Route as SettingsInvitesRouteImport } from './routes/settings.invites'
-import { Route as SettingsAuditRouteImport } from './routes/settings.audit'
-import { Route as SettingsApiKeysRouteImport } from './routes/settings.api-keys'
-import { Route as OrgsNewRouteImport } from './routes/orgs.new'
-import { Route as InvitesTokenRouteImport } from './routes/invites.$token'
-import { Route as EventsIdRouteImport } from './routes/events.$id'
-import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
+import { Route as SourcesIndexRouteImport } from './routes/sources/index'
+import { Route as EventsIndexRouteImport } from './routes/events/index'
+import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
+import { Route as SourcesIdRouteImport } from './routes/sources/$id'
+import { Route as SettingsOrgRouteImport } from './routes/settings/org'
+import { Route as SettingsMembersRouteImport } from './routes/settings/members'
+import { Route as SettingsInvitesRouteImport } from './routes/settings/invites'
+import { Route as SettingsAuditRouteImport } from './routes/settings/audit'
+import { Route as SettingsApiKeysRouteImport } from './routes/settings/api-keys'
+import { Route as OrgsNewRouteImport } from './routes/orgs/new'
+import { Route as InvitesTokenRouteImport } from './routes/invites/$token'
+import { Route as EventsIdRouteImport } from './routes/events/$id'
+import { Route as DestinationsIdRouteImport } from './routes/destinations/$id'
+import { Route as AuthVerifyRouteImport } from './routes/auth/verify'
 
-const SourcesRoute = SourcesRouteImport.update({
-  id: '/sources',
-  path: '/sources',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const EventsRoute = EventsRouteImport.update({
-  id: '/events',
-  path: '/events',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DestinationsRoute = DestinationsRouteImport.update({
-  id: '/destinations',
-  path: '/destinations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -50,10 +36,25 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SourcesIndexRoute = SourcesIndexRouteImport.update({
+  id: '/sources/',
+  path: '/sources/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EventsIndexRoute = EventsIndexRouteImport.update({
+  id: '/events/',
+  path: '/events/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DestinationsIndexRoute = DestinationsIndexRouteImport.update({
+  id: '/destinations/',
+  path: '/destinations/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SourcesIdRoute = SourcesIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => SourcesRoute,
+  id: '/sources/$id',
+  path: '/sources/$id',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsOrgRoute = SettingsOrgRouteImport.update({
   id: '/settings/org',
@@ -91,9 +92,14 @@ const InvitesTokenRoute = InvitesTokenRouteImport.update({
   getParentRoute: () => rootRouteImport,
 } as any)
 const EventsIdRoute = EventsIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => EventsRoute,
+  id: '/events/$id',
+  path: '/events/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DestinationsIdRoute = DestinationsIdRouteImport.update({
+  id: '/destinations/$id',
+  path: '/destinations/$id',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AuthVerifyRoute = AuthVerifyRouteImport.update({
   id: '/auth/verify',
@@ -103,11 +109,9 @@ const AuthVerifyRoute = AuthVerifyRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/destinations': typeof DestinationsRoute
-  '/events': typeof EventsRouteWithChildren
   '/login': typeof LoginRoute
-  '/sources': typeof SourcesRouteWithChildren
   '/auth/verify': typeof AuthVerifyRoute
+  '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
   '/orgs/new': typeof OrgsNewRoute
@@ -117,14 +121,15 @@ export interface FileRoutesByFullPath {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/destinations/': typeof DestinationsIndexRoute
+  '/events/': typeof EventsIndexRoute
+  '/sources/': typeof SourcesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/destinations': typeof DestinationsRoute
-  '/events': typeof EventsRouteWithChildren
   '/login': typeof LoginRoute
-  '/sources': typeof SourcesRouteWithChildren
   '/auth/verify': typeof AuthVerifyRoute
+  '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
   '/orgs/new': typeof OrgsNewRoute
@@ -134,15 +139,16 @@ export interface FileRoutesByTo {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/destinations': typeof DestinationsIndexRoute
+  '/events': typeof EventsIndexRoute
+  '/sources': typeof SourcesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/destinations': typeof DestinationsRoute
-  '/events': typeof EventsRouteWithChildren
   '/login': typeof LoginRoute
-  '/sources': typeof SourcesRouteWithChildren
   '/auth/verify': typeof AuthVerifyRoute
+  '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
   '/orgs/new': typeof OrgsNewRoute
@@ -152,16 +158,17 @@ export interface FileRoutesById {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/destinations/': typeof DestinationsIndexRoute
+  '/events/': typeof EventsIndexRoute
+  '/sources/': typeof SourcesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/destinations'
-    | '/events'
     | '/login'
-    | '/sources'
     | '/auth/verify'
+    | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
     | '/orgs/new'
@@ -171,14 +178,15 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/destinations/'
+    | '/events/'
+    | '/sources/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/destinations'
-    | '/events'
     | '/login'
-    | '/sources'
     | '/auth/verify'
+    | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
     | '/orgs/new'
@@ -188,14 +196,15 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/destinations'
+    | '/events'
+    | '/sources'
   id:
     | '__root__'
     | '/'
-    | '/destinations'
-    | '/events'
     | '/login'
-    | '/sources'
     | '/auth/verify'
+    | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
     | '/orgs/new'
@@ -205,15 +214,17 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/destinations/'
+    | '/events/'
+    | '/sources/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  DestinationsRoute: typeof DestinationsRoute
-  EventsRoute: typeof EventsRouteWithChildren
   LoginRoute: typeof LoginRoute
-  SourcesRoute: typeof SourcesRouteWithChildren
   AuthVerifyRoute: typeof AuthVerifyRoute
+  DestinationsIdRoute: typeof DestinationsIdRoute
+  EventsIdRoute: typeof EventsIdRoute
   InvitesTokenRoute: typeof InvitesTokenRoute
   OrgsNewRoute: typeof OrgsNewRoute
   SettingsApiKeysRoute: typeof SettingsApiKeysRoute
@@ -221,36 +232,19 @@ export interface RootRouteChildren {
   SettingsInvitesRoute: typeof SettingsInvitesRoute
   SettingsMembersRoute: typeof SettingsMembersRoute
   SettingsOrgRoute: typeof SettingsOrgRoute
+  SourcesIdRoute: typeof SourcesIdRoute
+  DestinationsIndexRoute: typeof DestinationsIndexRoute
+  EventsIndexRoute: typeof EventsIndexRoute
+  SourcesIndexRoute: typeof SourcesIndexRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/sources': {
-      id: '/sources'
-      path: '/sources'
-      fullPath: '/sources'
-      preLoaderRoute: typeof SourcesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/events': {
-      id: '/events'
-      path: '/events'
-      fullPath: '/events'
-      preLoaderRoute: typeof EventsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/destinations': {
-      id: '/destinations'
-      path: '/destinations'
-      fullPath: '/destinations'
-      preLoaderRoute: typeof DestinationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -260,12 +254,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/sources/': {
+      id: '/sources/'
+      path: '/sources'
+      fullPath: '/sources/'
+      preLoaderRoute: typeof SourcesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/events/': {
+      id: '/events/'
+      path: '/events'
+      fullPath: '/events/'
+      preLoaderRoute: typeof EventsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/destinations/': {
+      id: '/destinations/'
+      path: '/destinations'
+      fullPath: '/destinations/'
+      preLoaderRoute: typeof DestinationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sources/$id': {
       id: '/sources/$id'
-      path: '/$id'
+      path: '/sources/$id'
       fullPath: '/sources/$id'
       preLoaderRoute: typeof SourcesIdRouteImport
-      parentRoute: typeof SourcesRoute
+      parentRoute: typeof rootRouteImport
     }
     '/settings/org': {
       id: '/settings/org'
@@ -318,10 +333,17 @@ declare module '@tanstack/react-router' {
     }
     '/events/$id': {
       id: '/events/$id'
-      path: '/$id'
+      path: '/events/$id'
       fullPath: '/events/$id'
       preLoaderRoute: typeof EventsIdRouteImport
-      parentRoute: typeof EventsRoute
+      parentRoute: typeof rootRouteImport
+    }
+    '/destinations/$id': {
+      id: '/destinations/$id'
+      path: '/destinations/$id'
+      fullPath: '/destinations/$id'
+      preLoaderRoute: typeof DestinationsIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/auth/verify': {
       id: '/auth/verify'
@@ -333,35 +355,12 @@ declare module '@tanstack/react-router' {
   }
 }
 
-interface EventsRouteChildren {
-  EventsIdRoute: typeof EventsIdRoute
-}
-
-const EventsRouteChildren: EventsRouteChildren = {
-  EventsIdRoute: EventsIdRoute,
-}
-
-const EventsRouteWithChildren =
-  EventsRoute._addFileChildren(EventsRouteChildren)
-
-interface SourcesRouteChildren {
-  SourcesIdRoute: typeof SourcesIdRoute
-}
-
-const SourcesRouteChildren: SourcesRouteChildren = {
-  SourcesIdRoute: SourcesIdRoute,
-}
-
-const SourcesRouteWithChildren =
-  SourcesRoute._addFileChildren(SourcesRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  DestinationsRoute: DestinationsRoute,
-  EventsRoute: EventsRouteWithChildren,
   LoginRoute: LoginRoute,
-  SourcesRoute: SourcesRouteWithChildren,
   AuthVerifyRoute: AuthVerifyRoute,
+  DestinationsIdRoute: DestinationsIdRoute,
+  EventsIdRoute: EventsIdRoute,
   InvitesTokenRoute: InvitesTokenRoute,
   OrgsNewRoute: OrgsNewRoute,
   SettingsApiKeysRoute: SettingsApiKeysRoute,
@@ -369,6 +368,10 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsInvitesRoute: SettingsInvitesRoute,
   SettingsMembersRoute: SettingsMembersRoute,
   SettingsOrgRoute: SettingsOrgRoute,
+  SourcesIdRoute: SourcesIdRoute,
+  DestinationsIndexRoute: DestinationsIndexRoute,
+  EventsIndexRoute: EventsIndexRoute,
+  SourcesIndexRoute: SourcesIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

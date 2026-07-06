@@ -28,12 +28,12 @@ export function TopBar({ children }: { children: ReactNode }) {
 // PageHeader renders a page's title (and optional right-aligned actions) into
 // the top bar. Returns null until the slot mounts (and during SSR) — the title
 // then appears after hydration.
-export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
+export function PageHeader({ title, actions }: { title: ReactNode; actions?: ReactNode }) {
   const slot = useContext(SlotContext)
   if (!slot) return null
   return createPortal(
     <>
-      <h1 className="truncate text-base font-semibold">{title}</h1>
+      <h1 className="flex min-w-0 items-center truncate text-base font-semibold">{title}</h1>
       {actions ? <div className="ml-auto flex items-center gap-2">{actions}</div> : null}
     </>,
     slot,

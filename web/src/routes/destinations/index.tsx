@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
@@ -48,7 +48,7 @@ const destinationsQuery = queryOptions({
   queryFn: () => api.listDestinations(),
 })
 
-export const Route = createFileRoute('/destinations')({
+export const Route = createFileRoute('/destinations/')({
   // Client-only prefetch — SSR can't forward the session cookie (see sources).
   loader: ({ context }) =>
     typeof window === 'undefined'
@@ -139,7 +139,9 @@ function DestinationsPage() {
         </Select>
         <Select value={order} onValueChange={(v) => setOrder(v as 'newest' | 'oldest')}>
           <SelectTrigger className="ml-auto w-[170px]">
-            <SelectValue />
+            <SelectValue>
+              {(v: string | null) => (v === 'oldest' ? 'Oldest → Newest' : 'Newest → Oldest')}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="newest">Newest → Oldest</SelectItem>
@@ -164,10 +166,14 @@ function DestinationsPage() {
             {rows.map((d) => (
               <TableRow key={d.id}>
                 <TableCell className="pl-6">
-                  <div className="flex items-center gap-2.5 font-medium">
+                  <Link
+                    to="/destinations/$id"
+                    params={{ id: d.id }}
+                    className="flex items-center gap-2.5 font-medium hover:underline"
+                  >
                     <Send className="h-4 w-4 shrink-0 text-muted-foreground" />
                     {d.name}
-                  </div>
+                  </Link>
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary">{typeLabel(d.type)}</Badge>
@@ -278,6 +284,7 @@ function CreateDestinationDialog({
 }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
   const [type, setType] = useState<'http' | 'cli'>('http')
   const [url, setUrl] = useState('')
 
@@ -285,6 +292,7 @@ function CreateDestinationDialog({
     mutationFn: () =>
       api.createDestination({
         name,
+        description,
         type,
         ...(type === 'http' ? { url } : {}),
       }),
@@ -293,6 +301,7 @@ function CreateDestinationDialog({
       toast.success('Destination created')
       onOpenChange(false)
       setName('')
+      setDescription('')
       setType('http')
       setUrl('')
     },
@@ -327,6 +336,18 @@ function CreateDestinationDialog({
               placeholder="orders-service"
               required
               autoFocus
+            />
+          </div>
+          <div>
+            <Label htmlFor="dest-description" className="mb-2 block">
+              Description <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="dest-description"
+              className="w-full"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Production orders webhook consumer"
             />
           </div>
           <div>

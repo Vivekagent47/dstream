@@ -47,7 +47,7 @@ const sourcesQuery = queryOptions({
   queryFn: () => api.listSources(),
 })
 
-export const Route = createFileRoute('/sources')({
+export const Route = createFileRoute('/sources/')({
   // Client-only prefetch. On SSR the Node server can't forward the browser's
   // session cookie to the API, so an authed fetch here 401s and 500s the page.
   // The component's useQuery loads the data (with the cookie) after hydration.
@@ -132,7 +132,11 @@ function SourcesPage() {
         </div>
         <Select value={status} onValueChange={(v) => setStatus(v ?? 'all')}>
           <SelectTrigger className="w-[140px]">
-            <SelectValue />
+            <SelectValue>
+              {(v: string | null) =>
+                v === 'active' ? 'Active' : v === 'disabled' ? 'Disabled' : 'All statuses'
+              }
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
@@ -142,7 +146,9 @@ function SourcesPage() {
         </Select>
         <Select value={order} onValueChange={(v) => setOrder(v as 'newest' | 'oldest')}>
           <SelectTrigger className="ml-auto w-[170px]">
-            <SelectValue />
+            <SelectValue>
+              {(v: string | null) => (v === 'oldest' ? 'Oldest → Newest' : 'Newest → Oldest')}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="newest">Newest → Oldest</SelectItem>

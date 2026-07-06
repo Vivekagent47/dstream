@@ -149,11 +149,12 @@ CREATE TABLE destinations (
     org_id            UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name              TEXT NOT NULL,
     type              TEXT NOT NULL CHECK (type IN ('http', 'cli')),
-    url               TEXT,
-    auth_config       JSONB NOT NULL DEFAULT '{}'::jsonb,
-    rate_limit_rps    INTEGER,
-    rate_limit_burst  INTEGER,
-    max_inflight      INTEGER,
+    description       TEXT NOT NULL DEFAULT '',
+    url               TEXT,                              -- delivery endpoint; NULL for 'cli' type
+    auth_config       JSONB NOT NULL DEFAULT '{}'::jsonb, -- delivery auth secrets (HMAC/bearer); never sent to client, API exposes auth_configured flag only
+    rate_limit_rps    INTEGER,                           -- max deliveries/sec to this endpoint; NULL = unlimited
+    rate_limit_burst  INTEGER,                           -- token-bucket burst on top of rps: spike allowance after idle
+    max_inflight      INTEGER,                           -- max concurrent in-flight deliveries; caps parallelism for slow endpoints
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (org_id, name)

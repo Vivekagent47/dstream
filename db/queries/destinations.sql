@@ -1,7 +1,7 @@
 -- name: CreateDestination :one
-INSERT INTO destinations (org_id, name, type, url, auth_config,
+INSERT INTO destinations (org_id, name, type, description, url, auth_config,
                            rate_limit_rps, rate_limit_burst, max_inflight)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: ListDestinationsByOrg :many
@@ -17,6 +17,7 @@ SELECT * FROM destinations WHERE id = $1 AND org_id = $2;
 UPDATE destinations
    SET name             = COALESCE(sqlc.narg('name'),             name),
        type             = COALESCE(sqlc.narg('type'),             type),
+       description      = COALESCE(sqlc.narg('description'),      description),
        url              = COALESCE(sqlc.narg('url'),              url),
        auth_config      = COALESCE(sqlc.narg('auth_config'),      auth_config),
        rate_limit_rps   = COALESCE(sqlc.narg('rate_limit_rps'),   rate_limit_rps),

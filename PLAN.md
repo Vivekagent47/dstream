@@ -112,7 +112,7 @@ Detailed enough to execute. Target ~2500 words. Sections:
 - `POST /e/{ingest_token}` — accept any method/headers/body up to 5MB.
 - Resolve source by token (cached in Redis, 60s TTL).
 - Compute body hash; store request row + body (start: Postgres LO or `bytea`; later: S3/MinIO via interface).
-- If source has signing config: verify signature, set `sig_verified` flag (do not reject — observability over enforcement; configurable later).
+- **Auth scope decision (2026-07-06):** no inbound signature verification and no outbound delivery auth until the last phase / post-release. Plain forwarding only. Inbound HMAC-verify code removed from ingest (`requests.sig_verified` always false); `destinations.auth_config` stored-but-unused (delivery worker attaches no auth). Columns + API fields kept so no migration needed when auth lands.
 - Dedup window: `SETNX dedup:{source_id}:{body_hash} 1 EX 60`. Skip enqueue if dup, still record request.
 - For each enabled connection on source: create `events` row + `asynq.Enqueue("deliver", {event_id})` onto the `deliveries` queue.
 - Respond `200 {request_id, event_ids:[]}` within 50ms p99 (no synchronous delivery).

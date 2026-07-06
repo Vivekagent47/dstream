@@ -147,9 +147,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		BodyRef:     bodyRef,
 		BodySize:    int32(len(body)),
 		ContentType: optStr(r.Header.Get("Content-Type")),
-		// Observability, not enforcement: record whether the source's HMAC
-		// signing config validates this request; ingest proceeds either way.
-		SigVerified: verifySignature(src.SigningConfig, r.Header, body),
+		// Signature verification removed — auth is post-release scope (see
+		// PLAN.md ingest path). Column kept so no migration when it lands.
+		SigVerified: false,
 		IngestIP:    parseRemoteAddr(r),
 	})
 	if err != nil {

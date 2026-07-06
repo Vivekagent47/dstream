@@ -14,6 +14,7 @@ export interface Source {
   enabled: boolean
   ingest_token: string
   created_at: string
+  updated_at: string
 }
 
 export interface Destination {
@@ -21,6 +22,7 @@ export interface Destination {
   org_id: string
   name: string
   type: 'http' | 'cli'
+  description: string
   url: string | null
   // auth_configured is a non-sensitive flag: true when the destination has
   // an auth_config blob set on the server. The raw auth_config (HMAC
@@ -30,6 +32,7 @@ export interface Destination {
   rate_limit_burst: number | null
   max_inflight: number | null
   created_at: string
+  updated_at: string
 }
 
 export interface Connection {
@@ -241,6 +244,8 @@ export const api = {
 
   // Destinations
   listDestinations: () => http.get<Destination[]>('/api/destinations').then((r) => r.data),
+  getDestination: (id: string) =>
+    http.get<Destination>(`/api/destinations/${id}`).then((r) => r.data),
   createDestination: (input: Partial<Destination> & { name: string; type: 'http' | 'cli' }) =>
     http.post<Destination>('/api/destinations', input).then((r) => r.data),
   patchDestination: (id: string, input: Partial<Destination>) =>
@@ -278,6 +283,7 @@ export const qk = {
   sources: () => ['sources'] as const,
   source: (id: string) => ['sources', id] as const,
   destinations: () => ['destinations'] as const,
+  destination: (id: string) => ['destinations', id] as const,
   connections: (sourceId: string) => ['connections', sourceId] as const,
   events: (params?: { limit?: number; cursor?: string }) => ['events', params ?? {}] as const,
   event: (id: string) => ['event', id] as const,

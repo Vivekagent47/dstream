@@ -85,6 +85,7 @@ type Destination struct {
 	MaxInflight    *int32             `json:"max_inflight"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Description    string             `json:"description"`
 }
 
 type Event struct {

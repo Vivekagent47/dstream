@@ -16,6 +16,7 @@ import (
 type createDestinationReq struct {
 	Name           string          `json:"name"`
 	Type           string          `json:"type"` // "http" | "cli"
+	Description    string          `json:"description,omitempty"`
 	URL            *string         `json:"url,omitempty"`
 	AuthConfig     json.RawMessage `json:"auth_config,omitempty"`
 	RateLimitRPS   *int32          `json:"rate_limit_rps,omitempty"`
@@ -60,6 +61,7 @@ func (d Deps) createDestination(w http.ResponseWriter, r *http.Request) {
 		OrgID:          store.UUID(p.OrgID),
 		Name:           body.Name,
 		Type:           body.Type,
+		Description:    body.Description,
 		Url:            body.URL,
 		AuthConfig:     authCfg,
 		RateLimitRps:   body.RateLimitRPS,
@@ -130,6 +132,7 @@ func (d Deps) getDestination(w http.ResponseWriter, r *http.Request) {
 type patchDestinationReq struct {
 	Name           *string         `json:"name,omitempty"`
 	Type           *string         `json:"type,omitempty"`
+	Description    *string         `json:"description,omitempty"`
 	URL            *string         `json:"url,omitempty"`
 	AuthConfig     json.RawMessage `json:"auth_config,omitempty"`
 	RateLimitRPS   *int32          `json:"rate_limit_rps,omitempty"`
@@ -191,6 +194,7 @@ func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
 		OrgID:          store.UUID(p.OrgID),
 		Name:           body.Name,
 		Type:           body.Type,
+		Description:    body.Description,
 		Url:            body.URL,
 		RateLimitRps:   body.RateLimitRPS,
 		RateLimitBurst: body.RateLimitBurst,
@@ -256,6 +260,9 @@ func diffDestination(old, new store.Destination) map[string]map[string]any {
 	if old.Type != new.Type {
 		out["type"] = map[string]any{"from": old.Type, "to": new.Type}
 	}
+	if old.Description != new.Description {
+		out["description"] = map[string]any{"from": old.Description, "to": new.Description}
+	}
 	if !strPtrEq(old.Url, new.Url) {
 		out["url"] = map[string]any{"from": derefString(old.Url), "to": derefString(new.Url)}
 	}
@@ -294,6 +301,7 @@ func destinationView(d store.Destination) map[string]any {
 		"org_id":           store.GoUUID(d.OrgID).String(),
 		"name":             d.Name,
 		"type":             d.Type,
+		"description":      d.Description,
 		"url":              d.Url,
 		"auth_configured":  authConfigured,
 		"rate_limit_rps":   d.RateLimitRps,

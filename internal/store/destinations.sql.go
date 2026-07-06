@@ -12,16 +12,17 @@ import (
 )
 
 const createDestination = `-- name: CreateDestination :one
-INSERT INTO destinations (org_id, name, type, url, auth_config,
+INSERT INTO destinations (org_id, name, type, description, url, auth_config,
                            rate_limit_rps, rate_limit_burst, max_inflight)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at, description
 `
 
 type CreateDestinationParams struct {
 	OrgID          pgtype.UUID `json:"org_id"`
 	Name           string      `json:"name"`
 	Type           string      `json:"type"`
+	Description    string      `json:"description"`
 	Url            *string     `json:"url"`
 	AuthConfig     []byte      `json:"auth_config"`
 	RateLimitRps   *int32      `json:"rate_limit_rps"`
@@ -34,6 +35,7 @@ func (q *Queries) CreateDestination(ctx context.Context, arg CreateDestinationPa
 		arg.OrgID,
 		arg.Name,
 		arg.Type,
+		arg.Description,
 		arg.Url,
 		arg.AuthConfig,
 		arg.RateLimitRps,
@@ -53,6 +55,7 @@ func (q *Queries) CreateDestination(ctx context.Context, arg CreateDestinationPa
 		&i.MaxInflight,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Description,
 	)
 	return i, err
 }
@@ -72,7 +75,7 @@ func (q *Queries) DeleteDestinationForOrg(ctx context.Context, arg DeleteDestina
 }
 
 const getDestinationForOrg = `-- name: GetDestinationForOrg :one
-SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations WHERE id = $1 AND org_id = $2
+SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at, description FROM destinations WHERE id = $1 AND org_id = $2
 `
 
 type GetDestinationForOrgParams struct {
@@ -95,12 +98,13 @@ func (q *Queries) GetDestinationForOrg(ctx context.Context, arg GetDestinationFo
 		&i.MaxInflight,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Description,
 	)
 	return i, err
 }
 
 const listDestinationsByOrg = `-- name: ListDestinationsByOrg :many
-SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at FROM destinations
+SELECT id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at, description FROM destinations
 WHERE org_id = $1
 ORDER BY created_at DESC
 `
@@ -126,6 +130,7 @@ func (q *Queries) ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) 
 			&i.MaxInflight,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -141,14 +146,15 @@ const patchDestinationForOrg = `-- name: PatchDestinationForOrg :one
 UPDATE destinations
    SET name             = COALESCE($3,             name),
        type             = COALESCE($4,             type),
-       url              = COALESCE($5,              url),
-       auth_config      = COALESCE($6,      auth_config),
-       rate_limit_rps   = COALESCE($7,   rate_limit_rps),
-       rate_limit_burst = COALESCE($8, rate_limit_burst),
-       max_inflight     = COALESCE($9,     max_inflight),
+       description      = COALESCE($5,      description),
+       url              = COALESCE($6,              url),
+       auth_config      = COALESCE($7,      auth_config),
+       rate_limit_rps   = COALESCE($8,   rate_limit_rps),
+       rate_limit_burst = COALESCE($9, rate_limit_burst),
+       max_inflight     = COALESCE($10,     max_inflight),
        updated_at       = now()
  WHERE id = $1 AND org_id = $2
- RETURNING id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at
+ RETURNING id, org_id, name, type, url, auth_config, rate_limit_rps, rate_limit_burst, max_inflight, created_at, updated_at, description
 `
 
 type PatchDestinationForOrgParams struct {
@@ -156,6 +162,7 @@ type PatchDestinationForOrgParams struct {
 	OrgID          pgtype.UUID `json:"org_id"`
 	Name           *string     `json:"name"`
 	Type           *string     `json:"type"`
+	Description    *string     `json:"description"`
 	Url            *string     `json:"url"`
 	AuthConfig     []byte      `json:"auth_config"`
 	RateLimitRps   *int32      `json:"rate_limit_rps"`
@@ -170,6 +177,7 @@ func (q *Queries) PatchDestinationForOrg(ctx context.Context, arg PatchDestinati
 		arg.OrgID,
 		arg.Name,
 		arg.Type,
+		arg.Description,
 		arg.Url,
 		arg.AuthConfig,
 		arg.RateLimitRps,
@@ -189,6 +197,7 @@ func (q *Queries) PatchDestinationForOrg(ctx context.Context, arg PatchDestinati
 		&i.MaxInflight,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Description,
 	)
 	return i, err
 }

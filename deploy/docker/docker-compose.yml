@@ -95,16 +95,16 @@ services:
   # deps from being shadowed by the host's macOS node_modules. Proxies
   # /api,/e,/admin to the server container. ponytail: dev server in Docker so
   # `up` is one command; for a prod image you'd build static assets instead.
-  web:
-    build:
-      context: ../../web
-      dockerfile: ../deploy/docker/web.Dockerfile
-    environment:
-      DSTREAM_API_URL: http://server:8080
-    ports:
-      - "3000:3000"
-    volumes:
-      - ../../web:/app
-      - /app/node_modules # keep the image's Linux node_modules, not the host's
-    depends_on:
-      - server
+  # web:
+  #   build:
+  #     context: ../../web
+  #     dockerfile: ../deploy/docker/web.Dockerfile
+  #   environment:
+  #     DSTREAM_API_URL: http://server:8080
+  #   ports:
+  #     - "3000:3000"
+  #   volumes:
+  #     - ../../web:/app
+  #     - /app/node_modules # keep the image's Linux node_modules, not the host's
+  #   depends_on:
+  #     - server
