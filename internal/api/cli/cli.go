@@ -1,9 +1,10 @@
-package api
+package cli
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"net/url"
 	"sync"
@@ -51,15 +52,15 @@ func originHost(baseURL string) string {
 }
 
 // GET /api/cli/sources — minimal lookup used by the CLI to resolve `--source <name>`.
-func (d Deps) cliListSources(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListSources(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	rows, err := d.Queries.ListSourcesByOrg(r.Context(), store.UUID(p.OrgID))
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "list")
+		httpx.Err(w, http.StatusInternalServerError, "list")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -70,7 +71,7 @@ func (d Deps) cliListSources(w http.ResponseWriter, r *http.Request) {
 			"type": s.Type,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // WS /api/cli/connect?source_id=...
@@ -81,27 +82,27 @@ func (d Deps) cliListSources(w http.ResponseWriter, r *http.Request) {
 //   - forward over the WebSocket as a "deliver" frame
 //   - read the "response" frame back from the CLI
 //   - record the attempt and update event status in Postgres
-func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	sourceIDStr := r.URL.Query().Get("source_id")
 	if sourceIDStr == "" {
-		httpErr(w, http.StatusBadRequest, "source_id required")
+		httpx.Err(w, http.StatusBadRequest, "source_id required")
 		return
 	}
 	sid, err := uuid.Parse(sourceIDStr)
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid source_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid source_id")
 		return
 	}
 	if _, err := d.Queries.GetSourceForOrg(r.Context(), store.GetSourceForOrgParams{
 		ID:    store.UUID(sid),
 		OrgID: store.UUID(p.OrgID),
 	}); err != nil {
-		httpErr(w, http.StatusNotFound, "source not found")
+		httpx.Err(w, http.StatusNotFound, "source not found")
 		return
 	}
 
@@ -236,7 +237,7 @@ func (d Deps) cliConnect(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (d Deps) dispatchEventToCLI(
+func (d Handlers) dispatchEventToCLI(
 	ctx context.Context,
 	writeFn func(any) error,
 	bs ingest.BodyStore,
@@ -320,7 +321,7 @@ func (d Deps) dispatchEventToCLI(
 	}
 }
 
-func (d Deps) recordCLIFailure(ctx context.Context, eventID pgtype.UUID, attemptNum int32, deliverErr error) {
+func (d Handlers) recordCLIFailure(ctx context.Context, eventID pgtype.UUID, attemptNum int32, deliverErr error) {
 	msg := deliverErr.Error()
 	if _, err := d.Queries.CreateAttempt(ctx, store.CreateAttemptParams{
 		EventID:      eventID,

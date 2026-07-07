@@ -1,7 +1,9 @@
-package api
+package pipeline
 
 import (
+	"bytes"
 	"encoding/json"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -24,32 +26,32 @@ type createDestinationReq struct {
 	MaxInflight    *int32          `json:"max_inflight,omitempty"`
 }
 
-func (d Deps) createDestination(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) CreateDestination(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	var body createDestinationReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if body.Name == "" {
-		httpErr(w, http.StatusBadRequest, "name required")
+		httpx.Err(w, http.StatusBadRequest, "name required")
 		return
 	}
 	if body.Type != "http" && body.Type != "cli" {
-		httpErr(w, http.StatusBadRequest, "type must be 'http' or 'cli'")
+		httpx.Err(w, http.StatusBadRequest, "type must be 'http' or 'cli'")
 		return
 	}
 	if body.Type == "http" && (body.URL == nil || *body.URL == "") {
-		httpErr(w, http.StatusBadRequest, "url required for http destination")
+		httpx.Err(w, http.StatusBadRequest, "url required for http destination")
 		return
 	}
 	if body.Type == "http" {
 		if err := deliver.ValidateDestinationURL(*body.URL); err != nil {
-			httpErr(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
+			httpx.Err(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
 			return
 		}
 	}
@@ -70,7 +72,7 @@ func (d Deps) createDestination(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		d.Log.Error("create destination", "err", err)
-		httpErr(w, http.StatusInternalServerError, "create destination")
+		httpx.Err(w, http.StatusInternalServerError, "create destination")
 		return
 	}
 	createMeta := map[string]any{
@@ -86,36 +88,36 @@ func (d Deps) createDestination(w http.ResponseWriter, r *http.Request) {
 		TargetID:   audit.PtrUUID(store.GoUUID(row.ID)),
 		Metadata:   createMeta,
 	})
-	writeJSON(w, http.StatusCreated, destinationView(row))
+	httpx.WriteJSON(w, http.StatusCreated, destinationView(row))
 }
 
-func (d Deps) listDestinations(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListDestinations(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	rows, err := d.Queries.ListDestinationsByOrg(r.Context(), store.UUID(p.OrgID))
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "list")
+		httpx.Err(w, http.StatusInternalServerError, "list")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, destinationView(row))
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
-func (d Deps) getDestination(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) GetDestination(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	row, err := d.Queries.GetDestinationForOrg(r.Context(), store.GetDestinationForOrgParams{
@@ -123,10 +125,10 @@ func (d Deps) getDestination(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(p.OrgID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusNotFound, "not found")
+		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, destinationView(row))
+	httpx.WriteJSON(w, http.StatusOK, destinationView(row))
 }
 
 type patchDestinationReq struct {
@@ -140,24 +142,24 @@ type patchDestinationReq struct {
 	MaxInflight    *int32          `json:"max_inflight,omitempty"`
 }
 
-func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) PatchDestination(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var body patchDestinationReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if body.Type != nil && *body.Type != "http" && *body.Type != "cli" {
-		httpErr(w, http.StatusBadRequest, "type must be 'http' or 'cli'")
+		httpx.Err(w, http.StatusBadRequest, "type must be 'http' or 'cli'")
 		return
 	}
 	old, err := d.Queries.GetDestinationForOrg(r.Context(), store.GetDestinationForOrgParams{
@@ -165,7 +167,7 @@ func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(p.OrgID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusNotFound, "not found")
+		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
 	// Post-merge type/url consistency. Compute what each field will be
@@ -180,12 +182,12 @@ func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
 		effectiveURL = body.URL
 	}
 	if effectiveType == "http" && (effectiveURL == nil || *effectiveURL == "") {
-		httpErr(w, http.StatusBadRequest, "url required for http destination")
+		httpx.Err(w, http.StatusBadRequest, "url required for http destination")
 		return
 	}
 	if effectiveType == "http" {
 		if err := deliver.ValidateDestinationURL(*effectiveURL); err != nil {
-			httpErr(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
+			httpx.Err(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
 			return
 		}
 	}
@@ -206,7 +208,7 @@ func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
 	row, err := d.Queries.PatchDestinationForOrg(r.Context(), params)
 	if err != nil {
 		d.Log.Error("patch destination", "err", err)
-		httpErr(w, http.StatusInternalServerError, "update")
+		httpx.Err(w, http.StatusInternalServerError, "update")
 		return
 	}
 	if changed := diffDestination(old, row); len(changed) > 0 {
@@ -217,18 +219,18 @@ func (d Deps) patchDestination(w http.ResponseWriter, r *http.Request) {
 			Metadata:   map[string]any{"changed": changed},
 		})
 	}
-	writeJSON(w, http.StatusOK, destinationView(row))
+	httpx.WriteJSON(w, http.StatusOK, destinationView(row))
 }
 
-func (d Deps) deleteDestination(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) DeleteDestination(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	if err := d.Queries.DeleteDestinationForOrg(r.Context(), store.DeleteDestinationForOrgParams{
@@ -236,7 +238,7 @@ func (d Deps) deleteDestination(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(p.OrgID),
 	}); err != nil {
 		d.Log.Error("delete destination", "err", err)
-		httpErr(w, http.StatusInternalServerError, "delete")
+		httpx.Err(w, http.StatusInternalServerError, "delete")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -263,19 +265,19 @@ func diffDestination(old, new store.Destination) map[string]map[string]any {
 	if old.Description != new.Description {
 		out["description"] = map[string]any{"from": old.Description, "to": new.Description}
 	}
-	if !strPtrEq(old.Url, new.Url) {
-		out["url"] = map[string]any{"from": derefString(old.Url), "to": derefString(new.Url)}
+	if !httpx.StrPtrEq(old.Url, new.Url) {
+		out["url"] = map[string]any{"from": httpx.DerefString(old.Url), "to": httpx.DerefString(new.Url)}
 	}
-	if !int32PtrEq(old.RateLimitRps, new.RateLimitRps) {
-		out["rate_limit_rps"] = map[string]any{"from": derefInt32(old.RateLimitRps), "to": derefInt32(new.RateLimitRps)}
+	if !httpx.Int32PtrEq(old.RateLimitRps, new.RateLimitRps) {
+		out["rate_limit_rps"] = map[string]any{"from": httpx.DerefInt32(old.RateLimitRps), "to": httpx.DerefInt32(new.RateLimitRps)}
 	}
-	if !int32PtrEq(old.RateLimitBurst, new.RateLimitBurst) {
-		out["rate_limit_burst"] = map[string]any{"from": derefInt32(old.RateLimitBurst), "to": derefInt32(new.RateLimitBurst)}
+	if !httpx.Int32PtrEq(old.RateLimitBurst, new.RateLimitBurst) {
+		out["rate_limit_burst"] = map[string]any{"from": httpx.DerefInt32(old.RateLimitBurst), "to": httpx.DerefInt32(new.RateLimitBurst)}
 	}
-	if !int32PtrEq(old.MaxInflight, new.MaxInflight) {
-		out["max_inflight"] = map[string]any{"from": derefInt32(old.MaxInflight), "to": derefInt32(new.MaxInflight)}
+	if !httpx.Int32PtrEq(old.MaxInflight, new.MaxInflight) {
+		out["max_inflight"] = map[string]any{"from": httpx.DerefInt32(old.MaxInflight), "to": httpx.DerefInt32(new.MaxInflight)}
 	}
-	if !bytesEq(old.AuthConfig, new.AuthConfig) {
+	if !bytes.Equal(old.AuthConfig, new.AuthConfig) {
 		// Never leak secret material into audit metadata.
 		out["auth_config"] = map[string]any{"from": "redacted", "to": "redacted"}
 	}

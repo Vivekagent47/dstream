@@ -1,8 +1,9 @@
-package api
+package pipeline
 
 import (
 	"encoding/base64"
 	"encoding/json"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,10 +21,10 @@ import (
 
 const defaultEventsPageSize = 50
 
-func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	limit := defaultEventsPageSize
@@ -43,7 +44,7 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 	if cur := r.URL.Query().Get("cursor"); cur != "" {
 		ts, id, ok := decodeEventCursor(cur)
 		if !ok {
-			httpErr(w, http.StatusBadRequest, "invalid cursor")
+			httpx.Err(w, http.StatusBadRequest, "invalid cursor")
 			return
 		}
 		params.BeforeCreatedAt = pgtype.Timestamptz{Time: ts, Valid: true}
@@ -52,7 +53,7 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := d.Queries.ListEventsByOrg(r.Context(), params)
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "list")
+		httpx.Err(w, http.StatusInternalServerError, "list")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -66,7 +67,7 @@ func (d Deps) listEvents(w http.ResponseWriter, r *http.Request) {
 		last := rows[len(rows)-1]
 		resp["next_cursor"] = encodeEventCursor(last.CreatedAt.Time, store.GoUUID(last.ID))
 	}
-	writeJSON(w, http.StatusOK, resp)
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // Event cursors are an opaque base64 of "<rfc3339nano>|<uuid>" — the last row
@@ -97,15 +98,15 @@ func decodeEventCursor(s string) (time.Time, uuid.UUID, bool) {
 	return ts, id, true
 }
 
-func (d Deps) getEvent(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	ev, err := d.Queries.GetEventForOrg(r.Context(), store.GetEventForOrgParams{
@@ -113,24 +114,24 @@ func (d Deps) getEvent(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(p.OrgID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusNotFound, "not found")
+		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
 	attempts, _ := d.Queries.ListAttemptsByEvent(r.Context(), ev.ID)
 	out := eventView(ev)
 	out["attempts"] = attemptViews(attempts)
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
-func (d Deps) retryEvent(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) RetryEvent(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	ev, err := d.Queries.GetEventForOrg(r.Context(), store.GetEventForOrgParams{
@@ -138,16 +139,16 @@ func (d Deps) retryEvent(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(p.OrgID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusNotFound, "not found")
+		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
 	if err := d.Queries.ResetEventForManualRetry(r.Context(), ev.ID); err != nil {
-		httpErr(w, http.StatusInternalServerError, "reset: "+err.Error())
+		httpx.Err(w, http.StatusInternalServerError, "reset: "+err.Error())
 		return
 	}
 	conn, err := d.Queries.GetConnectionByID(r.Context(), ev.ConnectionID)
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "load connection")
+		httpx.Err(w, http.StatusInternalServerError, "load connection")
 		return
 	}
 	if _, err := d.Queue.EnqueueDeliver(r.Context(), queue.DeliverPayload{
@@ -160,7 +161,7 @@ func (d Deps) retryEvent(w http.ResponseWriter, r *http.Request) {
 		RetryJitterPct:      conn.RetryJitterPct,
 		CustomRetrySchedule: conn.CustomRetrySchedule,
 	}, int(conn.MaxRetries)); err != nil {
-		httpErr(w, http.StatusInternalServerError, "enqueue: "+err.Error())
+		httpx.Err(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
 	evID := store.GoUUID(ev.ID)

@@ -1,10 +1,11 @@
-package api
+package pipeline
 
 import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -23,19 +24,19 @@ type createSourceReq struct {
 	SigningConfig json.RawMessage `json:"signing_config,omitempty"`
 }
 
-func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) CreateSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	var body createSourceReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if body.Name == "" {
-		httpErr(w, http.StatusBadRequest, "name required")
+		httpx.Err(w, http.StatusBadRequest, "name required")
 		return
 	}
 	if body.Type == "" {
@@ -43,7 +44,7 @@ func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := generateIngestToken()
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "token gen")
+		httpx.Err(w, http.StatusInternalServerError, "token gen")
 		return
 	}
 	signing := body.SigningConfig
@@ -60,7 +61,7 @@ func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		d.Log.Error("create source", "err", err)
-		httpErr(w, http.StatusInternalServerError, "create source")
+		httpx.Err(w, http.StatusInternalServerError, "create source")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -72,36 +73,36 @@ func (d Deps) createSource(w http.ResponseWriter, r *http.Request) {
 			"type": row.Type,
 		},
 	})
-	writeJSON(w, http.StatusCreated, sourceView(row))
+	httpx.WriteJSON(w, http.StatusCreated, sourceView(row))
 }
 
-func (d Deps) listSources(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListSources(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	rows, err := d.Queries.ListSourcesByOrg(r.Context(), store.UUID(p.OrgID))
 	if err != nil {
-		httpErr(w, http.StatusInternalServerError, "list sources")
+		httpx.Err(w, http.StatusInternalServerError, "list sources")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, s := range rows {
 		out = append(out, sourceView(s))
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
-func (d Deps) getSource(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) GetSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	row, err := d.Queries.GetSourceForOrg(r.Context(), store.GetSourceForOrgParams{
@@ -109,10 +110,10 @@ func (d Deps) getSource(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(p.OrgID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusNotFound, "not found")
+		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, sourceView(row))
+	httpx.WriteJSON(w, http.StatusOK, sourceView(row))
 }
 
 type patchSourceReq struct {
@@ -122,28 +123,28 @@ type patchSourceReq struct {
 	Enabled        *bool     `json:"enabled,omitempty"`
 }
 
-// patchSource serves PATCH /api/sources/{id}: partial update of name,
+// PatchSource serves PATCH /api/sources/{id}: partial update of name,
 // description, allowed_methods, or enabled. On success it evicts the ingest
 // source cache so the change is effective immediately (not after the 60s
 // SourceCacheTTL).
-func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) PatchSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var body patchSourceReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if body.Name == nil && body.Description == nil && body.AllowedMethods == nil && body.Enabled == nil {
-		httpErr(w, http.StatusBadRequest, "nothing to update")
+		httpx.Err(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
 
@@ -151,7 +152,7 @@ func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
 	if body.AllowedMethods != nil {
 		methods, err = validateMethods(*body.AllowedMethods)
 		if err != nil {
-			httpErr(w, http.StatusBadRequest, err.Error())
+			httpx.Err(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
@@ -166,11 +167,11 @@ func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpErr(w, http.StatusNotFound, "not found")
+			httpx.Err(w, http.StatusNotFound, "not found")
 			return
 		}
 		d.Log.Error("update source", "err", err)
-		httpErr(w, http.StatusInternalServerError, "update source")
+		httpx.Err(w, http.StatusInternalServerError, "update source")
 		return
 	}
 
@@ -189,18 +190,18 @@ func (d Deps) patchSource(w http.ResponseWriter, r *http.Request) {
 			"enabled":         row.Enabled,
 		},
 	})
-	writeJSON(w, http.StatusOK, sourceView(row))
+	httpx.WriteJSON(w, http.StatusOK, sourceView(row))
 }
 
-func (d Deps) deleteSource(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) DeleteSource(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid id")
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	token, err := d.Queries.DeleteSourceForOrg(r.Context(), store.DeleteSourceForOrgParams{
@@ -209,11 +210,11 @@ func (d Deps) deleteSource(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpErr(w, http.StatusNotFound, "not found")
+			httpx.Err(w, http.StatusNotFound, "not found")
 			return
 		}
 		d.Log.Error("delete source", "err", err)
-		httpErr(w, http.StatusInternalServerError, "delete source")
+		httpx.Err(w, http.StatusInternalServerError, "delete source")
 		return
 	}
 	if d.EvictSourceCache != nil {

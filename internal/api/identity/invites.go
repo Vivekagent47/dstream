@@ -1,9 +1,10 @@
-package api
+package identity
 
 import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -40,16 +41,16 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-// listInvites serves GET /api/orgs/{org_id}/invites — any member can read.
+// ListInvites serves GET /api/orgs/{org_id}/invites — any member can read.
 // Session-only. Returns the joined invitee/inviter rows directly.
-func (d Deps) listInvites(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListInvites(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -57,20 +58,20 @@ func (d Deps) listInvites(w http.ResponseWriter, r *http.Request) {
 		OrgID:  store.UUID(orgID),
 		UserID: store.UUID(p.UserID),
 	}); err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	rows, err := d.Queries.ListOrgInvitesByOrg(r.Context(), store.UUID(orgID))
 	if err != nil {
 		d.Log.Error("list invites", "err", err)
-		httpErr(w, http.StatusInternalServerError, "list invites")
+		httpx.Err(w, http.StatusInternalServerError, "list invites")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, inviteListView(row))
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // inviteListView shapes the per-row response for GET /api/orgs/{id}/invites.
@@ -97,18 +98,18 @@ func inviteListView(r store.ListOrgInvitesByOrgRow) map[string]any {
 	return out
 }
 
-// createInvite serves POST /api/orgs/{org_id}/invites — admin+ only.
+// CreateInvite serves POST /api/orgs/{org_id}/invites — admin+ only.
 // Body: {email, role}. The email link is logged (dev) — SMTP wiring lands
 // later. We rate-limit per inviter AND per invitee to choke both mailbox-bomb
 // and account-spam attacks.
-func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -117,11 +118,11 @@ func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	var body struct {
@@ -129,18 +130,18 @@ func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
 		Role  string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(body.Email))
 	if email == "" || !strings.Contains(email, "@") {
-		httpErr(w, http.StatusBadRequest, "invalid email")
+		httpx.Err(w, http.StatusBadRequest, "invalid email")
 		return
 	}
 	// Owner-level invites are deliberately not exposed: ownership is
 	// transferred via /transfer, not granted directly.
 	if body.Role != string(auth.RoleAdmin) && body.Role != string(auth.RoleMember) {
-		httpErr(w, http.StatusBadRequest, "role must be admin or member")
+		httpx.Err(w, http.StatusBadRequest, "role must be admin or member")
 		return
 	}
 
@@ -158,12 +159,12 @@ func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
 		res, lerr := limiter.Allow(r.Context(), k.key, k.limit)
 		if lerr != nil {
 			d.Log.Error("invite rate limit", "err", lerr)
-			httpErr(w, http.StatusServiceUnavailable, "rate limiter unavailable")
+			httpx.Err(w, http.StatusServiceUnavailable, "rate limiter unavailable")
 			return
 		}
 		if res.Allowed == 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
-			httpErr(w, http.StatusTooManyRequests, "rate limited")
+			httpx.Err(w, http.StatusTooManyRequests, "rate limited")
 			return
 		}
 	}
@@ -176,7 +177,7 @@ func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
 			OrgID:  store.UUID(orgID),
 			UserID: u.ID,
 		}); gerr == nil {
-			httpErr(w, http.StatusConflict, "already a member")
+			httpx.Err(w, http.StatusConflict, "already a member")
 			return
 		}
 	}
@@ -188,11 +189,11 @@ func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
 			// Partial unique index on (org_id, email) WHERE accepted_at IS
 			// NULL — surface as a clean 409 so callers can re-list to find
 			// the pending invite.
-			httpErr(w, http.StatusConflict, "pending invite exists")
+			httpx.Err(w, http.StatusConflict, "pending invite exists")
 			return
 		}
 		d.Log.Error("issue invite", "err", err)
-		httpErr(w, http.StatusInternalServerError, "issue invite")
+		httpx.Err(w, http.StatusInternalServerError, "issue invite")
 		return
 	}
 
@@ -219,22 +220,22 @@ func (d Deps) createInvite(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// deleteInvite serves DELETE /api/orgs/{org_id}/invites/{id} — admin+ only.
+// DeleteInvite serves DELETE /api/orgs/{org_id}/invites/{id} — admin+ only.
 // Soft-revocation isn't a thing for invites in v1: we just hard-delete the
 // row, which makes the token instantly un-redeemable.
-func (d Deps) deleteInvite(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) DeleteInvite(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	inviteID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid invite id")
+		httpx.Err(w, http.StatusBadRequest, "invalid invite id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -243,11 +244,11 @@ func (d Deps) deleteInvite(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	if err := d.Queries.DeleteOrgInvite(r.Context(), store.DeleteOrgInviteParams{
@@ -255,7 +256,7 @@ func (d Deps) deleteInvite(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(orgID),
 	}); err != nil {
 		d.Log.Error("delete invite", "err", err)
-		httpErr(w, http.StatusInternalServerError, "delete invite")
+		httpx.Err(w, http.StatusInternalServerError, "delete invite")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -272,14 +273,14 @@ func (d Deps) deleteInvite(w http.ResponseWriter, r *http.Request) {
 // not-found log. 60/h matches a generous human-retry rate.
 var peekInvitePerIP = redis_rate.PerHour(60)
 
-// peekInvite serves GET /api/invites/{token} — fully public. Lets a
+// PeekInvite serves GET /api/invites/{token} — fully public. Lets a
 // logged-out recipient see what org / role / email they're being invited to
 // before they sign in. Token leaks are contained: we don't return the
 // invitedBy user_id or anything that could be cross-referenced.
-func (d Deps) peekInvite(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) PeekInvite(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		httpErr(w, http.StatusBadRequest, "missing token")
+		httpx.Err(w, http.StatusBadRequest, "missing token")
 		return
 	}
 	// Per-IP rate limit on this unauthenticated endpoint. Failures here
@@ -289,7 +290,7 @@ func (d Deps) peekInvite(w http.ResponseWriter, r *http.Request) {
 	res, lerr := limiter.Allow(r.Context(), "invite:peek:ip:"+clientIP(r), peekInvitePerIP)
 	if lerr == nil && res.Allowed == 0 {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
-		httpErr(w, http.StatusTooManyRequests, "too many requests")
+		httpx.Err(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 	h := sha256.Sum256([]byte(token))
@@ -300,10 +301,10 @@ func (d Deps) peekInvite(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			d.Log.Warn("peek invite", "err", err)
 		}
-		httpErr(w, http.StatusNotFound, "invalid invite")
+		httpx.Err(w, http.StatusNotFound, "invalid invite")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"org_id":     store.GoUUID(row.OrgID).String(),
 		"org_name":   row.OrgName,
 		"email":      row.Email,
@@ -312,7 +313,7 @@ func (d Deps) peekInvite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// acceptInvite serves POST /api/invites/{token}/accept — handles two flows:
+// AcceptInvite serves POST /api/invites/{token}/accept — handles two flows:
 //
 //   - Path A: caller has a valid session AND their user.email matches the
 //     invite. We consume the invite, re-issue the cookie pointing at the
@@ -324,10 +325,10 @@ func (d Deps) peekInvite(w http.ResponseWriter, r *http.Request) {
 // We deliberately do NOT consume the invite in Path B — that happens inside
 // ConsumeMagicLink so the user's first real cookie carries the right
 // active_org_id.
-func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		httpErr(w, http.StatusBadRequest, "missing token")
+		httpx.Err(w, http.StatusBadRequest, "missing token")
 		return
 	}
 	h := sha256.Sum256([]byte(token))
@@ -336,7 +337,7 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			d.Log.Warn("accept invite lookup", "err", err)
 		}
-		httpErr(w, http.StatusNotFound, "invalid invite")
+		httpx.Err(w, http.StatusNotFound, "invalid invite")
 		return
 	}
 
@@ -347,11 +348,11 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 			row, cerr := auth.ConsumeOrgInvite(r.Context(), d.Queries, token, uid)
 			if cerr != nil {
 				if errors.Is(cerr, auth.ErrInvalidOrgInvite) {
-					httpErr(w, http.StatusNotFound, "invalid invite")
+					httpx.Err(w, http.StatusNotFound, "invalid invite")
 					return
 				}
 				d.Log.Error("consume invite", "err", cerr)
-				httpErr(w, http.StatusInternalServerError, "consume invite")
+				httpx.Err(w, http.StatusInternalServerError, "consume invite")
 				return
 			}
 			// Re-issue cookie so subsequent requests land in the newly-joined
@@ -378,7 +379,7 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 					"role":   row.Role,
 				},
 			})
-			writeJSON(w, http.StatusOK, map[string]any{
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{
 				"org_id": orgUUID.String(),
 				"role":   row.Role,
 			})
@@ -386,7 +387,7 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		}
 		// Wrong account signed in — bounce so the user can switch.
 		if gerr == nil {
-			httpErr(w, http.StatusForbidden, "invite addressed to different email")
+			httpx.Err(w, http.StatusForbidden, "invite addressed to different email")
 			return
 		}
 	}
@@ -410,12 +411,12 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		res, lerr := limiter.Allow(r.Context(), k.key, k.limit)
 		if lerr != nil {
 			d.Log.Error("accept invite rate limit", "err", lerr)
-			httpErr(w, http.StatusServiceUnavailable, "rate limiter unavailable")
+			httpx.Err(w, http.StatusServiceUnavailable, "rate limiter unavailable")
 			return
 		}
 		if res.Allowed == 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
-			httpErr(w, http.StatusTooManyRequests, "too many requests")
+			httpx.Err(w, http.StatusTooManyRequests, "too many requests")
 			return
 		}
 	}
@@ -423,7 +424,7 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 	mlTok, err := auth.IssueMagicLink(r.Context(), d.Queries, inv.Email, 15*time.Minute)
 	if err != nil {
 		d.Log.Error("issue magic link for invite", "err", err)
-		httpErr(w, http.StatusInternalServerError, "magic link")
+		httpx.Err(w, http.StatusInternalServerError, "magic link")
 		return
 	}
 	if d.DevMode {
@@ -433,5 +434,5 @@ func (d Deps) acceptInvite(w http.ResponseWriter, r *http.Request) {
 	} else {
 		d.Log.Info("magic link for invite accept", "email", inv.Email)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"requires_login": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"requires_login": true})
 }

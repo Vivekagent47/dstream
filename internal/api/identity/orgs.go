@@ -1,10 +1,11 @@
-package api
+package identity
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"strings"
 
@@ -17,42 +18,42 @@ import (
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
-// listMyOrgs serves GET /api/orgs — returns every org the calling user is a
+// ListMyOrgs serves GET /api/orgs — returns every org the calling user is a
 // member of. Session-only (API keys are scoped to a single org and have no
 // notion of "my orgs").
-func (d Deps) listMyOrgs(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListMyOrgs(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
 	orgs, err := d.Queries.ListOrgsForUser(r.Context(), store.UUID(p.UserID))
 	if err != nil {
 		d.Log.Error("list orgs", "err", err)
-		httpErr(w, http.StatusInternalServerError, "list orgs")
+		httpx.Err(w, http.StatusInternalServerError, "list orgs")
 		return
 	}
-	writeJSON(w, http.StatusOK, orgs)
+	httpx.WriteJSON(w, http.StatusOK, orgs)
 }
 
-// createOrg serves POST /api/orgs — creates a new org and adds the caller as
+// CreateOrg serves POST /api/orgs — creates a new org and adds the caller as
 // owner. Session-only. Slug is derived from the name (immutable in v1 per
 // spec non-goals).
-func (d Deps) createOrg(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) CreateOrg(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	var body struct {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {
-		httpErr(w, http.StatusBadRequest, "name required")
+		httpx.Err(w, http.StatusBadRequest, "name required")
 		return
 	}
 	slug := slugifyName(body.Name)
@@ -62,7 +63,7 @@ func (d Deps) createOrg(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		d.Log.Error("create org", "err", err)
-		httpErr(w, http.StatusBadRequest, "create org")
+		httpx.Err(w, http.StatusBadRequest, "create org")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -72,7 +73,7 @@ func (d Deps) createOrg(w http.ResponseWriter, r *http.Request) {
 		Role:   string(auth.RoleOwner),
 	}); err != nil {
 		d.Log.Error("add owner", "err", err)
-		httpErr(w, http.StatusInternalServerError, "add owner")
+		httpx.Err(w, http.StatusInternalServerError, "add owner")
 		return
 	}
 	orgUUID := store.GoUUID(org.ID)
@@ -83,26 +84,26 @@ func (d Deps) createOrg(w http.ResponseWriter, r *http.Request) {
 		OrgID:      orgUUID,
 		Metadata:   map[string]any{"name": org.Name, "slug": org.Slug},
 	})
-	writeJSON(w, http.StatusCreated, org)
+	httpx.WriteJSON(w, http.StatusCreated, org)
 }
 
-// selectOrg serves POST /api/orgs/select — re-issues the session cookie with
+// SelectOrg serves POST /api/orgs/select — re-issues the session cookie with
 // a new active_org_id. The caller must already be a member of that org.
-func (d Deps) selectOrg(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) SelectOrg(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	var body struct {
 		OrgID string `json:"org_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	orgID, err := uuid.Parse(body.OrgID)
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	if orgID == uuid.Nil {
@@ -110,7 +111,7 @@ func (d Deps) selectOrg(w http.ResponseWriter, r *http.Request) {
 		// downstream GetOrgMember would short-circuit on NULL. Reject
 		// outright so a malicious client can't force a Nil-org session
 		// even temporarily.
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -119,28 +120,28 @@ func (d Deps) selectOrg(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpErr(w, http.StatusForbidden, "not a member of that org")
+			httpx.Err(w, http.StatusForbidden, "not a member of that org")
 			return
 		}
 		d.Log.Error("select org: membership lookup", "err", err)
-		httpErr(w, http.StatusInternalServerError, "membership lookup")
+		httpx.Err(w, http.StatusInternalServerError, "membership lookup")
 		return
 	}
 	d.Signer.Issue(w, p.UserID, orgID, p.SessionEpoch)
-	writeJSON(w, http.StatusOK, map[string]any{"active_org_id": orgID.String()})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"active_org_id": orgID.String()})
 }
 
-// updateOrg serves PATCH /api/orgs/{org_id} — renames the org. Admin+ only.
+// UpdateOrg serves PATCH /api/orgs/{org_id} — renames the org. Admin+ only.
 // Slug is intentionally not editable in v1 (spec non-goal); callers can rename
 // the display name freely without invalidating URLs.
-func (d Deps) updateOrg(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) UpdateOrg(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -149,42 +150,42 @@ func (d Deps) updateOrg(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	var body struct {
 		Name *string `json:"name,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if body.Name == nil {
-		httpErr(w, http.StatusBadRequest, "nothing to update")
+		httpx.Err(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
 	newName := strings.TrimSpace(*body.Name)
 	if newName == "" {
-		httpErr(w, http.StatusBadRequest, "name required")
+		httpx.Err(w, http.StatusBadRequest, "name required")
 		return
 	}
 	old, err := d.Queries.GetOrganizationByID(r.Context(), store.UUID(orgID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpErr(w, http.StatusNotFound, "org not found")
+			httpx.Err(w, http.StatusNotFound, "org not found")
 			return
 		}
 		d.Log.Error("get org", "err", err)
-		httpErr(w, http.StatusInternalServerError, "get org")
+		httpx.Err(w, http.StatusInternalServerError, "get org")
 		return
 	}
 	if old.Name == newName {
 		// No-op: skip the write and the audit row.
-		writeJSON(w, http.StatusOK, old)
+		httpx.WriteJSON(w, http.StatusOK, old)
 		return
 	}
 	updated, err := d.Queries.UpdateOrgName(r.Context(), store.UpdateOrgNameParams{
@@ -193,7 +194,7 @@ func (d Deps) updateOrg(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		d.Log.Error("update org", "err", err)
-		httpErr(w, http.StatusInternalServerError, "update org")
+		httpx.Err(w, http.StatusInternalServerError, "update org")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -207,22 +208,22 @@ func (d Deps) updateOrg(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
-	writeJSON(w, http.StatusOK, updated)
+	httpx.WriteJSON(w, http.StatusOK, updated)
 }
 
-// deleteOrg serves DELETE /api/orgs/{org_id} — owner-only destructive op.
+// DeleteOrg serves DELETE /api/orgs/{org_id} — owner-only destructive op.
 // All org-owned rows cascade via FK ON DELETE CASCADE. We write the audit
 // row BEFORE the delete; the audit row will itself be cascade-deleted as
 // part of the same op, which is acceptable for v1 (the action is
 // destructive and a future "trash" feature can opt out of cascade).
-func (d Deps) deleteOrg(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) DeleteOrg(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -231,11 +232,11 @@ func (d Deps) deleteOrg(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if caller.Role != string(auth.RoleOwner) {
-		httpErr(w, http.StatusForbidden, "owner required")
+		httpx.Err(w, http.StatusForbidden, "owner required")
 		return
 	}
 	// Snapshot name + slug into the audit row BEFORE the cascade — the FK
@@ -256,7 +257,7 @@ func (d Deps) deleteOrg(w http.ResponseWriter, r *http.Request) {
 	})
 	if err := d.Queries.DeleteOrganization(r.Context(), store.UUID(orgID)); err != nil {
 		d.Log.Error("delete org", "err", err)
-		httpErr(w, http.StatusInternalServerError, "delete org")
+		httpx.Err(w, http.StatusInternalServerError, "delete org")
 		return
 	}
 	// If the deleted org was the caller's active session-org, rotate the
@@ -276,7 +277,7 @@ func (d Deps) deleteOrg(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// transferOwnership serves POST /api/orgs/{org_id}/transfer — owner-only.
+// TransferOwnership serves POST /api/orgs/{org_id}/transfer — owner-only.
 // Atomically promotes the target user to owner and demotes the current owner
 // (the caller) to admin. Target must already be a member of the org.
 //
@@ -285,31 +286,31 @@ func (d Deps) deleteOrg(w http.ResponseWriter, r *http.Request) {
 // either fact is invalidated by a concurrent operation between request entry
 // and the UPDATE, the statement matches zero rows and we return 403/400 —
 // no TOCTOU window between SELECT and UPDATE.
-func (d Deps) transferOwnership(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) TransferOwnership(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	var body struct {
 		ToUserID string `json:"to_user_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	toID, err := uuid.Parse(body.ToUserID)
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid to_user_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid to_user_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
 	if toID == p.UserID {
-		httpErr(w, http.StatusBadRequest, "cannot transfer to self")
+		httpx.Err(w, http.StatusBadRequest, "cannot transfer to self")
 		return
 	}
 	rows, err := d.Queries.TransferOrgOwnership(r.Context(), store.TransferOrgOwnershipParams{
@@ -319,7 +320,7 @@ func (d Deps) transferOwnership(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		d.Log.Error("transfer ownership", "err", err)
-		httpErr(w, http.StatusInternalServerError, "transfer ownership")
+		httpx.Err(w, http.StatusInternalServerError, "transfer ownership")
 		return
 	}
 	if rows == 0 {
@@ -327,7 +328,7 @@ func (d Deps) transferOwnership(w http.ResponseWriter, r *http.Request) {
 		// member. Both are user-correctable; respond with a generic 403
 		// to avoid leaking which guard tripped (matches the existing
 		// "owner required" envelope returned by other handlers).
-		httpErr(w, http.StatusForbidden, "transfer not permitted")
+		httpx.Err(w, http.StatusForbidden, "transfer not permitted")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{

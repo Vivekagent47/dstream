@@ -1,9 +1,10 @@
-package api
+package identity
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"sync"
 
@@ -56,16 +57,16 @@ func fetchCallerAndTarget(
 	return
 }
 
-// listMembers serves GET /api/orgs/{org_id}/members — any member of the org
+// ListMembers serves GET /api/orgs/{org_id}/members — any member of the org
 // can list. Session-only.
-func (d Deps) listMembers(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListMembers(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -73,44 +74,44 @@ func (d Deps) listMembers(w http.ResponseWriter, r *http.Request) {
 		OrgID:  store.UUID(orgID),
 		UserID: store.UUID(p.UserID),
 	}); err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	rows, err := d.Queries.ListOrgMembersByOrg(r.Context(), store.UUID(orgID))
 	if err != nil {
 		d.Log.Error("list members", "err", err)
-		httpErr(w, http.StatusInternalServerError, "list members")
+		httpx.Err(w, http.StatusInternalServerError, "list members")
 		return
 	}
-	writeJSON(w, http.StatusOK, rows)
+	httpx.WriteJSON(w, http.StatusOK, rows)
 }
 
-// patchMember serves PATCH /api/orgs/{org_id}/members/{user_id} — admin+.
+// PatchMember serves PATCH /api/orgs/{org_id}/members/{user_id} — admin+.
 // Enforces the last-owner guard: demoting the only owner returns 409.
-func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) PatchMember(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	userID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid user_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid user_id")
 		return
 	}
 	var body struct {
 		Role string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if !validMemberRole(body.Role) {
-		httpErr(w, http.StatusBadRequest, "invalid role")
+		httpx.Err(w, http.StatusBadRequest, "invalid role")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -118,20 +119,20 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 	// independent lookups and serializing them adds ~1ms to every PATCH.
 	caller, target, cErr, tErr := fetchCallerAndTarget(r.Context(), d.Queries, orgID, p.UserID, userID)
 	if cErr != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	if tErr != nil {
 		if errors.Is(tErr, pgx.ErrNoRows) {
-			httpErr(w, http.StatusNotFound, "member not found")
+			httpx.Err(w, http.StatusNotFound, "member not found")
 			return
 		}
 		d.Log.Error("get member", "err", tErr)
-		httpErr(w, http.StatusInternalServerError, "get member")
+		httpx.Err(w, http.StatusInternalServerError, "get member")
 		return
 	}
 	// Spec: cannot promote ANYONE to owner via PATCH — use the transfer
@@ -140,7 +141,7 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 	//   - any caller self-promoting to owner
 	// Owner grants always go through POST /transfer with its own guards.
 	if body.Role == string(auth.RoleOwner) && target.Role != string(auth.RoleOwner) {
-		httpErr(w, http.StatusBadRequest, "use POST /transfer to promote to owner")
+		httpx.Err(w, http.StatusBadRequest, "use POST /transfer to promote to owner")
 		return
 	}
 	// Only an owner may mutate another owner's role (demotion to admin /
@@ -148,7 +149,7 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 	// quietly strip ownership from above.
 	if target.Role == string(auth.RoleOwner) && body.Role != string(auth.RoleOwner) {
 		if auth.Role(caller.Role) != auth.RoleOwner {
-			httpErr(w, http.StatusForbidden, "owner required to demote an owner")
+			httpx.Err(w, http.StatusForbidden, "owner required to demote an owner")
 			return
 		}
 		// Atomic last-owner guard. DemoteOrgOwnerIfNotLast updates the row
@@ -162,11 +163,11 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			d.Log.Error("demote owner", "err", err)
-			httpErr(w, http.StatusInternalServerError, "demote owner")
+			httpx.Err(w, http.StatusInternalServerError, "demote owner")
 			return
 		}
 		if rows == 0 {
-			httpErr(w, http.StatusConflict, "cannot demote last owner")
+			httpx.Err(w, http.StatusConflict, "cannot demote last owner")
 			return
 		}
 		audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -195,7 +196,7 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 		Role:   body.Role,
 	}); err != nil {
 		d.Log.Error("update member role", "err", err)
-		httpErr(w, http.StatusInternalServerError, "update member role")
+		httpx.Err(w, http.StatusInternalServerError, "update member role")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -212,7 +213,7 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// removeMember serves DELETE /api/orgs/{org_id}/members/{user_id}.
+// RemoveMember serves DELETE /api/orgs/{org_id}/members/{user_id}.
 //
 // Auth rules per spec §Membership management:
 //   - Caller must be admin+ to remove anyone else.
@@ -221,19 +222,19 @@ func (d Deps) patchMember(w http.ResponseWriter, r *http.Request) {
 //
 // On self-remove from the active org we re-issue the session cookie with
 // the user's next available org (or uuid.Nil if they're now org-less).
-func (d Deps) removeMember(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	userID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid user_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid user_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -241,20 +242,20 @@ func (d Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 
 	caller, target, cErr, tErr := fetchCallerAndTarget(r.Context(), d.Queries, orgID, p.UserID, userID)
 	if cErr != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if !isSelf && auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	if tErr != nil {
 		if errors.Is(tErr, pgx.ErrNoRows) {
-			httpErr(w, http.StatusNotFound, "member not found")
+			httpx.Err(w, http.StatusNotFound, "member not found")
 			return
 		}
 		d.Log.Error("get member", "err", tErr)
-		httpErr(w, http.StatusInternalServerError, "get member")
+		httpx.Err(w, http.StatusInternalServerError, "get member")
 		return
 	}
 	if target.Role == string(auth.RoleOwner) {
@@ -263,7 +264,7 @@ func (d Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 		// permitted (an owner leaving their own org), provided the
 		// last-owner guard passes below.
 		if !isSelf && auth.Role(caller.Role) != auth.RoleOwner {
-			httpErr(w, http.StatusForbidden, "owner required to remove an owner")
+			httpx.Err(w, http.StatusForbidden, "owner required to remove an owner")
 			return
 		}
 		// Atomic last-owner guard: delete the owner row only if at least
@@ -274,11 +275,11 @@ func (d Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			d.Log.Error("remove owner", "err", err)
-			httpErr(w, http.StatusInternalServerError, "remove owner")
+			httpx.Err(w, http.StatusInternalServerError, "remove owner")
 			return
 		}
 		if rows == 0 {
-			httpErr(w, http.StatusConflict, "cannot remove last owner")
+			httpx.Err(w, http.StatusConflict, "cannot remove last owner")
 			return
 		}
 	} else if err := d.Queries.DeleteOrgMember(r.Context(), store.DeleteOrgMemberParams{
@@ -286,7 +287,7 @@ func (d Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(userID),
 	}); err != nil {
 		d.Log.Error("delete member", "err", err)
-		httpErr(w, http.StatusInternalServerError, "delete member")
+		httpx.Err(w, http.StatusInternalServerError, "delete member")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{

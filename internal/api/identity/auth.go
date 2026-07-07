@@ -1,7 +1,8 @@
-package api
+package identity
 
 import (
 	"encoding/json"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,15 +34,15 @@ type magicLinkRequest struct {
 // POST /api/auth/magic-link/request — issues a fresh single-use link for the
 // given email. Always returns 202 (or 429) without leaking which addresses
 // exist.
-func (d Deps) requestMagicLink(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) RequestMagicLink(w http.ResponseWriter, r *http.Request) {
 	var body magicLinkRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	email := strings.TrimSpace(strings.ToLower(body.Email))
 	if email == "" || !strings.Contains(email, "@") {
-		httpErr(w, http.StatusBadRequest, "invalid email")
+		httpx.Err(w, http.StatusBadRequest, "invalid email")
 		return
 	}
 
@@ -57,12 +58,12 @@ func (d Deps) requestMagicLink(w http.ResponseWriter, r *http.Request) {
 		res, err := limiter.Allow(r.Context(), k.key, k.limit)
 		if err != nil {
 			d.Log.Error("auth: magic link rate limit", "err", err)
-			httpErr(w, http.StatusServiceUnavailable, "rate limiter unavailable")
+			httpx.Err(w, http.StatusServiceUnavailable, "rate limiter unavailable")
 			return
 		}
 		if res.Allowed == 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
-			httpErr(w, http.StatusTooManyRequests, "too many requests")
+			httpx.Err(w, http.StatusTooManyRequests, "too many requests")
 			return
 		}
 	}
@@ -103,22 +104,22 @@ func clientIP(r *http.Request) string {
 // CSRF-exempt, enabling login-CSRF / session fixation. The JSON body forces a
 // CORS preflight so a foreign origin can't drive it. Returns 204; the SPA calls
 // this via XHR from /auth/verify and drives navigation itself.
-func (d Deps) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) VerifyMagicLink(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	token := strings.TrimSpace(body.Token)
 	if token == "" {
-		httpErr(w, http.StatusBadRequest, "missing token")
+		httpx.Err(w, http.StatusBadRequest, "missing token")
 		return
 	}
 	u, orgID, err := auth.ConsumeMagicLink(r.Context(), d.Pool, d.Queries, token)
 	if err != nil {
-		httpErr(w, http.StatusUnauthorized, "invalid or expired link")
+		httpx.Err(w, http.StatusUnauthorized, "invalid or expired link")
 		return
 	}
 	d.Signer.Issue(w, store.GoUUID(u.ID), orgID, int64(u.SessionEpoch))
@@ -128,7 +129,7 @@ func (d Deps) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
 // logout clears the cookie AND bumps the user's session_epoch, invalidating
 // every outstanding session for that user (logout-all), not just this cookie.
 // Unauthenticated route, so we parse the cookie ourselves for the user id.
-func (d Deps) logout(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) Logout(w http.ResponseWriter, r *http.Request) {
 	if uid, _, _, err := d.Signer.Parse(r); err == nil {
 		if err := d.Queries.BumpUserSessionEpoch(r.Context(), store.UUID(uid)); err != nil {
 			d.Log.Warn("logout: bump session epoch", "err", err)
@@ -144,10 +145,10 @@ func (d Deps) logout(w http.ResponseWriter, r *http.Request) {
 //
 // User + orgs lookups run concurrently — this handler is hit on every page
 // navigation in the SPA, and the two queries are independent.
-func (d Deps) me(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil {
-		httpErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Err(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	out := map[string]any{}
@@ -176,7 +177,7 @@ func (d Deps) me(w http.ResponseWriter, r *http.Request) {
 				// surface 401 so the SPA forces re-login instead of rendering
 				// a broken state with no user object.
 				d.Log.Warn("me: load user", "err", uErr)
-				httpErr(w, http.StatusUnauthorized, "session user not found")
+				httpx.Err(w, http.StatusUnauthorized, "session user not found")
 				return
 			}
 			userOut := map[string]any{
@@ -201,5 +202,5 @@ func (d Deps) me(w http.ResponseWriter, r *http.Request) {
 	case auth.SourceAPIKey:
 		out["api_key"] = map[string]any{"org_id": p.OrgID.String()}
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }

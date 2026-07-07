@@ -1,6 +1,7 @@
-package api
+package identity
 
 import (
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"strconv"
 
@@ -12,47 +13,47 @@ import (
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
-// listAudit serves GET /api/audit — the audit log for the caller's active
+// ListAudit serves GET /api/audit — the audit log for the caller's active
 // org (resolved from the session cookie). Session-only: API-key principals
 // are rejected with 403 so the human audit trail isn't visible to machine
 // credentials.
-func (d Deps) listAudit(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
-		httpErr(w, http.StatusUnauthorized, "active org required")
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
 	d.serveAudit(w, r, p.OrgID)
 }
 
-// listAuditForOrg serves GET /api/orgs/{org_id}/audit — the audit log for a
+// ListAuditForOrg serves GET /api/orgs/{org_id}/audit — the audit log for a
 // specific org. The caller must be a member of that org; we verify with a
 // fresh GetOrgMember lookup so the URL path can't grant access the session
 // principal doesn't already have.
-func (d Deps) listAuditForOrg(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListAuditForOrg(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	p, err := auth.FromContext(r.Context())
 	if err != nil {
-		httpErr(w, http.StatusUnauthorized, "unauthorized")
+		httpx.Err(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	if _, err := d.Queries.GetOrgMember(r.Context(), store.GetOrgMemberParams{
 		OrgID:  store.UUID(orgID),
 		UserID: store.UUID(p.UserID),
 	}); err != nil {
-		httpErr(w, http.StatusForbidden, "not a member of this org")
+		httpx.Err(w, http.StatusForbidden, "not a member of this org")
 		return
 	}
 	d.serveAudit(w, r, orgID)
@@ -65,7 +66,7 @@ func (d Deps) listAuditForOrg(w http.ResponseWriter, r *http.Request) {
 // Pagination uses keyset on audit_logs.id (BIGSERIAL, monotonic): the
 // response includes next_before_id when the result page is full so the
 // client can request older rows via ?before_id=<n>.
-func (d Deps) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.UUID) {
+func (d Handlers) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.UUID) {
 	q := r.URL.Query()
 
 	limit := int32(50)
@@ -79,7 +80,7 @@ func (d Deps) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.UUID
 	if v := q.Get("before_id"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 0 {
-			httpErr(w, http.StatusBadRequest, "invalid before_id")
+			httpx.Err(w, http.StatusBadRequest, "invalid before_id")
 			return
 		}
 		beforeID = &n
@@ -92,7 +93,7 @@ func (d Deps) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.UUID
 	if v := q.Get("actor_user_id"); v != "" {
 		u, err := uuid.Parse(v)
 		if err != nil {
-			httpErr(w, http.StatusBadRequest, "invalid actor_user_id")
+			httpx.Err(w, http.StatusBadRequest, "invalid actor_user_id")
 			return
 		}
 		actorUser = store.UUID(u)
@@ -118,7 +119,7 @@ func (d Deps) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.UUID
 	})
 	if err != nil {
 		d.Log.Error("list audit", "err", err)
-		httpErr(w, http.StatusInternalServerError, "list audit")
+		httpx.Err(w, http.StatusInternalServerError, "list audit")
 		return
 	}
 
@@ -129,7 +130,7 @@ func (d Deps) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.UUID
 		// caller passes this back as ?before_id=N to fetch the next page.
 		resp["next_before_id"] = rows[len(rows)-1].ID
 	}
-	writeJSON(w, http.StatusOK, resp)
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // hydrateAuditRows shapes the sqlc rows into the spec JSON. The actor object
@@ -174,7 +175,7 @@ func hydrateAuditRows(rows []store.ListAuditLogsByOrgRow) []map[string]any {
 			"actor":      actor,
 			"action":     r.Action,
 			"target":     target,
-			"metadata":   rawJSONOrEmpty(r.Metadata),
+			"metadata":   httpx.RawJSONOrEmpty(r.Metadata),
 		})
 	}
 	return out

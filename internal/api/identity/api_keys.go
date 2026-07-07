@@ -1,7 +1,8 @@
-package api
+package identity
 
 import (
 	"encoding/json"
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"strings"
 	"time"
@@ -15,17 +16,17 @@ import (
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
-// listAPIKeys serves GET /api/orgs/{org_id}/api-keys — any member can list.
+// ListAPIKeys serves GET /api/orgs/{org_id}/api-keys — any member can list.
 // We never expose key_hash in the response; clients see only the public
 // metadata + the prefix.
-func (d Deps) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -33,13 +34,13 @@ func (d Deps) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		OrgID:  store.UUID(orgID),
 		UserID: store.UUID(p.UserID),
 	}); err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	rows, err := d.Queries.ListAPIKeysByOrg(r.Context(), store.UUID(orgID))
 	if err != nil {
 		d.Log.Error("list api keys", "err", err)
-		httpErr(w, http.StatusInternalServerError, "list keys")
+		httpx.Err(w, http.StatusInternalServerError, "list keys")
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -53,20 +54,20 @@ func (d Deps) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 			"created_at":   k.CreatedAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
-// createAPIKey serves POST /api/orgs/{org_id}/api-keys — admin+ only.
+// CreateAPIKey serves POST /api/orgs/{org_id}/api-keys — admin+ only.
 // Returns the full plaintext key exactly once; subsequent fetches via
-// listAPIKeys expose only the prefix.
-func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
+// ListAPIKeys expose only the prefix.
+func (d Handlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -75,11 +76,11 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	var body struct {
@@ -89,19 +90,19 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresInDays *int `json:"expires_in_days,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid json")
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {
-		httpErr(w, http.StatusBadRequest, "name required")
+		httpx.Err(w, http.StatusBadRequest, "name required")
 		return
 	}
 
 	full, prefix, hash, err := auth.NewAPIKey()
 	if err != nil {
 		d.Log.Error("generate api key", "err", err)
-		httpErr(w, http.StatusInternalServerError, "gen key")
+		httpx.Err(w, http.StatusInternalServerError, "gen key")
 		return
 	}
 	params := store.CreateAPIKeyParams{
@@ -119,7 +120,7 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	row, err := d.Queries.CreateAPIKey(r.Context(), params)
 	if err != nil {
 		d.Log.Error("create api key", "err", err)
-		httpErr(w, http.StatusInternalServerError, "create key")
+		httpx.Err(w, http.StatusInternalServerError, "create key")
 		return
 	}
 	rid := store.GoUUID(row.ID)
@@ -133,7 +134,7 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 			"prefix": prefix,
 		},
 	})
-	writeJSON(w, http.StatusCreated, map[string]any{
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 		"id":     rid.String(),
 		"name":   body.Name,
 		"key":    full, // only time the plaintext secret is returned
@@ -141,23 +142,23 @@ func (d Deps) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// revokeAPIKey serves DELETE /api/orgs/{org_id}/api-keys/{id} — admin+.
+// RevokeAPIKey serves DELETE /api/orgs/{org_id}/api-keys/{id} — admin+.
 // Soft-revoke (UPDATE revoked_at) so later audit lookups can resolve the
 // prefix to its name. The store query is org-scoped so a key from a sibling
 // org never matches by ID alone.
-func (d Deps) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+func (d Handlers) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	if err := auth.RequireSession(r.Context()); err != nil {
-		httpErr(w, http.StatusForbidden, "session required")
+		httpx.Err(w, http.StatusForbidden, "session required")
 		return
 	}
 	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid org_id")
+		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
 		return
 	}
 	keyID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpErr(w, http.StatusBadRequest, "invalid key id")
+		httpx.Err(w, http.StatusBadRequest, "invalid key id")
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
@@ -166,11 +167,11 @@ func (d Deps) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		UserID: store.UUID(p.UserID),
 	})
 	if err != nil {
-		httpErr(w, http.StatusForbidden, "not a member")
+		httpx.Err(w, http.StatusForbidden, "not a member")
 		return
 	}
 	if auth.Role(caller.Role).LessThan(auth.RoleAdmin) {
-		httpErr(w, http.StatusForbidden, "admin required")
+		httpx.Err(w, http.StatusForbidden, "admin required")
 		return
 	}
 	if err := d.Queries.RevokeAPIKeyForOrg(r.Context(), store.RevokeAPIKeyForOrgParams{
@@ -178,7 +179,7 @@ func (d Deps) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		OrgID: store.UUID(orgID),
 	}); err != nil {
 		d.Log.Error("revoke api key", "err", err)
-		httpErr(w, http.StatusInternalServerError, "revoke key")
+		httpx.Err(w, http.StatusInternalServerError, "revoke key")
 		return
 	}
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
