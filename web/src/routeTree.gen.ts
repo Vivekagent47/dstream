@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
+import { Route as ConnectionsIndexRouteImport } from './routes/connections/index'
 import { Route as SourcesIdRouteImport } from './routes/sources/$id'
 import { Route as SettingsOrgRouteImport } from './routes/settings/org'
 import { Route as SettingsMembersRouteImport } from './routes/settings/members'
@@ -49,6 +50,11 @@ const EventsIndexRoute = EventsIndexRouteImport.update({
 const DestinationsIndexRoute = DestinationsIndexRouteImport.update({
   id: '/destinations/',
   path: '/destinations/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectionsIndexRoute = ConnectionsIndexRouteImport.update({
+  id: '/connections/',
+  path: '/connections/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SourcesIdRoute = SourcesIdRouteImport.update({
@@ -121,6 +127,7 @@ export interface FileRoutesByFullPath {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/connections/': typeof ConnectionsIndexRoute
   '/destinations/': typeof DestinationsIndexRoute
   '/events/': typeof EventsIndexRoute
   '/sources/': typeof SourcesIndexRoute
@@ -139,6 +146,7 @@ export interface FileRoutesByTo {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/connections': typeof ConnectionsIndexRoute
   '/destinations': typeof DestinationsIndexRoute
   '/events': typeof EventsIndexRoute
   '/sources': typeof SourcesIndexRoute
@@ -158,6 +166,7 @@ export interface FileRoutesById {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/connections/': typeof ConnectionsIndexRoute
   '/destinations/': typeof DestinationsIndexRoute
   '/events/': typeof EventsIndexRoute
   '/sources/': typeof SourcesIndexRoute
@@ -178,6 +187,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/connections/'
     | '/destinations/'
     | '/events/'
     | '/sources/'
@@ -196,6 +206,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/connections'
     | '/destinations'
     | '/events'
     | '/sources'
@@ -214,6 +225,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/connections/'
     | '/destinations/'
     | '/events/'
     | '/sources/'
@@ -233,6 +245,7 @@ export interface RootRouteChildren {
   SettingsMembersRoute: typeof SettingsMembersRoute
   SettingsOrgRoute: typeof SettingsOrgRoute
   SourcesIdRoute: typeof SourcesIdRoute
+  ConnectionsIndexRoute: typeof ConnectionsIndexRoute
   DestinationsIndexRoute: typeof DestinationsIndexRoute
   EventsIndexRoute: typeof EventsIndexRoute
   SourcesIndexRoute: typeof SourcesIndexRoute
@@ -273,6 +286,13 @@ declare module '@tanstack/react-router' {
       path: '/destinations'
       fullPath: '/destinations/'
       preLoaderRoute: typeof DestinationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connections/': {
+      id: '/connections/'
+      path: '/connections'
+      fullPath: '/connections/'
+      preLoaderRoute: typeof ConnectionsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sources/$id': {
@@ -369,6 +389,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsMembersRoute: SettingsMembersRoute,
   SettingsOrgRoute: SettingsOrgRoute,
   SourcesIdRoute: SourcesIdRoute,
+  ConnectionsIndexRoute: ConnectionsIndexRoute,
   DestinationsIndexRoute: DestinationsIndexRoute,
   EventsIndexRoute: EventsIndexRoute,
   SourcesIndexRoute: SourcesIndexRoute,

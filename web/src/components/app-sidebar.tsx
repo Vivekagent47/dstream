@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   Inbox,
   KeyRound,
+  Link2,
   LogOut,
   Mail,
   ScrollText,
@@ -42,6 +43,7 @@ import {
 const PLATFORM = [
   { label: 'Sources', to: '/sources', icon: Inbox, prefix: true },
   { label: 'Destinations', to: '/destinations', icon: Send, prefix: true },
+  { label: 'Connections', to: '/connections', icon: Link2, prefix: true },
   { label: 'Events', to: '/events', icon: Activity, prefix: true },
 ] as const
 

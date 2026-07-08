@@ -254,14 +254,21 @@ export const api = {
     http.delete<void>(`/api/destinations/${id}`).then((r) => r.data),
 
   // Connections
-  listConnections: (sourceId: string) =>
+  // Server returns all org connections and ignores query params; the optional
+  // source_id is sent anyway so intent is visible in the network tab, and
+  // callers filter client-side (see sources/$id.tsx).
+  listConnections: (sourceId?: string) =>
     http
-      .get<Connection[]>('/api/connections', { params: { source_id: sourceId } })
+      .get<Connection[]>('/api/connections', {
+        params: sourceId ? { source_id: sourceId } : undefined,
+      })
       .then((r) => r.data),
   createConnection: (input: { source_id: string; destination_id: string; enabled?: boolean }) =>
     http.post<Connection>('/api/connections', input).then((r) => r.data),
   patchConnection: (id: string, input: Partial<Connection>) =>
     http.patch<Connection>(`/api/connections/${id}`, input).then((r) => r.data),
+  deleteConnection: (id: string) =>
+    http.delete<void>(`/api/connections/${id}`).then((r) => r.data),
 
   // Events
   listEvents: (params?: { limit?: number; cursor?: string }) =>
