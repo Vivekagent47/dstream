@@ -122,6 +122,50 @@ func (q *Queries) CountEventsByConnectionSince(ctx context.Context, arg CountEve
 	return items, nil
 }
 
+const countEventsByOrgGroupedByConnection = `-- name: CountEventsByOrgGroupedByConnection :many
+SELECT e.connection_id AS connection_id, e.status AS status, count(*) AS count
+FROM events e
+WHERE e.org_id = $1
+  AND e.is_test = FALSE
+  AND e.created_at > $2::timestamptz
+GROUP BY e.connection_id, e.status
+`
+
+type CountEventsByOrgGroupedByConnectionParams struct {
+	OrgID pgtype.UUID        `json:"org_id"`
+	Since pgtype.Timestamptz `json:"since"`
+}
+
+type CountEventsByOrgGroupedByConnectionRow struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	Status       string      `json:"status"`
+	Count        int64       `json:"count"`
+}
+
+// Per-connection, per-status counts for a whole org over a recent window,
+// excluding test events. One query feeds the connections-list stat column
+// (avoids an N+1 of CountEventsByConnectionSince). Handler folds by
+// connection_id into delivered/failed/pending buckets.
+func (q *Queries) CountEventsByOrgGroupedByConnection(ctx context.Context, arg CountEventsByOrgGroupedByConnectionParams) ([]CountEventsByOrgGroupedByConnectionRow, error) {
+	rows, err := q.db.Query(ctx, countEventsByOrgGroupedByConnection, arg.OrgID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountEventsByOrgGroupedByConnectionRow{}
+	for rows.Next() {
+		var i CountEventsByOrgGroupedByConnectionRow
+		if err := rows.Scan(&i.ConnectionID, &i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createEventsBatch = `-- name: CreateEventsBatch :many
 INSERT INTO events (request_id, connection_id, org_id, status, is_test)
 SELECT $1, conn_id, $2, 'queued', $3

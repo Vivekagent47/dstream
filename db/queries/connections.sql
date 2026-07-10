@@ -1,6 +1,6 @@
 -- name: CreateConnection :one
-INSERT INTO connections (source_id, destination_id, enabled)
-VALUES ($1, $2, $3)
+INSERT INTO connections (source_id, destination_id, enabled, name)
+VALUES ($1, $2, $3, $4)
 RETURNING *;
 
 -- name: GetConnectionByID :one
@@ -34,6 +34,7 @@ DELETE FROM connections AS c
 -- Tenancy is enforced by joining through sources.org_id.
 UPDATE connections AS c
    SET enabled               = COALESCE(sqlc.narg('enabled'),               c.enabled),
+       name                  = COALESCE(sqlc.narg('name'),                  c.name),
        max_retries           = COALESCE(sqlc.narg('max_retries'),           c.max_retries),
        retry_strategy        = COALESCE(sqlc.narg('retry_strategy'),        c.retry_strategy),
        retry_base_ms         = COALESCE(sqlc.narg('retry_base_ms'),         c.retry_base_ms),

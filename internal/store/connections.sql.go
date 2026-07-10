@@ -12,19 +12,25 @@ import (
 )
 
 const createConnection = `-- name: CreateConnection :one
-INSERT INTO connections (source_id, destination_id, enabled)
-VALUES ($1, $2, $3)
-RETURNING id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at
+INSERT INTO connections (source_id, destination_id, enabled, name)
+VALUES ($1, $2, $3, $4)
+RETURNING id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name
 `
 
 type CreateConnectionParams struct {
 	SourceID      pgtype.UUID `json:"source_id"`
 	DestinationID pgtype.UUID `json:"destination_id"`
 	Enabled       bool        `json:"enabled"`
+	Name          *string     `json:"name"`
 }
 
 func (q *Queries) CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error) {
-	row := q.db.QueryRow(ctx, createConnection, arg.SourceID, arg.DestinationID, arg.Enabled)
+	row := q.db.QueryRow(ctx, createConnection,
+		arg.SourceID,
+		arg.DestinationID,
+		arg.Enabled,
+		arg.Name,
+	)
 	var i Connection
 	err := row.Scan(
 		&i.ID,
@@ -39,6 +45,7 @@ func (q *Queries) CreateConnection(ctx context.Context, arg CreateConnectionPara
 		&i.CustomRetrySchedule,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Name,
 	)
 	return i, err
 }
@@ -60,7 +67,7 @@ func (q *Queries) DeleteConnectionForOrg(ctx context.Context, arg DeleteConnecti
 }
 
 const getConnectionByID = `-- name: GetConnectionByID :one
-SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at FROM connections WHERE id = $1
+SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name FROM connections WHERE id = $1
 `
 
 func (q *Queries) GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error) {
@@ -79,12 +86,13 @@ func (q *Queries) GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connec
 		&i.CustomRetrySchedule,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Name,
 	)
 	return i, err
 }
 
 const getConnectionForOrg = `-- name: GetConnectionForOrg :one
-SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at
+SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name
   FROM connections c
   JOIN sources s ON s.id = c.source_id
  WHERE c.id = $1
@@ -112,12 +120,13 @@ func (q *Queries) GetConnectionForOrg(ctx context.Context, arg GetConnectionForO
 		&i.CustomRetrySchedule,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Name,
 	)
 	return i, err
 }
 
 const listConnectionsByOrg = `-- name: ListConnectionsByOrg :many
-SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at
+SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name
   FROM connections c
   JOIN sources s ON s.id = c.source_id
  WHERE s.org_id = $1
@@ -146,6 +155,7 @@ func (q *Queries) ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) (
 			&i.CustomRetrySchedule,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Name,
 		); err != nil {
 			return nil, err
 		}
@@ -158,7 +168,7 @@ func (q *Queries) ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) (
 }
 
 const listEnabledConnectionsBySource = `-- name: ListEnabledConnectionsBySource :many
-SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at FROM connections
+SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name FROM connections
 WHERE source_id = $1 AND enabled = TRUE
 `
 
@@ -184,6 +194,7 @@ func (q *Queries) ListEnabledConnectionsBySource(ctx context.Context, sourceID p
 			&i.CustomRetrySchedule,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Name,
 		); err != nil {
 			return nil, err
 		}
@@ -198,22 +209,24 @@ func (q *Queries) ListEnabledConnectionsBySource(ctx context.Context, sourceID p
 const patchConnectionForOrg = `-- name: PatchConnectionForOrg :one
 UPDATE connections AS c
    SET enabled               = COALESCE($1,               c.enabled),
-       max_retries           = COALESCE($2,           c.max_retries),
-       retry_strategy        = COALESCE($3,        c.retry_strategy),
-       retry_base_ms         = COALESCE($4,         c.retry_base_ms),
-       retry_cap_ms          = COALESCE($5,          c.retry_cap_ms),
-       retry_jitter_pct      = COALESCE($6,      c.retry_jitter_pct),
-       custom_retry_schedule = COALESCE($7, c.custom_retry_schedule),
+       name                  = COALESCE($2,                  c.name),
+       max_retries           = COALESCE($3,           c.max_retries),
+       retry_strategy        = COALESCE($4,        c.retry_strategy),
+       retry_base_ms         = COALESCE($5,         c.retry_base_ms),
+       retry_cap_ms          = COALESCE($6,          c.retry_cap_ms),
+       retry_jitter_pct      = COALESCE($7,      c.retry_jitter_pct),
+       custom_retry_schedule = COALESCE($8, c.custom_retry_schedule),
        updated_at            = now()
   FROM sources s
- WHERE c.id = $8
+ WHERE c.id = $9
    AND c.source_id = s.id
-   AND s.org_id = $9
- RETURNING c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at
+   AND s.org_id = $10
+ RETURNING c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name
 `
 
 type PatchConnectionForOrgParams struct {
 	Enabled             *bool       `json:"enabled"`
+	Name                *string     `json:"name"`
 	MaxRetries          *int32      `json:"max_retries"`
 	RetryStrategy       *string     `json:"retry_strategy"`
 	RetryBaseMs         *int32      `json:"retry_base_ms"`
@@ -229,6 +242,7 @@ type PatchConnectionForOrgParams struct {
 func (q *Queries) PatchConnectionForOrg(ctx context.Context, arg PatchConnectionForOrgParams) (Connection, error) {
 	row := q.db.QueryRow(ctx, patchConnectionForOrg,
 		arg.Enabled,
+		arg.Name,
 		arg.MaxRetries,
 		arg.RetryStrategy,
 		arg.RetryBaseMs,
@@ -252,6 +266,7 @@ func (q *Queries) PatchConnectionForOrg(ctx context.Context, arg PatchConnection
 		&i.CustomRetrySchedule,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Name,
 	)
 	return i, err
 }

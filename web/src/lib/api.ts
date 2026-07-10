@@ -39,6 +39,7 @@ export interface Connection {
   id: string
   source_id: string
   destination_id: string
+  name: string | null
   enabled: boolean
   max_retries: number
   retry_strategy: 'exponential' | 'linear' | 'fixed' | 'custom'
@@ -55,6 +56,13 @@ export interface ConnectionStats {
   pending: number
   total: number
   window: string
+}
+
+export interface ConnectionStatCounts {
+  delivered: number
+  failed: number
+  pending: number
+  total: number
 }
 
 export interface Event {
@@ -274,8 +282,12 @@ export const api = {
       .then((r) => r.data),
   getConnection: (id: string) =>
     http.get<Connection>(`/api/connections/${id}`).then((r) => r.data),
-  createConnection: (input: { source_id: string; destination_id: string; enabled?: boolean }) =>
-    http.post<Connection>('/api/connections', input).then((r) => r.data),
+  createConnection: (input: {
+    source_id: string
+    destination_id: string
+    enabled?: boolean
+    name?: string
+  }) => http.post<Connection>('/api/connections', input).then((r) => r.data),
   patchConnection: (id: string, input: Partial<Connection>) =>
     http.patch<Connection>(`/api/connections/${id}`, input).then((r) => r.data),
   deleteConnection: (id: string) =>
@@ -284,6 +296,8 @@ export const api = {
     http.post<{ event_id: string }>(`/api/connections/${id}/test`).then((r) => r.data),
   getConnectionStats: (id: string) =>
     http.get<ConnectionStats>(`/api/connections/${id}/stats`).then((r) => r.data),
+  getAllConnectionStats: () =>
+    http.get<Record<string, ConnectionStatCounts>>('/api/connections/stats').then((r) => r.data),
 
   // Events
   listEvents: (params?: { limit?: number; cursor?: string; connection_id?: string; status?: string }) =>
@@ -312,6 +326,7 @@ export const qk = {
   // never collide with connections(sourceId)'s uuid/'all' second element.
   connection: (id: string) => ['connections', 'detail', id] as const,
   connectionStats: (id: string) => ['connections', 'stats', id] as const,
+  connectionStatsAll: () => ['connections', 'stats', 'all'] as const,
   events: (params?: { limit?: number; cursor?: string; connection_id?: string; status?: string }) =>
     ['events', params ?? {}] as const,
   event: (id: string) => ['event', id] as const,

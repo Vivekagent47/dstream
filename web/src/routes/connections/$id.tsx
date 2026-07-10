@@ -453,6 +453,7 @@ function SettingsTab({ conn }: { conn: Connection }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
 
+  const [name, setName] = useState(conn.name ?? '')
   const [maxRetries, setMaxRetries] = useState(String(conn.max_retries))
   const [strategy, setStrategy] = useState<Connection['retry_strategy']>(conn.retry_strategy)
   const [baseMs, setBaseMs] = useState(String(conn.retry_base_ms))
@@ -471,6 +472,7 @@ function SettingsTab({ conn }: { conn: Connection }) {
   useEffect(() => {
     if (seededId.current === conn.id) return
     seededId.current = conn.id
+    setName(conn.name ?? '')
     setMaxRetries(String(conn.max_retries))
     setStrategy(conn.retry_strategy)
     setBaseMs(String(conn.retry_base_ms))
@@ -482,6 +484,7 @@ function SettingsTab({ conn }: { conn: Connection }) {
   const save = useMutation({
     mutationFn: () =>
       api.patchConnection(conn.id, {
+        name,
         max_retries: Number(maxRetries),
         retry_strategy: strategy,
         retry_base_ms: Number(baseMs),
@@ -537,6 +540,7 @@ function SettingsTab({ conn }: { conn: Connection }) {
   }
 
   const dirty =
+    name !== (conn.name ?? '') ||
     Number(maxRetries) !== conn.max_retries ||
     strategy !== conn.retry_strategy ||
     Number(baseMs) !== conn.retry_base_ms ||
@@ -555,6 +559,18 @@ function SettingsTab({ conn }: { conn: Connection }) {
           How failed deliveries are retried. Changes apply to future events only — already
           queued deliveries keep the policy they were enqueued with.
         </p>
+        <div>
+          <Label htmlFor="conn-name" className="mb-2 block">
+            Name <span className="text-muted-foreground">(optional)</span>
+          </Label>
+          <Input
+            id="conn-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. prod-billing"
+            className="w-full"
+          />
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <Label className="mb-2 block">Strategy</Label>

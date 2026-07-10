@@ -25,6 +25,7 @@ type createConnectionReq struct {
 	SourceID      uuid.UUID `json:"source_id"`
 	DestinationID uuid.UUID `json:"destination_id"`
 	Enabled       *bool     `json:"enabled,omitempty"`
+	Name          *string   `json:"name,omitempty"`
 }
 
 func (d Handlers) CreateConnection(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +66,7 @@ func (d Handlers) CreateConnection(w http.ResponseWriter, r *http.Request) {
 		SourceID:      store.UUID(body.SourceID),
 		DestinationID: store.UUID(body.DestinationID),
 		Enabled:       enabled,
+		Name:          body.Name,
 	})
 	if err != nil {
 		d.Log.Error("create connection", "err", err)
@@ -174,8 +176,53 @@ func (d Handlers) ConnectionStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// AllConnectionStats returns 24h per-connection delivery counts for the whole
+// org in one call, keyed by connection id. Feeds the connections-list stat
+// column without an N+1. Test events excluded.
+func (d Handlers) AllConnectionStats(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	rows, err := d.Queries.CountEventsByOrgGroupedByConnection(r.Context(), store.CountEventsByOrgGroupedByConnectionParams{
+		OrgID: store.UUID(p.OrgID),
+		Since: pgtype.Timestamptz{Time: time.Now().Add(-24 * time.Hour), Valid: true},
+	})
+	if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "stats")
+		return
+	}
+	type bucket struct {
+		Delivered int64 `json:"delivered"`
+		Failed    int64 `json:"failed"`
+		Pending   int64 `json:"pending"`
+		Total     int64 `json:"total"`
+	}
+	out := map[string]*bucket{}
+	for _, row := range rows {
+		cid := store.GoUUID(row.ConnectionID).String()
+		b := out[cid]
+		if b == nil {
+			b = &bucket{}
+			out[cid] = b
+		}
+		b.Total += row.Count
+		switch row.Status {
+		case "delivered":
+			b.Delivered += row.Count
+		case "failed", "dead":
+			b.Failed += row.Count
+		case "queued", "in_flight":
+			b.Pending += row.Count
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
 type patchConnectionReq struct {
 	Enabled             *bool           `json:"enabled,omitempty"`
+	Name                *string         `json:"name,omitempty"`
 	MaxRetries          *int32          `json:"max_retries,omitempty"`
 	RetryStrategy       *string         `json:"retry_strategy,omitempty"`
 	RetryBaseMs         *int32          `json:"retry_base_ms,omitempty"`
@@ -219,6 +266,7 @@ func (d Handlers) PatchConnection(w http.ResponseWriter, r *http.Request) {
 		ID:             store.UUID(id),
 		OrgID:          store.UUID(p.OrgID),
 		Enabled:        body.Enabled,
+		Name:           body.Name,
 		MaxRetries:     body.MaxRetries,
 		RetryStrategy:  body.RetryStrategy,
 		RetryBaseMs:    body.RetryBaseMs,
@@ -401,6 +449,7 @@ func connectionView(c store.Connection) map[string]any {
 		"source_id":             store.GoUUID(c.SourceID).String(),
 		"destination_id":        store.GoUUID(c.DestinationID).String(),
 		"enabled":               c.Enabled,
+		"name":                  c.Name,
 		"max_retries":           c.MaxRetries,
 		"retry_strategy":        c.RetryStrategy,
 		"retry_base_ms":         c.RetryBaseMs,

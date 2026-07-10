@@ -185,6 +185,7 @@ CREATE TABLE connections (
     source_id               UUID NOT NULL REFERENCES sources(id)      ON DELETE CASCADE,
     destination_id          UUID NOT NULL REFERENCES destinations(id) ON DELETE CASCADE,
     enabled                 BOOLEAN NOT NULL DEFAULT TRUE,  -- disabled edges are skipped at ingest fan-out; no events created
+    name                    TEXT,                           -- optional human label; NULL shows as "(unnamed)" in the dashboard
     max_retries             INTEGER NOT NULL DEFAULT 8,     -- delivery attempts before the event is marked failed/dead
     retry_strategy          TEXT NOT NULL DEFAULT 'exponential'  -- exponential: base*2^n; linear: base*n; fixed: base; custom: explicit schedule
                               CHECK (retry_strategy IN ('exponential', 'linear', 'fixed', 'custom')),

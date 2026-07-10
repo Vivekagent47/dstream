@@ -160,3 +160,15 @@ WHERE e.connection_id = @connection_id
   AND e.is_test = FALSE
   AND e.created_at > @since::timestamptz
 GROUP BY e.status;
+
+-- name: CountEventsByOrgGroupedByConnection :many
+-- Per-connection, per-status counts for a whole org over a recent window,
+-- excluding test events. One query feeds the connections-list stat column
+-- (avoids an N+1 of CountEventsByConnectionSince). Handler folds by
+-- connection_id into delivered/failed/pending buckets.
+SELECT e.connection_id AS connection_id, e.status AS status, count(*) AS count
+FROM events e
+WHERE e.org_id = @org_id
+  AND e.is_test = FALSE
+  AND e.created_at > @since::timestamptz
+GROUP BY e.connection_id, e.status;

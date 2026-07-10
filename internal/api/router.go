@@ -152,6 +152,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Delete("/{id}", pl.DeleteDestination)
 				})
 				r.Route("/connections", func(r chi.Router) {
+					r.Get("/stats", pl.AllConnectionStats)
 					r.Get("/", pl.ListConnections)
 					r.Post("/", pl.CreateConnection)
 					r.Get("/{id}", pl.GetConnection)

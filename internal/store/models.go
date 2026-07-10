@@ -71,6 +71,7 @@ type Connection struct {
 	CustomRetrySchedule []byte             `json:"custom_retry_schedule"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	Name                *string            `json:"name"`
 }
 
 type Destination struct {

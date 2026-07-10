@@ -35,6 +35,11 @@ type Querier interface {
 	// synthetic test events so health metrics reflect real traffic. Caller passes
 	// the window start; folds the rows into delivered/failed/pending buckets.
 	CountEventsByConnectionSince(ctx context.Context, arg CountEventsByConnectionSinceParams) ([]CountEventsByConnectionSinceRow, error)
+	// Per-connection, per-status counts for a whole org over a recent window,
+	// excluding test events. One query feeds the connections-list stat column
+	// (avoids an N+1 of CountEventsByConnectionSince). Handler folds by
+	// connection_id into delivered/failed/pending buckets.
+	CountEventsByOrgGroupedByConnection(ctx context.Context, arg CountEventsByOrgGroupedByConnectionParams) ([]CountEventsByOrgGroupedByConnectionRow, error)
 	CountOrgMembershipsForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
