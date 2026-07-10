@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
@@ -68,6 +68,7 @@ export const Route = createFileRoute('/connections/')({
 
 function ConnectionsPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { data: connections } = useQuery(connectionsQuery)
   const { data: sources } = useQuery(sourcesQuery)
   const { data: destinations } = useQuery(destinationsQuery)
@@ -178,6 +179,7 @@ function ConnectionsPage() {
                 <TableCell className="pr-6 text-right">
                   <ConnectionRowMenu
                     connection={c}
+                    onView={() => navigate({ to: '/connections/$id', params: { id: c.id } })}
                     onToggle={() => patch.mutate({ id: c.id, enabled: !c.enabled })}
                     onDelete={() => setDeleteTarget(c)}
                     pending={patch.isPending}
@@ -237,11 +239,13 @@ function ConnectionsPage() {
 
 function ConnectionRowMenu({
   connection,
+  onView,
   onToggle,
   onDelete,
   pending,
 }: {
   connection: Connection
+  onView: () => void
   onToggle: () => void
   onDelete: () => void
   pending: boolean
@@ -260,6 +264,7 @@ function ConnectionRowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuItem onClick={onView}>View details</DropdownMenuItem>
         <DropdownMenuItem onClick={onToggle}>
           {connection.enabled ? 'Disable' : 'Enable'}
         </DropdownMenuItem>

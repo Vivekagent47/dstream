@@ -31,6 +31,10 @@ type Querier interface {
 	// a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
 	// acceptable under the system's at-least-once contract.
 	ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsParams) ([]ClaimStuckEventsRow, error)
+	// Per-status event counts for one connection over a recent window, excluding
+	// synthetic test events so health metrics reflect real traffic. Caller passes
+	// the window start; folds the rows into delivered/failed/pending buckets.
+	CountEventsByConnectionSince(ctx context.Context, arg CountEventsByConnectionSinceParams) ([]CountEventsByConnectionSinceRow, error)
 	CountOrgMembershipsForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -42,7 +46,7 @@ type Querier interface {
 	// request_id and org_id (a source belongs to exactly one org). One statement
 	// instead of a roundtrip per destination. RETURNING order is not guaranteed,
 	// so callers key the returned rows by connection_id rather than positional
-	// index.
+	// index. @is_test is a per-request scalar (a request is wholly test or not).
 	CreateEventsBatch(ctx context.Context, arg CreateEventsBatchParams) ([]Event, error)
 	CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkTokenParams) (MagicLinkToken, error)
 	CreateOrgInvite(ctx context.Context, arg CreateOrgInviteParams) (OrgInvite, error)
@@ -105,11 +109,14 @@ type Querier interface {
 	ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error)
 	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)
 	ListEnabledConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
-	// Keyset pagination on (created_at DESC, id DESC), backed by
-	// events_org_created_idx. First page passes NULL cursor; each subsequent page
-	// passes the last row's (created_at, id). No OFFSET, so page cost is constant
-	// regardless of depth.
-	ListEventsByOrg(ctx context.Context, arg ListEventsByOrgParams) ([]Event, error)
+	// Keyset pagination on (created_at DESC, id DESC). Optional connection_id and
+	// status filters use the narg NULL-guard idiom (see audit_logs.sql): a nil
+	// param drops the clause. The handler passes connection_id as a Valid pgtype
+	// whenever the query param is present (even an all-zero UUID), so a present
+	// filter that matches nothing returns empty rather than falling through to
+	// unfiltered. events_connection_created_idx serves the connection+order path;
+	// events_org_created_idx the org-only path.
+	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
 	// Explicit column list (no SELECT i.*) — token_hash is a secret-adjacent
 	// value (sha256 of the bearer token) and must never leave the database.
 	// invited_by UUID is omitted; we surface invited_by_email for the UI.

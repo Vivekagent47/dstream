@@ -199,6 +199,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		RequestID:     req.ID,
 		OrgID:         src.OrgID,
 		ConnectionIds: connIDs,
+		IsTest:        false,
 	})
 	if err != nil {
 		h.Log.Error("ingest: create events batch", "err", err)

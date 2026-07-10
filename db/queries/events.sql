@@ -3,9 +3,9 @@
 -- request_id and org_id (a source belongs to exactly one org). One statement
 -- instead of a roundtrip per destination. RETURNING order is not guaranteed,
 -- so callers key the returned rows by connection_id rather than positional
--- index.
-INSERT INTO events (request_id, connection_id, org_id, status)
-SELECT @request_id, conn_id, @org_id, 'queued'
+-- index. @is_test is a per-request scalar (a request is wholly test or not).
+INSERT INTO events (request_id, connection_id, org_id, status, is_test)
+SELECT @request_id, conn_id, @org_id, 'queued', @is_test
 FROM unnest(@connection_ids::uuid[]) AS conn_id
 RETURNING *;
 
@@ -121,14 +121,19 @@ UPDATE events
  )
 RETURNING id, connection_id, attempt_count;
 
--- name: ListEventsByOrg :many
--- Keyset pagination on (created_at DESC, id DESC), backed by
--- events_org_created_idx. First page passes NULL cursor; each subsequent page
--- passes the last row's (created_at, id). No OFFSET, so page cost is constant
--- regardless of depth.
+-- name: ListEvents :many
+-- Keyset pagination on (created_at DESC, id DESC). Optional connection_id and
+-- status filters use the narg NULL-guard idiom (see audit_logs.sql): a nil
+-- param drops the clause. The handler passes connection_id as a Valid pgtype
+-- whenever the query param is present (even an all-zero UUID), so a present
+-- filter that matches nothing returns empty rather than falling through to
+-- unfiltered. events_connection_created_idx serves the connection+order path;
+-- events_org_created_idx the org-only path.
 SELECT e.*
 FROM events e
 WHERE e.org_id = @org_id
+  AND (sqlc.narg('connection_id')::uuid IS NULL OR e.connection_id = sqlc.narg('connection_id'))
+  AND (sqlc.narg('status')::text        IS NULL OR e.status        = sqlc.narg('status'))
   AND (
     @before_created_at::timestamptz IS NULL
     OR (e.created_at, e.id) < (@before_created_at::timestamptz, @before_id::uuid)
@@ -143,3 +148,15 @@ SELECT e.*
   FROM events e
  WHERE e.id = $1
    AND e.org_id = $2;
+
+-- name: CountEventsByConnectionSince :many
+-- Per-status event counts for one connection over a recent window, excluding
+-- synthetic test events so health metrics reflect real traffic. Caller passes
+-- the window start; folds the rows into delivered/failed/pending buckets.
+SELECT e.status AS status, count(*) AS count
+FROM events e
+WHERE e.connection_id = @connection_id
+  AND e.org_id = @org_id
+  AND e.is_test = FALSE
+  AND e.created_at > @since::timestamptz
+GROUP BY e.status;

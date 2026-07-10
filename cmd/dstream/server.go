@@ -135,6 +135,7 @@ func serverCmd() *cobra.Command {
 				Pool:             pool,
 				Redis:            rdb,
 				Queue:            qc,
+				BodyStore:        bodyStore,
 				Signer:           signer,
 				PublicBaseURL:    cfg.PublicBaseURL,
 				DevMode:          cfg.DevMode,

@@ -99,6 +99,7 @@ type Event struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	OrgID         pgtype.UUID        `json:"org_id"`
+	IsTest        bool               `json:"is_test"`
 }
 
 type MagicLinkToken struct {

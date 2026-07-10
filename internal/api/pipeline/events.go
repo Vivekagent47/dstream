@@ -34,13 +34,37 @@ func (d Handlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	params := store.ListEventsByOrgParams{
+	params := store.ListEventsParams{
 		OrgID:     store.UUID(p.OrgID),
 		PageLimit: int32(limit),
 	}
-	// Keyset cursor: opaque token carrying the previous page's last
-	// (created_at, id). Absent on the first page; the query treats a NULL
-	// before_created_at as "no lower bound".
+
+	// Optional connection filter. A present-but-zero UUID still filters (matches
+	// nothing) — only an absent param drops the clause.
+	if v := r.URL.Query().Get("connection_id"); v != "" {
+		id, perr := uuid.Parse(v)
+		if perr != nil {
+			httpx.Err(w, http.StatusBadRequest, "invalid connection_id")
+			return
+		}
+		// pgtype.UUID directly (not store.UUID) so a present-but-zero UUID still
+		// sets Valid:true and filters — store.UUID collapses uuid.Nil to
+		// Valid:false, which the narg guard would treat as "no filter".
+		params.ConnectionID = pgtype.UUID{Bytes: id, Valid: true}
+	}
+
+	// Optional status filter, validated against the enum.
+	if v := r.URL.Query().Get("status"); v != "" {
+		switch v {
+		case "queued", "in_flight", "delivered", "failed", "paused", "dead":
+			s := v
+			params.Status = &s
+		default:
+			httpx.Err(w, http.StatusBadRequest, "invalid status")
+			return
+		}
+	}
+
 	if cur := r.URL.Query().Get("cursor"); cur != "" {
 		ts, id, ok := decodeEventCursor(cur)
 		if !ok {
@@ -51,7 +75,7 @@ func (d Handlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 		params.BeforeID = store.UUID(id)
 	}
 
-	rows, err := d.Queries.ListEventsByOrg(r.Context(), params)
+	rows, err := d.Queries.ListEvents(r.Context(), params)
 	if err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "list")
 		return
@@ -185,6 +209,7 @@ func eventView(e store.Event) map[string]any {
 		"next_retry_at":   tsValue(e.NextRetryAt.Time, e.NextRetryAt.Valid),
 		"created_at":      e.CreatedAt.Time,
 		"updated_at":      e.UpdatedAt.Time,
+		"is_test":         e.IsTest,
 	}
 }
 

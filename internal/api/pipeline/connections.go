@@ -2,15 +2,22 @@ package pipeline
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"github.com/Vivekagent47/dstream/internal/api/httpx"
+	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/Vivekagent47/dstream/internal/api/httpx"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -114,6 +121,57 @@ func (d Handlers) GetConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, connectionView(row))
+}
+
+// ConnectionStats returns per-status delivery counts for a connection over the
+// last 24h, excluding test events. Feeds the detail-page overview cards.
+func (d Handlers) ConnectionStats(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	// Ownership check: 404 if the connection isn't in the caller's org.
+	if _, err := d.Queries.GetConnectionForOrg(r.Context(), store.GetConnectionForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	}); err != nil {
+		httpx.Err(w, http.StatusNotFound, "not found")
+		return
+	}
+	rows, err := d.Queries.CountEventsByConnectionSince(r.Context(), store.CountEventsByConnectionSinceParams{
+		ConnectionID: store.UUID(id),
+		OrgID:        store.UUID(p.OrgID),
+		Since:        pgtype.Timestamptz{Time: time.Now().Add(-24 * time.Hour), Valid: true},
+	})
+	if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "stats")
+		return
+	}
+	var delivered, failed, pending, total int64
+	for _, row := range rows {
+		total += row.Count
+		switch row.Status {
+		case "delivered":
+			delivered += row.Count
+		case "failed", "dead":
+			failed += row.Count
+		case "queued", "in_flight":
+			pending += row.Count
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"delivered": delivered,
+		"failed":    failed,
+		"pending":   pending,
+		"total":     total,
+		"window":    "24h",
+	})
 }
 
 type patchConnectionReq struct {
@@ -242,6 +300,100 @@ func diffConnection(old, new store.Connection) map[string]map[string]any {
 	}
 	return out
 }
+
+// TestConnection sends a synthetic event through the real delivery pipeline
+// for one connection, so a user can confirm the destination works before real
+// traffic. Reuses the ingest path: create request + body + one is_test event,
+// then enqueue delivery. The event (and its attempt) show up in the Events tab.
+func (d Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	conn, err := d.Queries.GetConnectionForOrg(r.Context(), store.GetConnectionForOrgParams{
+		ID:    store.UUID(id),
+		OrgID: store.UUID(p.OrgID),
+	})
+	if err != nil {
+		httpx.Err(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	reqID := uuid.Must(uuid.NewV7())
+	body := []byte(fmt.Sprintf(`{"dstream":"test.ping","connection_id":%q,"sent_at":%q}`,
+		id.String(), time.Now().UTC().Format(time.RFC3339)))
+	sum := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(sum[:])
+
+	req, err := d.Queries.CreateRequest(r.Context(), store.CreateRequestParams{
+		ID:          store.UUID(reqID),
+		SourceID:    conn.SourceID,
+		HTTPMethod:  http.MethodPost,
+		HTTPPath:    "/__dstream_test",
+		Headers:     []byte(`{"Content-Type":["application/json"],"Dstream-Test":["true"]}`),
+		BodyHash:    bodyHash,
+		BodyRef:     "pg:" + reqID.String(),
+		BodySize:    int32(len(body)),
+		ContentType: optStr("application/json"),
+		SigVerified: false,
+		IngestIP:    nil,
+	})
+	if err != nil {
+		d.Log.Error("test connection: create request", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "create request")
+		return
+	}
+	if _, err := d.BodyStore.Put(r.Context(), store.GoUUID(req.ID), body); err != nil {
+		d.Log.Error("test connection: store body", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "store body")
+		return
+	}
+
+	events, err := d.Queries.CreateEventsBatch(r.Context(), store.CreateEventsBatchParams{
+		RequestID:     req.ID,
+		OrgID:         store.UUID(p.OrgID),
+		ConnectionIds: []pgtype.UUID{conn.ID},
+		IsTest:        true,
+	})
+	if err != nil || len(events) != 1 {
+		d.Log.Error("test connection: create event", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "create event")
+		return
+	}
+	ev := events[0]
+
+	if _, err := d.Queue.EnqueueDeliver(r.Context(), queue.DeliverPayload{
+		EventID:             store.GoUUID(ev.ID),
+		Attempt:             0,
+		EnqueuedAt:          time.Now().UnixMilli(),
+		RetryStrategy:       conn.RetryStrategy,
+		RetryBaseMs:         conn.RetryBaseMs,
+		RetryCapMs:          conn.RetryCapMs,
+		RetryJitterPct:      conn.RetryJitterPct,
+		CustomRetrySchedule: conn.CustomRetrySchedule,
+	}, int(conn.MaxRetries)); err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "enqueue")
+		return
+	}
+
+	evID := store.GoUUID(ev.ID)
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
+		Action:     "connection.test",
+		TargetType: "connection",
+		TargetID:   audit.PtrUUID(id),
+		Metadata:   map[string]any{"event_id": evID.String()},
+	})
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"event_id": evID.String()})
+}
+
+// optStr returns a pointer to s (for optional string columns).
+func optStr(s string) *string { return &s }
 
 func connectionView(c store.Connection) map[string]any {
 	return map[string]any{

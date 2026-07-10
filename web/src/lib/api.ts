@@ -49,6 +49,14 @@ export interface Connection {
   created_at: string
 }
 
+export interface ConnectionStats {
+  delivered: number
+  failed: number
+  pending: number
+  total: number
+  window: string
+}
+
 export interface Event {
   id: string
   request_id: string
@@ -57,6 +65,7 @@ export interface Event {
   attempt_count: number
   last_attempt_at: string | null
   next_retry_at: string | null
+  is_test: boolean
   created_at: string
 }
 
@@ -263,15 +272,21 @@ export const api = {
         params: sourceId ? { source_id: sourceId } : undefined,
       })
       .then((r) => r.data),
+  getConnection: (id: string) =>
+    http.get<Connection>(`/api/connections/${id}`).then((r) => r.data),
   createConnection: (input: { source_id: string; destination_id: string; enabled?: boolean }) =>
     http.post<Connection>('/api/connections', input).then((r) => r.data),
   patchConnection: (id: string, input: Partial<Connection>) =>
     http.patch<Connection>(`/api/connections/${id}`, input).then((r) => r.data),
   deleteConnection: (id: string) =>
     http.delete<void>(`/api/connections/${id}`).then((r) => r.data),
+  testConnection: (id: string) =>
+    http.post<{ event_id: string }>(`/api/connections/${id}/test`).then((r) => r.data),
+  getConnectionStats: (id: string) =>
+    http.get<ConnectionStats>(`/api/connections/${id}/stats`).then((r) => r.data),
 
   // Events
-  listEvents: (params?: { limit?: number; cursor?: string }) =>
+  listEvents: (params?: { limit?: number; cursor?: string; connection_id?: string; status?: string }) =>
     http.get<EventsPage>('/api/events', { params }).then((r) => r.data),
   getEvent: (id: string) =>
     http.get<Event & { attempts: Attempt[] }>(`/api/events/${id}`).then((r) => r.data),
@@ -292,6 +307,12 @@ export const qk = {
   destinations: () => ['destinations'] as const,
   destination: (id: string) => ['destinations', id] as const,
   connections: (sourceId: string) => ['connections', sourceId] as const,
-  events: (params?: { limit?: number; cursor?: string }) => ['events', params ?? {}] as const,
+  // Under the 'connections' prefix so list-page mutations that invalidate
+  // ['connections'] also refresh this detail cache. 'detail' (a literal) can
+  // never collide with connections(sourceId)'s uuid/'all' second element.
+  connection: (id: string) => ['connections', 'detail', id] as const,
+  connectionStats: (id: string) => ['connections', 'stats', id] as const,
+  events: (params?: { limit?: number; cursor?: string; connection_id?: string; status?: string }) =>
+    ['events', params ?? {}] as const,
   event: (id: string) => ['event', id] as const,
 }

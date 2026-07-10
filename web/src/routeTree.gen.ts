@@ -25,6 +25,7 @@ import { Route as OrgsNewRouteImport } from './routes/orgs/new'
 import { Route as InvitesTokenRouteImport } from './routes/invites/$token'
 import { Route as EventsIdRouteImport } from './routes/events/$id'
 import { Route as DestinationsIdRouteImport } from './routes/destinations/$id'
+import { Route as ConnectionsIdRouteImport } from './routes/connections/$id'
 import { Route as AuthVerifyRouteImport } from './routes/auth/verify'
 
 const LoginRoute = LoginRouteImport.update({
@@ -107,6 +108,11 @@ const DestinationsIdRoute = DestinationsIdRouteImport.update({
   path: '/destinations/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConnectionsIdRoute = ConnectionsIdRouteImport.update({
+  id: '/connections/$id',
+  path: '/connections/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthVerifyRoute = AuthVerifyRouteImport.update({
   id: '/auth/verify',
   path: '/auth/verify',
@@ -117,6 +123,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/auth/verify': typeof AuthVerifyRoute
+  '/connections/$id': typeof ConnectionsIdRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -136,6 +143,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/auth/verify': typeof AuthVerifyRoute
+  '/connections/$id': typeof ConnectionsIdRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -156,6 +164,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/auth/verify': typeof AuthVerifyRoute
+  '/connections/$id': typeof ConnectionsIdRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -177,6 +186,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/auth/verify'
+    | '/connections/$id'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -196,6 +206,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/auth/verify'
+    | '/connections/$id'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -215,6 +226,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/auth/verify'
+    | '/connections/$id'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -235,6 +247,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
   AuthVerifyRoute: typeof AuthVerifyRoute
+  ConnectionsIdRoute: typeof ConnectionsIdRoute
   DestinationsIdRoute: typeof DestinationsIdRoute
   EventsIdRoute: typeof EventsIdRoute
   InvitesTokenRoute: typeof InvitesTokenRoute
@@ -365,6 +378,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DestinationsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/connections/$id': {
+      id: '/connections/$id'
+      path: '/connections/$id'
+      fullPath: '/connections/$id'
+      preLoaderRoute: typeof ConnectionsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth/verify': {
       id: '/auth/verify'
       path: '/auth/verify'
@@ -379,6 +399,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
   AuthVerifyRoute: AuthVerifyRoute,
+  ConnectionsIdRoute: ConnectionsIdRoute,
   DestinationsIdRoute: DestinationsIdRoute,
   EventsIdRoute: EventsIdRoute,
   InvitesTokenRoute: InvitesTokenRoute,

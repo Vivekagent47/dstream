@@ -286,7 +286,7 @@ func TestIsolation_ListAPIKeysByOrg_DoesNotLeak(t *testing.T) {
 
 // --- events (joins through source.org_id) ---
 
-func TestIsolation_ListEventsByOrg_DoesNotLeak(t *testing.T) {
+func TestIsolation_ListEvents_DoesNotLeak(t *testing.T) {
 	pool := isolationPool(t)
 	q := store.New(pool)
 	orgA := seedIsolationOrg(t, q, "iso-evA")
@@ -359,7 +359,7 @@ func TestIsolation_ListEventsByOrg_DoesNotLeak(t *testing.T) {
 	evA := seedEvent(t, orgA, "isoevA")
 	evB := seedEvent(t, orgB, "isoevB")
 
-	rows, err := q.ListEventsByOrg(ctx, store.ListEventsByOrgParams{
+	rows, err := q.ListEvents(ctx, store.ListEventsParams{
 		OrgID:     store.UUID(orgA.OrgID),
 		PageLimit: 100,
 	})

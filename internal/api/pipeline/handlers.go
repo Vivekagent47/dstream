@@ -6,6 +6,7 @@ package pipeline
 import (
 	"log/slog"
 
+	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
@@ -16,6 +17,9 @@ type Handlers struct {
 	Log     *slog.Logger
 	Queries *store.Queries
 	Queue   *queue.Client
+	// BodyStore persists the synthetic payload for test-connection events, so
+	// the delivery worker can read it back by body_ref (same path as ingest).
+	BodyStore ingest.BodyStore
 	// EvictSourceCache drops a source from the ingest in-process cache so
 	// enable/disable and allowed-methods edits take effect immediately.
 	// nil-safe: nil means no cache to evict.

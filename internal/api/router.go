@@ -12,6 +12,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/api/identity"
 	"github.com/Vivekagent47/dstream/internal/api/pipeline"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
@@ -24,10 +25,11 @@ type Deps struct {
 	// Pool exposes the underlying pgxpool so handlers can begin
 	// transactions (notably the magic-link bootstrap, which wraps
 	// user-create + invite-apply + workspace-mint in one atomic op).
-	Pool   *pgxpool.Pool
-	Redis  *redis.Client
-	Queue  *queue.Client
-	Signer *auth.SessionSigner
+	Pool      *pgxpool.Pool
+	Redis     *redis.Client
+	Queue     *queue.Client
+	BodyStore ingest.BodyStore
+	Signer    *auth.SessionSigner
 	// PublicBaseURL is the externally-visible scheme://host[:port] for the
 	// service. Used to render invite links (and similar) into emails / logs.
 	PublicBaseURL string
@@ -59,6 +61,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		Log:              d.Log,
 		Queries:          d.Queries,
 		Queue:            d.Queue,
+		BodyStore:        d.BodyStore,
 		EvictSourceCache: d.EvictSourceCache,
 	}
 	cli := apicli.Handlers{
@@ -152,6 +155,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/", pl.ListConnections)
 					r.Post("/", pl.CreateConnection)
 					r.Get("/{id}", pl.GetConnection)
+					r.Get("/{id}/stats", pl.ConnectionStats)
+					r.Post("/{id}/test", pl.TestConnection)
 					r.Patch("/{id}", pl.PatchConnection)
 					r.Delete("/{id}", pl.DeleteConnection)
 				})
