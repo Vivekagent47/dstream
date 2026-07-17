@@ -33,6 +33,11 @@ type DeliverPayload struct {
 	Attempt    int       `json:"attempt"`
 	EnqueuedAt int64     `json:"enqueued_at_unix_ms"`
 
+	// Manual marks a user-triggered retry. A manual retry of a CLI event with
+	// no live tunnel is discarded immediately rather than waiting out the grace
+	// window — the user asked explicitly, so don't stall them.
+	Manual bool `json:"manual,omitempty"`
+
 	// Retry policy snapshot, captured at enqueue time. Optional — handler
 	// falls back to a 2-query DB lookup if RetryStrategy is empty (covers
 	// tasks enqueued before this field shipped).

@@ -18,6 +18,7 @@ SELECT e.id              AS id,
        e.connection_id   AS connection_id,
        e.status          AS status,
        e.attempt_count   AS attempt_count,
+       e.created_at      AS created_at,
        c.source_id       AS source_id,
        c.destination_id  AS destination_id,
        c.max_retries     AS max_retries,
@@ -57,6 +58,16 @@ SET status          = 'failed',
     last_attempt_at = now(),
     next_retry_at   = NULL,
     updated_at      = now()
+WHERE id = $1;
+
+-- name: MarkEventDiscarded :exec
+-- Terminal state for a CLI event that waited past the tunnel deadline with no
+-- live listener. Unlike 'failed' it never got a delivery attempt; it's dropped
+-- until a user manually retries (ResetEventForManualRetry re-queues it).
+UPDATE events
+SET status        = 'discarded',
+    next_retry_at = NULL,
+    updated_at    = now()
 WHERE id = $1;
 
 -- name: MarkEventInFlight :exec
@@ -134,6 +145,7 @@ FROM events e
 WHERE e.org_id = @org_id
   AND (sqlc.narg('connection_id')::uuid IS NULL OR e.connection_id = sqlc.narg('connection_id'))
   AND (sqlc.narg('status')::text        IS NULL OR e.status        = sqlc.narg('status'))
+  AND (sqlc.narg('after')::timestamptz  IS NULL OR e.created_at >= sqlc.narg('after'))
   AND (
     @before_created_at::timestamptz IS NULL
     OR (e.created_at, e.id) < (@before_created_at::timestamptz, @before_id::uuid)
@@ -141,11 +153,52 @@ WHERE e.org_id = @org_id
 ORDER BY e.created_at DESC, e.id DESC
 LIMIT @page_limit;
 
+-- name: EventsHistogram :many
+-- Time-bucketed event counts by status for the events-page timeline graph.
+-- @bucket is a date_trunc unit ('hour' | 'day' | ...) chosen by the handler
+-- from the selected range. Same optional connection_id/status filters as
+-- ListEvents so the graph tracks the table; @after bounds the window (always a
+-- finite range). Includes test events, matching the list view.
+SELECT date_trunc(@bucket::text, e.created_at)::timestamptz AS bucket,
+       e.status AS status,
+       count(*) AS count
+FROM events e
+WHERE e.org_id = @org_id
+  AND (sqlc.narg('connection_id')::uuid IS NULL OR e.connection_id = sqlc.narg('connection_id'))
+  AND (sqlc.narg('status')::text        IS NULL OR e.status        = sqlc.narg('status'))
+  AND e.created_at >= @after::timestamptz
+GROUP BY bucket, e.status
+ORDER BY bucket;
+
 -- name: GetEventForOrg :one
 -- org_id lives on events now, so this is a direct two-column lookup (PK + org)
 -- instead of a join through connections/sources.
 SELECT e.*
   FROM events e
+ WHERE e.id = $1
+   AND e.org_id = $2;
+
+-- name: GetEventDetailForOrg :one
+-- Full event view for the detail page: the event, its connection's
+-- source/destination, the destination endpoint, and the originating request
+-- (method/path/headers/body pointer). One org-scoped row that backs the
+-- Overview + Request-data panels.
+SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count,
+       e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at, e.is_test,
+       c.source_id      AS source_id,
+       c.destination_id AS destination_id,
+       d.type           AS destination_type,
+       d.url            AS destination_url,
+       r.http_method    AS http_method,
+       r.http_path      AS http_path,
+       r.headers        AS request_headers,
+       r.body_ref       AS body_ref,
+       r.body_size      AS body_size,
+       r.content_type   AS content_type
+  FROM events e
+  JOIN connections c  ON c.id = e.connection_id
+  JOIN destinations d ON d.id = c.destination_id
+  JOIN requests r     ON r.id = e.request_id
  WHERE e.id = $1
    AND e.org_id = $2;
 

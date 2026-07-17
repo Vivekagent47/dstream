@@ -39,31 +39,13 @@ func (d Handlers) ListEvents(w http.ResponseWriter, r *http.Request) {
 		PageLimit: int32(limit),
 	}
 
-	// Optional connection filter. A present-but-zero UUID still filters (matches
-	// nothing) — only an absent param drops the clause.
-	if v := r.URL.Query().Get("connection_id"); v != "" {
-		id, perr := uuid.Parse(v)
-		if perr != nil {
-			httpx.Err(w, http.StatusBadRequest, "invalid connection_id")
-			return
-		}
-		// pgtype.UUID directly (not store.UUID) so a present-but-zero UUID still
-		// sets Valid:true and filters — store.UUID collapses uuid.Nil to
-		// Valid:false, which the narg guard would treat as "no filter".
-		params.ConnectionID = pgtype.UUID{Bytes: id, Valid: true}
+	connID, status, after, ok := parseEventFilters(w, r)
+	if !ok {
+		return
 	}
-
-	// Optional status filter, validated against the enum.
-	if v := r.URL.Query().Get("status"); v != "" {
-		switch v {
-		case "queued", "in_flight", "delivered", "failed", "paused", "dead":
-			s := v
-			params.Status = &s
-		default:
-			httpx.Err(w, http.StatusBadRequest, "invalid status")
-			return
-		}
-	}
+	params.ConnectionID = connID
+	params.Status = status
+	params.After = after
 
 	if cur := r.URL.Query().Get("cursor"); cur != "" {
 		ts, id, ok := decodeEventCursor(cur)
@@ -122,6 +104,105 @@ func decodeEventCursor(s string) (time.Time, uuid.UUID, bool) {
 	return ts, id, true
 }
 
+// parseEventFilters reads the connection_id / status / after query params
+// shared by the list and histogram endpoints. On a bad value it writes the
+// error response and returns ok=false. All three are optional; absent params
+// come back zero-valued (Valid:false / nil), which the queries treat as "no
+// filter".
+func parseEventFilters(w http.ResponseWriter, r *http.Request) (connID pgtype.UUID, status *string, after pgtype.Timestamptz, ok bool) {
+	// A present-but-zero UUID still filters (matches nothing). pgtype.UUID
+	// directly (not store.UUID) so a zero UUID keeps Valid:true — store.UUID
+	// collapses uuid.Nil to Valid:false, which the narg guard reads as "no filter".
+	if v := r.URL.Query().Get("connection_id"); v != "" {
+		id, perr := uuid.Parse(v)
+		if perr != nil {
+			httpx.Err(w, http.StatusBadRequest, "invalid connection_id")
+			return
+		}
+		connID = pgtype.UUID{Bytes: id, Valid: true}
+	}
+	if v := r.URL.Query().Get("status"); v != "" {
+		switch v {
+		case "queued", "in_flight", "delivered", "failed", "paused", "dead", "discarded":
+			s := v
+			status = &s
+		default:
+			httpx.Err(w, http.StatusBadRequest, "invalid status")
+			return
+		}
+	}
+	if v := r.URL.Query().Get("after"); v != "" {
+		ts, perr := time.Parse(time.RFC3339, v)
+		if perr != nil {
+			httpx.Err(w, http.StatusBadRequest, "invalid after")
+			return
+		}
+		after = pgtype.Timestamptz{Time: ts, Valid: true}
+	}
+	ok = true
+	return
+}
+
+// EventsHistogram returns event counts bucketed over time for the events-page
+// timeline graph. Same filters as ListEvents; @after defaults to the last 24h
+// when absent (the graph is always over a finite window).
+func (d Handlers) EventsHistogram(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	connID, status, after, ok := parseEventFilters(w, r)
+	if !ok {
+		return
+	}
+	if !after.Valid {
+		after = pgtype.Timestamptz{Time: time.Now().Add(-24 * time.Hour), Valid: true}
+	}
+	bucket := r.URL.Query().Get("bucket")
+	switch bucket {
+	case "minute", "hour", "day", "week":
+	default:
+		bucket = "hour"
+	}
+
+	rows, err := d.Queries.EventsHistogram(r.Context(), store.EventsHistogramParams{
+		Bucket:       bucket,
+		OrgID:        store.UUID(p.OrgID),
+		ConnectionID: connID,
+		Status:       status,
+		After:        after,
+	})
+	if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "histogram")
+		return
+	}
+
+	type bucketOut struct {
+		Ts     string           `json:"ts"`
+		Counts map[string]int64 `json:"counts"`
+		Total  int64            `json:"total"`
+	}
+	order := make([]string, 0)
+	idx := make(map[string]*bucketOut)
+	for _, row := range rows {
+		key := row.Bucket.Time.UTC().Format(time.RFC3339)
+		b := idx[key]
+		if b == nil {
+			b = &bucketOut{Ts: key, Counts: map[string]int64{}}
+			idx[key] = b
+			order = append(order, key)
+		}
+		b.Counts[row.Status] += row.Count
+		b.Total += row.Count
+	}
+	buckets := make([]*bucketOut, 0, len(order))
+	for _, k := range order {
+		buckets = append(buckets, idx[k])
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"bucket": bucket, "buckets": buckets})
+}
+
 func (d Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
@@ -133,7 +214,7 @@ func (d Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ev, err := d.Queries.GetEventForOrg(r.Context(), store.GetEventForOrgParams{
+	row, err := d.Queries.GetEventDetailForOrg(r.Context(), store.GetEventDetailForOrgParams{
 		ID:    store.UUID(id),
 		OrgID: store.UUID(p.OrgID),
 	})
@@ -141,9 +222,42 @@ func (d Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
-	attempts, _ := d.Queries.ListAttemptsByEvent(r.Context(), ev.ID)
-	out := eventView(ev)
-	out["attempts"] = attemptViews(attempts)
+	attempts, _ := d.Queries.ListAttemptsByEvent(r.Context(), row.ID)
+
+	// Body is the raw stored payload. Best-effort — a missing/unreadable body
+	// shouldn't 500 the whole detail view, so on error we just omit it.
+	var body string
+	if b, berr := d.BodyStore.Get(r.Context(), row.BodyRef); berr == nil {
+		body = string(b)
+	}
+
+	out := map[string]any{
+		"id":              store.GoUUID(row.ID).String(),
+		"request_id":      store.GoUUID(row.RequestID).String(),
+		"connection_id":   store.GoUUID(row.ConnectionID).String(),
+		"source_id":       store.GoUUID(row.SourceID).String(),
+		"destination_id":  store.GoUUID(row.DestinationID).String(),
+		"status":          row.Status,
+		"attempt_count":   row.AttemptCount,
+		"last_attempt_at": tsValue(row.LastAttemptAt.Time, row.LastAttemptAt.Valid),
+		"next_retry_at":   tsValue(row.NextRetryAt.Time, row.NextRetryAt.Valid),
+		"created_at":      row.CreatedAt.Time,
+		"updated_at":      row.UpdatedAt.Time,
+		"is_test":         row.IsTest,
+		"attempts":        attemptViews(attempts),
+		"destination": map[string]any{
+			"type": row.DestinationType,
+			"url":  row.DestinationUrl,
+		},
+		"request": map[string]any{
+			"method":       row.HTTPMethod,
+			"path":         row.HTTPPath,
+			"headers":      json.RawMessage(row.RequestHeaders),
+			"body":         body,
+			"body_size":    row.BodySize,
+			"content_type": row.ContentType,
+		},
+	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
@@ -179,6 +293,7 @@ func (d Handlers) RetryEvent(w http.ResponseWriter, r *http.Request) {
 		EventID:             store.GoUUID(ev.ID),
 		Attempt:             0,
 		EnqueuedAt:          time.Now().UnixMilli(),
+		Manual:              true,
 		RetryStrategy:       conn.RetryStrategy,
 		RetryBaseMs:         conn.RetryBaseMs,
 		RetryCapMs:          conn.RetryCapMs,

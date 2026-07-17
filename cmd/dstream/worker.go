@@ -59,6 +59,7 @@ func workerCmd() *cobra.Command {
 			srv := asynq.NewServer(redisOpt, asynq.Config{
 				Concurrency:    cfg.Worker.Concurrency,
 				RetryDelayFunc: h.RetryDelayFunc(),
+				ErrorHandler:   h.ErrorHandler(),
 				Queues: map[string]int{
 					queue.QueueDeliveries: 10,
 					queue.QueueDefault:    1,

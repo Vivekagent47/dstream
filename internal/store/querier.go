@@ -80,6 +80,12 @@ type Querier interface {
 	// remains. The whole operation is one statement, so two concurrent
 	// demote requests can't both pass a count-then-update race.
 	DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error)
+	// Time-bucketed event counts by status for the events-page timeline graph.
+	// @bucket is a date_trunc unit ('hour' | 'day' | ...) chosen by the handler
+	// from the selected range. Same optional connection_id/status filters as
+	// ListEvents so the graph tracks the table; @after bounds the window (always a
+	// finite range). Includes test events, matching the list view.
+	EventsHistogram(ctx context.Context, arg EventsHistogramParams) ([]EventsHistogramRow, error)
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	// FOR UPDATE locks the row for the consume transaction so two concurrent
 	// verifies can't both see it active: the second blocks, then re-checks the
@@ -90,6 +96,11 @@ type Querier interface {
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
 	GetDestinationForOrg(ctx context.Context, arg GetDestinationForOrgParams) (Destination, error)
 	GetEventByID(ctx context.Context, id pgtype.UUID) (Event, error)
+	// Full event view for the detail page: the event, its connection's
+	// source/destination, the destination endpoint, and the originating request
+	// (method/path/headers/body pointer). One org-scoped row that backs the
+	// Overview + Request-data panels.
+	GetEventDetailForOrg(ctx context.Context, arg GetEventDetailForOrgParams) (GetEventDetailForOrgRow, error)
 	GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetEventForDeliveryRow, error)
 	// org_id lives on events now, so this is a direct two-column lookup (PK + org)
 	// instead of a join through connections/sources.
@@ -134,6 +145,10 @@ type Querier interface {
 	// terminal transitions must NOT increment again (that double-counted attempts
 	// and made recorded attempt_num values skip).
 	MarkEventDelivered(ctx context.Context, id pgtype.UUID) error
+	// Terminal state for a CLI event that waited past the tunnel deadline with no
+	// live listener. Unlike 'failed' it never got a delivery attempt; it's dropped
+	// until a user manually retries (ResetEventForManualRetry re-queues it).
+	MarkEventDiscarded(ctx context.Context, id pgtype.UUID) error
 	MarkEventFailed(ctx context.Context, id pgtype.UUID) error
 	// The single attempt_count incrementer. recordAttempt derives attempt_num from
 	// the pre-increment count, so this keeps attempt_num monotonic and gap-free.

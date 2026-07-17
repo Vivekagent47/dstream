@@ -30,6 +30,10 @@ const (
 	reapInterval   = 30 * time.Second
 	reapStuckAfter = 2 * time.Minute
 	reapBatch      = 100
+
+	// cliWaitTimeout is how long a CLI-destined event keeps re-queuing while no
+	// tunnel is connected before it's discarded (terminal; manual retry only).
+	cliWaitTimeout = 2 * time.Minute
 )
 
 // inflightIncrScript atomically increments the per-destination in-flight
@@ -92,7 +96,7 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if row.DestinationType == "cli" {
-		return h.dispatchToCLI(ctx, row)
+		return h.dispatchToCLI(ctx, row, p.Manual)
 	}
 	if row.DestinationType != "http" {
 		return fmt.Errorf("delivery type %q not implemented", row.DestinationType)
@@ -314,17 +318,60 @@ func defaultRetry(n int) time.Duration {
 	return d
 }
 
+// ErrorHandler flips an event to `failed` once asynq has exhausted its retry
+// budget for a genuine delivery error. asynq invokes this after every failed
+// handler run; we act only on the terminal one (retried == maxRetry), leaving
+// the row `in_flight` while retries remain.
+//
+// SkipRetry results are NOT failures — they're deferrals the handler manages
+// itself (rate-limit / in-flight backoff, CLI handoff, bad-URL already recorded
+// as failed). We ignore them so a deferred event isn't wrongly marked failed.
+func (h *Handler) ErrorHandler() asynq.ErrorHandler {
+	return asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+		if errors.Is(err, asynq.SkipRetry) {
+			return
+		}
+		retried, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
+		if retried < maxRetry {
+			return // more retries pending; stays in_flight
+		}
+		var p queue.DeliverPayload
+		if json.Unmarshal(task.Payload(), &p) != nil {
+			return
+		}
+		// The task ctx may already be cancelled (e.g. handler timeout), so use a
+		// fresh one for the terminal status write.
+		dbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if e := h.Queries.MarkEventFailed(dbCtx, store.UUID(p.EventID)); e != nil {
+			h.Log.Error("deliver: mark failed after retry exhaustion", "err", e, "event_id", p.EventID)
+		}
+	})
+}
+
 // dispatchToCLI hands the event off to a live CLI tunnel via Redis. The CLI
 // WebSocket handler does the actual forwarding + attempt recording, so this
 // path returns asynq.SkipRetry on success.
-func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDeliveryRow) error {
+func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDeliveryRow, manual bool) error {
 	sessionKey := "cli:source:" + store.GoUUID(row.SourceID).String()
 	exists, err := h.Redis.Exists(ctx, sessionKey).Result()
 	if err != nil {
 		return fmt.Errorf("cli session check: %w", err)
 	}
 	if exists == 0 {
-		// No live CLI: re-queue with backoff so the event isn't dropped.
+		// No live CLI. Give the tunnel a grace window to (re)connect, but don't
+		// re-queue forever: once the event has waited past cliWaitTimeout, drop it
+		// as `discarded`. A manual retry skips the grace window — the user asked
+		// explicitly, so with no tunnel we discard immediately. Either way they
+		// reconnect the CLI and retry if they still want it delivered.
+		if manual || !row.CreatedAt.Valid || time.Since(row.CreatedAt.Time) > cliWaitTimeout {
+			if err := h.Queries.MarkEventDiscarded(ctx, row.ID); err != nil {
+				h.Log.Error("cli discard", "err", err, "event_id", store.GoUUID(row.ID))
+			}
+			return asynq.SkipRetry
+		}
+		// Still within the grace window: re-queue with backoff so the event isn't dropped.
 		_ = h.Queries.ResetEventForRetry(ctx, store.ResetEventForRetryParams{
 			ID: row.ID,
 			NextRetryAt: pgtype.Timestamptz{

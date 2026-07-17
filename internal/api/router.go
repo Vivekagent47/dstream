@@ -163,6 +163,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 				})
 				r.Route("/events", func(r chi.Router) {
 					r.Get("/", pl.ListEvents)
+					r.Get("/histogram", pl.EventsHistogram)
 					r.Get("/{id}", pl.GetEvent)
 					r.Post("/{id}/retry", pl.RetryEvent)
 				})

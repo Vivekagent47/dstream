@@ -186,7 +186,7 @@ CREATE TABLE connections (
     destination_id          UUID NOT NULL REFERENCES destinations(id) ON DELETE CASCADE,
     enabled                 BOOLEAN NOT NULL DEFAULT TRUE,  -- disabled edges are skipped at ingest fan-out; no events created
     name                    TEXT,                           -- optional human label; NULL shows as "(unnamed)" in the dashboard
-    max_retries             INTEGER NOT NULL DEFAULT 8,     -- delivery attempts before the event is marked failed/dead
+    max_retries             INTEGER NOT NULL DEFAULT 1,     -- retries after the first attempt before the event is marked failed/dead (1 = one retry, 2 total attempts)
     retry_strategy          TEXT NOT NULL DEFAULT 'exponential'  -- exponential: base*2^n; linear: base*n; fixed: base; custom: explicit schedule
                               CHECK (retry_strategy IN ('exponential', 'linear', 'fixed', 'custom')),
     retry_base_ms           INTEGER NOT NULL DEFAULT 30000,   -- first-retry delay / multiplier input (30s)
@@ -241,8 +241,8 @@ CREATE TABLE events (
     request_id      UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
     connection_id   UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
     org_id          UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,  -- denormalized from the connection so org-scoped listing needs no joins
-    status          TEXT NOT NULL DEFAULT 'queued'  -- queued: awaiting worker; in_flight: being delivered; delivered: 2xx; failed: retries left; paused: CLI offline; dead: retries exhausted
-                      CHECK (status IN ('queued', 'in_flight', 'delivered', 'failed', 'paused', 'dead')),
+    status          TEXT NOT NULL DEFAULT 'queued'  -- queued: awaiting worker; in_flight: being delivered; delivered: 2xx; failed: retries exhausted; paused: CLI offline; dead: retries exhausted; discarded: CLI tunnel deadline passed with no listener (manual retry only)
+                      CHECK (status IN ('queued', 'in_flight', 'delivered', 'failed', 'paused', 'dead', 'discarded')),
     attempt_count   INTEGER NOT NULL DEFAULT 0,     -- deliveries tried so far; compared against connection.max_retries
     last_attempt_at TIMESTAMPTZ,
     next_retry_at   TIMESTAMPTZ,                    -- when the next retry is scheduled; NULL once terminal

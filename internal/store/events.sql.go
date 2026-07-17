@@ -222,6 +222,64 @@ func (q *Queries) CreateEventsBatch(ctx context.Context, arg CreateEventsBatchPa
 	return items, nil
 }
 
+const eventsHistogram = `-- name: EventsHistogram :many
+SELECT date_trunc($1::text, e.created_at)::timestamptz AS bucket,
+       e.status AS status,
+       count(*) AS count
+FROM events e
+WHERE e.org_id = $2
+  AND ($3::uuid IS NULL OR e.connection_id = $3)
+  AND ($4::text        IS NULL OR e.status        = $4)
+  AND e.created_at >= $5::timestamptz
+GROUP BY bucket, e.status
+ORDER BY bucket
+`
+
+type EventsHistogramParams struct {
+	Bucket       string             `json:"bucket"`
+	OrgID        pgtype.UUID        `json:"org_id"`
+	ConnectionID pgtype.UUID        `json:"connection_id"`
+	Status       *string            `json:"status"`
+	After        pgtype.Timestamptz `json:"after"`
+}
+
+type EventsHistogramRow struct {
+	Bucket pgtype.Timestamptz `json:"bucket"`
+	Status string             `json:"status"`
+	Count  int64              `json:"count"`
+}
+
+// Time-bucketed event counts by status for the events-page timeline graph.
+// @bucket is a date_trunc unit ('hour' | 'day' | ...) chosen by the handler
+// from the selected range. Same optional connection_id/status filters as
+// ListEvents so the graph tracks the table; @after bounds the window (always a
+// finite range). Includes test events, matching the list view.
+func (q *Queries) EventsHistogram(ctx context.Context, arg EventsHistogramParams) ([]EventsHistogramRow, error) {
+	rows, err := q.db.Query(ctx, eventsHistogram,
+		arg.Bucket,
+		arg.OrgID,
+		arg.ConnectionID,
+		arg.Status,
+		arg.After,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EventsHistogramRow{}
+	for rows.Next() {
+		var i EventsHistogramRow
+		if err := rows.Scan(&i.Bucket, &i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getEventByID = `-- name: GetEventByID :one
 SELECT id, request_id, connection_id, status, attempt_count, last_attempt_at, next_retry_at, created_at, updated_at, org_id, is_test FROM events WHERE id = $1
 `
@@ -245,12 +303,94 @@ func (q *Queries) GetEventByID(ctx context.Context, id pgtype.UUID) (Event, erro
 	return i, err
 }
 
+const getEventDetailForOrg = `-- name: GetEventDetailForOrg :one
+SELECT e.id, e.request_id, e.connection_id, e.status, e.attempt_count,
+       e.last_attempt_at, e.next_retry_at, e.created_at, e.updated_at, e.is_test,
+       c.source_id      AS source_id,
+       c.destination_id AS destination_id,
+       d.type           AS destination_type,
+       d.url            AS destination_url,
+       r.http_method    AS http_method,
+       r.http_path      AS http_path,
+       r.headers        AS request_headers,
+       r.body_ref       AS body_ref,
+       r.body_size      AS body_size,
+       r.content_type   AS content_type
+  FROM events e
+  JOIN connections c  ON c.id = e.connection_id
+  JOIN destinations d ON d.id = c.destination_id
+  JOIN requests r     ON r.id = e.request_id
+ WHERE e.id = $1
+   AND e.org_id = $2
+`
+
+type GetEventDetailForOrgParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+type GetEventDetailForOrgRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	RequestID       pgtype.UUID        `json:"request_id"`
+	ConnectionID    pgtype.UUID        `json:"connection_id"`
+	Status          string             `json:"status"`
+	AttemptCount    int32              `json:"attempt_count"`
+	LastAttemptAt   pgtype.Timestamptz `json:"last_attempt_at"`
+	NextRetryAt     pgtype.Timestamptz `json:"next_retry_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	IsTest          bool               `json:"is_test"`
+	SourceID        pgtype.UUID        `json:"source_id"`
+	DestinationID   pgtype.UUID        `json:"destination_id"`
+	DestinationType string             `json:"destination_type"`
+	DestinationUrl  *string            `json:"destination_url"`
+	HTTPMethod      string             `json:"http_method"`
+	HTTPPath        string             `json:"http_path"`
+	RequestHeaders  []byte             `json:"request_headers"`
+	BodyRef         string             `json:"body_ref"`
+	BodySize        int32              `json:"body_size"`
+	ContentType     *string            `json:"content_type"`
+}
+
+// Full event view for the detail page: the event, its connection's
+// source/destination, the destination endpoint, and the originating request
+// (method/path/headers/body pointer). One org-scoped row that backs the
+// Overview + Request-data panels.
+func (q *Queries) GetEventDetailForOrg(ctx context.Context, arg GetEventDetailForOrgParams) (GetEventDetailForOrgRow, error) {
+	row := q.db.QueryRow(ctx, getEventDetailForOrg, arg.ID, arg.OrgID)
+	var i GetEventDetailForOrgRow
+	err := row.Scan(
+		&i.ID,
+		&i.RequestID,
+		&i.ConnectionID,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LastAttemptAt,
+		&i.NextRetryAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsTest,
+		&i.SourceID,
+		&i.DestinationID,
+		&i.DestinationType,
+		&i.DestinationUrl,
+		&i.HTTPMethod,
+		&i.HTTPPath,
+		&i.RequestHeaders,
+		&i.BodyRef,
+		&i.BodySize,
+		&i.ContentType,
+	)
+	return i, err
+}
+
 const getEventForDelivery = `-- name: GetEventForDelivery :one
 SELECT e.id              AS id,
        e.request_id      AS request_id,
        e.connection_id   AS connection_id,
        e.status          AS status,
        e.attempt_count   AS attempt_count,
+       e.created_at      AS created_at,
        c.source_id       AS source_id,
        c.destination_id  AS destination_id,
        c.max_retries     AS max_retries,
@@ -275,27 +415,28 @@ WHERE e.id = $1
 `
 
 type GetEventForDeliveryRow struct {
-	ID                        pgtype.UUID `json:"id"`
-	RequestID                 pgtype.UUID `json:"request_id"`
-	ConnectionID              pgtype.UUID `json:"connection_id"`
-	Status                    string      `json:"status"`
-	AttemptCount              int32       `json:"attempt_count"`
-	SourceID                  pgtype.UUID `json:"source_id"`
-	DestinationID             pgtype.UUID `json:"destination_id"`
-	MaxRetries                int32       `json:"max_retries"`
-	RetryStrategy             string      `json:"retry_strategy"`
-	RetryBaseMs               int32       `json:"retry_base_ms"`
-	RetryCapMs                int32       `json:"retry_cap_ms"`
-	RetryJitterPct            int32       `json:"retry_jitter_pct"`
-	CustomRetrySchedule       []byte      `json:"custom_retry_schedule"`
-	DestinationType           string      `json:"destination_type"`
-	DestinationUrl            *string     `json:"destination_url"`
-	DestinationAuthConfig     []byte      `json:"destination_auth_config"`
-	DestinationRateLimitRps   *int32      `json:"destination_rate_limit_rps"`
-	DestinationRateLimitBurst *int32      `json:"destination_rate_limit_burst"`
-	DestinationMaxInflight    *int32      `json:"destination_max_inflight"`
-	BodyRef                   string      `json:"body_ref"`
-	RequestHeaders            []byte      `json:"request_headers"`
+	ID                        pgtype.UUID        `json:"id"`
+	RequestID                 pgtype.UUID        `json:"request_id"`
+	ConnectionID              pgtype.UUID        `json:"connection_id"`
+	Status                    string             `json:"status"`
+	AttemptCount              int32              `json:"attempt_count"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	SourceID                  pgtype.UUID        `json:"source_id"`
+	DestinationID             pgtype.UUID        `json:"destination_id"`
+	MaxRetries                int32              `json:"max_retries"`
+	RetryStrategy             string             `json:"retry_strategy"`
+	RetryBaseMs               int32              `json:"retry_base_ms"`
+	RetryCapMs                int32              `json:"retry_cap_ms"`
+	RetryJitterPct            int32              `json:"retry_jitter_pct"`
+	CustomRetrySchedule       []byte             `json:"custom_retry_schedule"`
+	DestinationType           string             `json:"destination_type"`
+	DestinationUrl            *string            `json:"destination_url"`
+	DestinationAuthConfig     []byte             `json:"destination_auth_config"`
+	DestinationRateLimitRps   *int32             `json:"destination_rate_limit_rps"`
+	DestinationRateLimitBurst *int32             `json:"destination_rate_limit_burst"`
+	DestinationMaxInflight    *int32             `json:"destination_max_inflight"`
+	BodyRef                   string             `json:"body_ref"`
+	RequestHeaders            []byte             `json:"request_headers"`
 }
 
 func (q *Queries) GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetEventForDeliveryRow, error) {
@@ -307,6 +448,7 @@ func (q *Queries) GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetE
 		&i.ConnectionID,
 		&i.Status,
 		&i.AttemptCount,
+		&i.CreatedAt,
 		&i.SourceID,
 		&i.DestinationID,
 		&i.MaxRetries,
@@ -366,18 +508,20 @@ FROM events e
 WHERE e.org_id = $1
   AND ($2::uuid IS NULL OR e.connection_id = $2)
   AND ($3::text        IS NULL OR e.status        = $3)
+  AND ($4::timestamptz  IS NULL OR e.created_at >= $4)
   AND (
-    $4::timestamptz IS NULL
-    OR (e.created_at, e.id) < ($4::timestamptz, $5::uuid)
+    $5::timestamptz IS NULL
+    OR (e.created_at, e.id) < ($5::timestamptz, $6::uuid)
   )
 ORDER BY e.created_at DESC, e.id DESC
-LIMIT $6
+LIMIT $7
 `
 
 type ListEventsParams struct {
 	OrgID           pgtype.UUID        `json:"org_id"`
 	ConnectionID    pgtype.UUID        `json:"connection_id"`
 	Status          *string            `json:"status"`
+	After           pgtype.Timestamptz `json:"after"`
 	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
 	BeforeID        pgtype.UUID        `json:"before_id"`
 	PageLimit       int32              `json:"page_limit"`
@@ -395,6 +539,7 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 		arg.OrgID,
 		arg.ConnectionID,
 		arg.Status,
+		arg.After,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
 		arg.PageLimit,
@@ -443,6 +588,22 @@ WHERE id = $1
 // and made recorded attempt_num values skip).
 func (q *Queries) MarkEventDelivered(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markEventDelivered, id)
+	return err
+}
+
+const markEventDiscarded = `-- name: MarkEventDiscarded :exec
+UPDATE events
+SET status        = 'discarded',
+    next_retry_at = NULL,
+    updated_at    = now()
+WHERE id = $1
+`
+
+// Terminal state for a CLI event that waited past the tunnel deadline with no
+// live listener. Unlike 'failed' it never got a delivery attempt; it's dropped
+// until a user manually retries (ResetEventForManualRetry re-queues it).
+func (q *Queries) MarkEventDiscarded(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markEventDiscarded, id)
 	return err
 }
 
