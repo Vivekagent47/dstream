@@ -84,6 +84,38 @@ export interface EventsPage {
   next_cursor?: string
 }
 
+// One time bucket of the events histogram. `counts` is per-status
+// (delivered/failed/...); `total` is their sum.
+export interface EventHistogramBucket {
+  ts: string
+  total: number
+  counts: Record<string, number>
+}
+export interface EventsHistogram {
+  bucket: string
+  buckets: EventHistogramBucket[]
+}
+
+// The originating HTTP request behind an event (shown in the detail page's
+// Request-data panel). `headers` is the raw stored header map — values arrive
+// as string arrays (Go http.Header) but tolerate scalars.
+export interface EventRequestData {
+  method: string
+  path: string
+  headers: Record<string, string | string[]>
+  body: string
+  body_size: number
+  content_type: string | null
+}
+
+export interface EventDetail extends Event {
+  source_id: string
+  destination_id: string
+  destination: { type: string; url: string | null }
+  request: EventRequestData
+  attempts: Attempt[]
+}
+
 export interface Attempt {
   id: string
   attempt_num: number
@@ -300,10 +332,20 @@ export const api = {
     http.get<Record<string, ConnectionStatCounts>>('/api/connections/stats').then((r) => r.data),
 
   // Events
-  listEvents: (params?: { limit?: number; cursor?: string; connection_id?: string; status?: string }) =>
-    http.get<EventsPage>('/api/events', { params }).then((r) => r.data),
-  getEvent: (id: string) =>
-    http.get<Event & { attempts: Attempt[] }>(`/api/events/${id}`).then((r) => r.data),
+  listEvents: (params?: {
+    limit?: number
+    cursor?: string
+    connection_id?: string
+    status?: string
+    after?: string
+  }) => http.get<EventsPage>('/api/events', { params }).then((r) => r.data),
+  eventsHistogram: (params?: {
+    after?: string
+    bucket?: string
+    connection_id?: string
+    status?: string
+  }) => http.get<EventsHistogram>('/api/events/histogram', { params }).then((r) => r.data),
+  getEvent: (id: string) => http.get<EventDetail>(`/api/events/${id}`).then((r) => r.data),
   retryEvent: (id: string) => http.post<void>(`/api/events/${id}/retry`).then((r) => r.data),
 }
 
@@ -327,7 +369,18 @@ export const qk = {
   connection: (id: string) => ['connections', 'detail', id] as const,
   connectionStats: (id: string) => ['connections', 'stats', id] as const,
   connectionStatsAll: () => ['connections', 'stats', 'all'] as const,
-  events: (params?: { limit?: number; cursor?: string; connection_id?: string; status?: string }) =>
-    ['events', params ?? {}] as const,
+  events: (params?: {
+    limit?: number
+    cursor?: string
+    connection_id?: string
+    status?: string
+    after?: string
+  }) => ['events', params ?? {}] as const,
+  eventsHistogram: (params?: {
+    after?: string
+    bucket?: string
+    connection_id?: string
+    status?: string
+  }) => ['events', 'histogram', params ?? {}] as const,
   event: (id: string) => ['event', id] as const,
 }
