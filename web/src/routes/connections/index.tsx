@@ -14,6 +14,7 @@ import {
   RotateCcw,
   Search,
   Send,
+  Terminal,
   Webhook,
 } from 'lucide-react'
 
@@ -118,6 +119,10 @@ function ConnectionsPage() {
   )
   const destName = useMemo(
     () => new Map((destinations ?? []).map((d) => [d.id, d.name])),
+    [destinations],
+  )
+  const destType = useMemo(
+    () => new Map((destinations ?? []).map((d) => [d.id, d.type])),
     [destinations],
   )
 
@@ -346,7 +351,11 @@ function ConnectionsPage() {
                         (c.enabled ? 'border-border bg-card' : 'border-dashed border-border bg-card/50 text-muted-foreground')
                       }
                     >
-                      <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      {destType.get(c.destination_id) === 'cli' ? (
+                        <Terminal className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      )}
                       <span className="truncate font-medium">
                         {destName.get(c.destination_id) ?? c.destination_id}
                       </span>

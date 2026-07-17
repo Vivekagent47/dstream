@@ -42,7 +42,7 @@ function Verify() {
       .verifyMagicLink(token)
       .then(async () => {
         await qc.invalidateQueries({ queryKey: qk.me() })
-        navigate({ to: '/sources' })
+        navigate({ to: '/connections' })
       })
       .catch((e) => setError((e as Error).message || 'This link is invalid or has expired.'))
   }, [token, navigate, qc])

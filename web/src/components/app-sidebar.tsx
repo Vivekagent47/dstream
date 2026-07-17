@@ -41,9 +41,9 @@ import {
 // WANT it highlighted there, so /events is a prefix match; settings links
 // are exact). Icons are lucide.
 const PLATFORM = [
+  { label: 'Connections', to: '/connections', icon: Link2, prefix: true },
   { label: 'Sources', to: '/sources', icon: Inbox, prefix: true },
   { label: 'Destinations', to: '/destinations', icon: Send, prefix: true },
-  { label: 'Connections', to: '/connections', icon: Link2, prefix: true },
   { label: 'Events', to: '/events', icon: Activity, prefix: true },
 ] as const
 
