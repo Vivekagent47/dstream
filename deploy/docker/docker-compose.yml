@@ -100,6 +100,7 @@ services:
       context: ../../web
       dockerfile: ../deploy/docker/web.Dockerfile
     environment:
+      # Proxy target for /api,/admin (in-network service DNS).
       DSTREAM_API_URL: http://server:8080
     ports:
       - "3000:3000"
