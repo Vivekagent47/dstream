@@ -18,14 +18,22 @@ const config = defineConfig({
     devtools(),
     nitro({
       rollupConfig: { external: [/^@sentry\//] },
-      // /api/** is a nitro-reserved namespace, so devProxy can't claim it —
-      // a routeRules proxy runs inside nitro's router and does. Everything
-      // else goes through devProxy.
+      // routeRules proxies run inside nitro's router and reliably forward
+      // subpaths via the `**` splat. devProxy entries do NOT match subpaths in
+      // this nitro build (verified: /admin/overview fell through to the SPA
+      // catch-all and 404'd), so anything with subpaths must live here.
+      // `/api/**` is also nitro-reserved and can only be claimed this way.
       routeRules: {
         '/api/**': { proxy: { to: `${apiTarget}/api/**` } },
+        // Root-level admin surface: JSON endpoints (/admin/overview, /admin/orgs,
+        // /admin/queues, /admin/system). All super-admin gated on the Go side.
+        '/admin/**': { proxy: { to: `${apiTarget}/admin/**` } },
       },
       devProxy: {
-        '/admin': { target: apiTarget, changeOrigin: true },
+        // NOTE: these lack subpaths in practice (bare health checks) or are hit
+        // directly against the Go server. /e, /healthz, /readyz likely need the
+        // same routeRules treatment if ever called with subpaths via the dev
+        // server — out of scope for this change.
         '/e': { target: apiTarget, changeOrigin: true },
         '/healthz': { target: apiTarget, changeOrigin: true },
         '/readyz': { target: apiTarget, changeOrigin: true },

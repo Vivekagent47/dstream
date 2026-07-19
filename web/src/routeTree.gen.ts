@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
+import { Route as ConsoleIndexRouteImport } from './routes/console/index'
 import { Route as ConnectionsIndexRouteImport } from './routes/connections/index'
 import { Route as SourcesIdRouteImport } from './routes/sources/$id'
 import { Route as SettingsOrgRouteImport } from './routes/settings/org'
@@ -51,6 +52,11 @@ const EventsIndexRoute = EventsIndexRouteImport.update({
 const DestinationsIndexRoute = DestinationsIndexRouteImport.update({
   id: '/destinations/',
   path: '/destinations/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConsoleIndexRoute = ConsoleIndexRouteImport.update({
+  id: '/console/',
+  path: '/console/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectionsIndexRoute = ConnectionsIndexRouteImport.update({
@@ -135,6 +141,7 @@ export interface FileRoutesByFullPath {
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
   '/connections/': typeof ConnectionsIndexRoute
+  '/console/': typeof ConsoleIndexRoute
   '/destinations/': typeof DestinationsIndexRoute
   '/events/': typeof EventsIndexRoute
   '/sources/': typeof SourcesIndexRoute
@@ -155,6 +162,7 @@ export interface FileRoutesByTo {
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
   '/connections': typeof ConnectionsIndexRoute
+  '/console': typeof ConsoleIndexRoute
   '/destinations': typeof DestinationsIndexRoute
   '/events': typeof EventsIndexRoute
   '/sources': typeof SourcesIndexRoute
@@ -176,6 +184,7 @@ export interface FileRoutesById {
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
   '/connections/': typeof ConnectionsIndexRoute
+  '/console/': typeof ConsoleIndexRoute
   '/destinations/': typeof DestinationsIndexRoute
   '/events/': typeof EventsIndexRoute
   '/sources/': typeof SourcesIndexRoute
@@ -198,6 +207,7 @@ export interface FileRouteTypes {
     | '/settings/org'
     | '/sources/$id'
     | '/connections/'
+    | '/console/'
     | '/destinations/'
     | '/events/'
     | '/sources/'
@@ -218,6 +228,7 @@ export interface FileRouteTypes {
     | '/settings/org'
     | '/sources/$id'
     | '/connections'
+    | '/console'
     | '/destinations'
     | '/events'
     | '/sources'
@@ -238,6 +249,7 @@ export interface FileRouteTypes {
     | '/settings/org'
     | '/sources/$id'
     | '/connections/'
+    | '/console/'
     | '/destinations/'
     | '/events/'
     | '/sources/'
@@ -259,6 +271,7 @@ export interface RootRouteChildren {
   SettingsOrgRoute: typeof SettingsOrgRoute
   SourcesIdRoute: typeof SourcesIdRoute
   ConnectionsIndexRoute: typeof ConnectionsIndexRoute
+  ConsoleIndexRoute: typeof ConsoleIndexRoute
   DestinationsIndexRoute: typeof DestinationsIndexRoute
   EventsIndexRoute: typeof EventsIndexRoute
   SourcesIndexRoute: typeof SourcesIndexRoute
@@ -299,6 +312,13 @@ declare module '@tanstack/react-router' {
       path: '/destinations'
       fullPath: '/destinations/'
       preLoaderRoute: typeof DestinationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/console/': {
+      id: '/console/'
+      path: '/console'
+      fullPath: '/console/'
+      preLoaderRoute: typeof ConsoleIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connections/': {
@@ -411,6 +431,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsOrgRoute: SettingsOrgRoute,
   SourcesIdRoute: SourcesIdRoute,
   ConnectionsIndexRoute: ConnectionsIndexRoute,
+  ConsoleIndexRoute: ConsoleIndexRoute,
   DestinationsIndexRoute: DestinationsIndexRoute,
   EventsIndexRoute: EventsIndexRoute,
   SourcesIndexRoute: SourcesIndexRoute,

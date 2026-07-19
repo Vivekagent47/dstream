@@ -224,6 +224,19 @@ export interface AuditFilters {
   actor_user_id?: string
 }
 
+export interface AdminOverview {
+  organizations: number
+  users: number
+}
+
+export interface AdminQueueStats {
+  pending: number
+  scheduled: number
+  processing: number
+  dead: number
+  top_orgs: { org_id: string; pending: number }[]
+}
+
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
 
@@ -279,6 +292,12 @@ export const api = {
     http.get<AuditPage>('/api/audit', { params: filters }).then((r) => r.data),
   listOrgAudit: (org_id: string, filters?: AuditFilters) =>
     http.get<AuditPage>(`/api/orgs/${org_id}/audit`, { params: filters }).then((r) => r.data),
+
+  // Super-admin only. Paths are root-level /admin/* (not /api/*) — that's where
+  // the Go server mounts them; the dev proxy forwards /admin* to the backend.
+  adminOverview: () => http.get<AdminOverview>('/admin/overview').then((r) => r.data),
+  adminOrgs: () => http.get<Org[]>('/admin/orgs').then((r) => r.data),
+  adminQueues: () => http.get<AdminQueueStats>('/admin/queues').then((r) => r.data),
 
   // Sources
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
@@ -353,6 +372,9 @@ export const api = {
 // stay in sync with the API surface.
 export const qk = {
   me: () => ['me'] as const,
+  adminOverview: () => ['admin', 'overview'] as const,
+  adminOrgs: () => ['admin', 'orgs'] as const,
+  adminQueues: () => ['admin', 'queues'] as const,
   orgs: () => ['orgs'] as const,
   members: (org_id: string) => ['members', org_id] as const,
   invites: (org_id: string) => ['invites', org_id] as const,

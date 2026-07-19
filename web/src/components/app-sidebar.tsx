@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   Inbox,
   KeyRound,
+  LayoutDashboard,
   Link2,
   LogOut,
   Mail,
@@ -55,6 +56,11 @@ const SETTINGS = [
   { label: 'Audit log', to: '/settings/audit', icon: ScrollText },
 ] as const
 
+// Admin nav — only rendered for super-admins (see AppSidebar). Overview is an
+// SPA route under /console (the dev proxy owns /admin, so pages can't live
+// there) that shows org/user counts, delivery-queue depth, and the org list.
+const ADMIN = [{ label: 'Overview', to: '/console', icon: LayoutDashboard }] as const
+
 // The dstream diamond mark — same path as the marketing Header/Footer
 // wordmark and the favicon. Inherits currentColor.
 function LogoMark() {
@@ -69,6 +75,7 @@ function LogoMark() {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const { data: me } = useQuery({ queryKey: qk.me(), queryFn: api.me })
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = (to: string, prefix?: boolean) =>
     prefix ? pathname === to || pathname.startsWith(to + '/') : pathname === to
@@ -126,6 +133,24 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             ))}
           </SidebarMenu>
         </SidebarGroup>
+
+        {me?.user?.is_super_admin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Admin</SidebarGroupLabel>
+            <SidebarMenu>
+              {ADMIN.map((item) => (
+                <SidebarMenuItem key={item.to}>
+                  <SidebarMenuButton asChild isActive={isActive(item.to)} tooltip={item.label}>
+                    <Link to={item.to}>
+                      <item.icon />
+                      <span>{item.label}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
       <SidebarFooter>
