@@ -199,7 +199,7 @@ function EventsPage() {
       </div>
 
       {/* timeline graph */}
-      <Histogram buckets={histogram?.buckets ?? []} />
+      <Histogram buckets={histogram?.buckets ?? []} bucket={active.bucket} />
 
       <div className="flex-1 overflow-x-auto">
         {error && (
@@ -303,9 +303,24 @@ const STATUS_ORDER = Object.keys(eventChartConfig)
 // bucket, segmented by status; only statuses present in the window render.
 // ponytail: empty buckets aren't back-filled, so a sparse window packs its bars
 // together; back-fill from `after`→now stepped by bucket if precise spacing matters.
-function Histogram({ buckets }: { buckets: EventHistogramBucket[] }) {
+function Histogram({ buckets, bucket }: { buckets: EventHistogramBucket[]; bucket: string }) {
   const present = STATUS_ORDER.filter((k) => buckets.some((b) => (b.counts[k] ?? 0) > 0))
   const data = buckets.map((b) => ({ ts: b.ts, ...b.counts }))
+  // Label granularity follows the bucket: a day-bucketed range shows dates
+  // (midnight-UTC buckets otherwise render as a meaningless "05:30 AM" in
+  // local tz); minute/hour buckets show the time.
+  const fmtTick = (ts: string) => {
+    const d = new Date(ts)
+    return bucket === 'day'
+      ? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+      : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+  const fmtLabel = (ts: string) => {
+    const d = new Date(ts)
+    return bucket === 'day'
+      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+      : d.toLocaleString()
+  }
 
   if (buckets.length === 0) {
     return (
@@ -326,14 +341,10 @@ function Histogram({ buckets }: { buckets: EventHistogramBucket[] }) {
             axisLine={false}
             tickMargin={8}
             minTickGap={48}
-            tickFormatter={(ts) =>
-              new Date(ts as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }
+            tickFormatter={(ts) => fmtTick(ts as string)}
           />
           <ChartTooltip
-            content={
-              <ChartTooltipContent labelFormatter={(v) => new Date(v as string).toLocaleString()} />
-            }
+            content={<ChartTooltipContent labelFormatter={(v) => fmtLabel(v as string)} />}
           />
           <ChartLegend content={<ChartLegendContent />} />
           {present.map((k, i) => (
