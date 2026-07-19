@@ -15,7 +15,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
-	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -289,8 +289,9 @@ func (d Handlers) RetryEvent(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusInternalServerError, "load connection")
 		return
 	}
-	if _, err := d.Queue.EnqueueDeliver(r.Context(), queue.DeliverPayload{
+	if err := d.Queue.Enqueue(r.Context(), dqueue.Payload{
 		EventID:             store.GoUUID(ev.ID),
+		OrgID:               p.OrgID,
 		Attempt:             0,
 		EnqueuedAt:          time.Now().UnixMilli(),
 		Manual:              true,
@@ -299,7 +300,7 @@ func (d Handlers) RetryEvent(w http.ResponseWriter, r *http.Request) {
 		RetryCapMs:          conn.RetryCapMs,
 		RetryJitterPct:      conn.RetryJitterPct,
 		CustomRetrySchedule: conn.CustomRetrySchedule,
-	}, int(conn.MaxRetries)); err != nil {
+	}); err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}

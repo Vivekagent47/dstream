@@ -12,8 +12,8 @@ import (
 	"github.com/Vivekagent47/dstream/internal/api/identity"
 	"github.com/Vivekagent47/dstream/internal/api/pipeline"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
-	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -27,7 +27,7 @@ type Deps struct {
 	// user-create + invite-apply + workspace-mint in one atomic op).
 	Pool      *pgxpool.Pool
 	Redis     *redis.Client
-	Queue     *queue.Client
+	Queue     *dqueue.Client
 	BodyStore ingest.BodyStore
 	Signer    *auth.SessionSigner
 	// PublicBaseURL is the externally-visible scheme://host[:port] for the

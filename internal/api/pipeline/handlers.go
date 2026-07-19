@@ -6,8 +6,8 @@ package pipeline
 import (
 	"log/slog"
 
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
-	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -16,7 +16,7 @@ import (
 type Handlers struct {
 	Log     *slog.Logger
 	Queries *store.Queries
-	Queue   *queue.Client
+	Queue   *dqueue.Client
 	// BodyStore persists the synthetic payload for test-connection events, so
 	// the delivery worker can read it back by body_ref (same path as ingest).
 	BodyStore ingest.BodyStore

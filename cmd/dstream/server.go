@@ -17,16 +17,14 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
-	"github.com/hibiken/asynq"
-
 	"github.com/Vivekagent47/dstream/internal/admin"
 	"github.com/Vivekagent47/dstream/internal/api"
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/config"
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/logging"
 	mw "github.com/Vivekagent47/dstream/internal/middleware"
-	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -85,8 +83,7 @@ func serverCmd() *cobra.Command {
 			})
 			defer rdb.Close()
 
-			qc := queue.NewClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
-			defer qc.Close()
+			dq := dqueue.NewClient(rdb)
 
 			signer := &auth.SessionSigner{
 				Secret: []byte(cfg.SessionSecret),
@@ -121,7 +118,7 @@ func serverCmd() *cobra.Command {
 				Log:            log,
 				Queries:        q,
 				Redis:          rdb,
-				Queue:          qc,
+				Queue:          dq,
 				BodyStore:      bodyStore,
 				Limiter:        redis_rate.NewLimiter(rdb),
 				RateLimitRPS:   cfg.IngestRateLimitRPS,
@@ -134,7 +131,7 @@ func serverCmd() *cobra.Command {
 				Queries:          q,
 				Pool:             pool,
 				Redis:            rdb,
-				Queue:            qc,
+				Queue:            dq,
 				BodyStore:        bodyStore,
 				Signer:           signer,
 				PublicBaseURL:    cfg.PublicBaseURL,
@@ -147,11 +144,7 @@ func serverCmd() *cobra.Command {
 				Queries: q,
 				Redis:   rdb,
 				Signer:  signer,
-				Asynq: asynq.RedisClientOpt{
-					Addr:     cfg.Redis.Addr,
-					Password: cfg.Redis.Password,
-					DB:       cfg.Redis.DB,
-				},
+				Queue:   dq,
 			})
 
 			// TODO(phase-1.4 follow-up): mount /web/* dashboard.

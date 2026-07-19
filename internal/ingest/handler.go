@@ -22,7 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -36,7 +36,7 @@ type Handler struct {
 	Log       *slog.Logger
 	Queries   *store.Queries
 	Redis     *redis.Client
-	Queue     *queue.Client
+	Queue     *dqueue.Client
 	BodyStore BodyStore
 
 	// Per-source ingest rate limit (token bucket in Redis). Limiter is nil or
@@ -207,13 +207,14 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// asynq exposes no batch-enqueue API, so deliveries are still enqueued
-	// one task at a time — but these are local-Redis roundtrips, not the
-	// per-connection Postgres roundtrips the batch insert above eliminated.
+	// One enqueue per event — local-Redis roundtrips, not the per-connection
+	// Postgres roundtrips the batch insert above eliminated. A failed enqueue
+	// leaves the event 'queued' in Postgres; the worker's reaper re-queues it.
 	for _, ev := range events {
 		c := connByID[store.GoUUID(ev.ConnectionID)]
-		if _, err := h.Queue.EnqueueDeliver(ctx, queue.DeliverPayload{
+		if err := h.Queue.Enqueue(ctx, dqueue.Payload{
 			EventID:             store.GoUUID(ev.ID),
+			OrgID:               store.GoUUID(ev.OrgID),
 			Attempt:             0,
 			EnqueuedAt:          time.Now().UnixMilli(),
 			RetryStrategy:       c.RetryStrategy,
@@ -221,7 +222,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 			RetryCapMs:          c.RetryCapMs,
 			RetryJitterPct:      c.RetryJitterPct,
 			CustomRetrySchedule: c.CustomRetrySchedule,
-		}, int(c.MaxRetries)); err != nil {
+		}); err != nil {
 			h.Log.Error("ingest: enqueue delivery", "err", err, "event_id", store.GoUUID(ev.ID))
 			continue
 		}

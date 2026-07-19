@@ -5,12 +5,10 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/hibiken/asynq"
-	"github.com/hibiken/asynqmon"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
-	"github.com/Vivekagent47/dstream/internal/queue"
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -19,22 +17,17 @@ type Deps struct {
 	Queries *store.Queries
 	Redis   *redis.Client
 	Signer  *auth.SessionSigner
-	Asynq   asynq.RedisConnOpt
+	Queue   *dqueue.Client
 }
 
 // Mount wires the /admin/* routes onto the parent. All routes here are gated
 // behind super-admin session auth.
 func Mount(parent chi.Router, d Deps) {
-	mon := asynqmon.New(asynqmon.Options{
-		RootPath:     "/admin/queues",
-		RedisConnOpt: d.Asynq,
-	})
-
 	parent.Route("/admin", func(r chi.Router) {
 		r.Use(auth.SuperAdminOnly(d.Queries, d.Signer))
 
-		// asynqmon — Sidekiq/BullMQ-equivalent queue UI.
-		r.Mount("/queues", mon)
+		// Delivery-queue depth snapshot (JSON) for the /console stats card.
+		r.Get("/queues", d.handleQueues)
 
 		// Custom admin pages (Phase 1.4 scope).
 		r.Get("/overview", d.handleOverview)
@@ -42,6 +35,15 @@ func Mount(parent chi.Router, d Deps) {
 		r.Get("/destinations/hot", d.handleHotDestinations)
 		r.Get("/system", d.handleSystem)
 	})
+}
+
+func (d Deps) handleQueues(w http.ResponseWriter, r *http.Request) {
+	s, err := d.Queue.Stats(r.Context())
+	if err != nil {
+		http.Error(w, "queue stats: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
 }
 
 func (d Deps) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +86,7 @@ func (d Deps) handleSystem(w http.ResponseWriter, r *http.Request) {
 		info = err.Error()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"redis_info":     info,
-		"queue_deliveries_name": queue.QueueDeliveries,
+		"redis_info":            info,
+		"queue_deliveries_name": "deliveries",
 	})
 }

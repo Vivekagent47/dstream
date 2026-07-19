@@ -54,7 +54,8 @@ type RedisConfig struct {
 }
 
 type WorkerConfig struct {
-	Concurrency int `mapstructure:"concurrency"`
+	Concurrency       int `mapstructure:"concurrency"`
+	PerOrgMaxInflight int `mapstructure:"per_org_max_inflight"`
 }
 
 type SMTPConfig struct {
@@ -94,6 +95,9 @@ func Load() (Config, error) {
 	v.SetDefault("redis.db", 0)
 
 	v.SetDefault("worker.concurrency", 50)
+	// 0 = disabled: no per-org cap (single-tenant self-host uses the full pool).
+	// Set > 0 (e.g. 20) in multi-tenant deployments so one org can't starve others.
+	v.SetDefault("worker.per_org_max_inflight", 0)
 	v.SetDefault("smtp.host", "")
 	v.SetDefault("smtp.port", 587)
 	v.SetDefault("smtp.user", "")

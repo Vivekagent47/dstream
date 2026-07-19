@@ -28,7 +28,7 @@ UPDATE events
     LIMIT $2
     FOR UPDATE OF e SKIP LOCKED
  )
-RETURNING id, connection_id, attempt_count
+RETURNING id, org_id, connection_id, attempt_count
 `
 
 type ClaimStuckEventsParams struct {
@@ -38,23 +38,25 @@ type ClaimStuckEventsParams struct {
 
 type ClaimStuckEventsRow struct {
 	ID           pgtype.UUID `json:"id"`
+	OrgID        pgtype.UUID `json:"org_id"`
 	ConnectionID pgtype.UUID `json:"connection_id"`
 	AttemptCount int32       `json:"attempt_count"`
 }
 
-// Reaper: atomically re-queue events that have NO pending asynq task and are
-// therefore genuinely stuck. Two cases:
-//   - 'queued' older than @stuck_before — the ingest enqueue failed, so asynq
-//     never received a task for it.
-//   - 'in_flight' on a CLI destination — the CLI dispatch path returns
-//     asynq.SkipRetry (handing off to the WS), so if the tunnel died mid-flight
-//     nothing will ever retry it.
+// Reaper: atomically re-queue events that never entered the dqueue or lost their
+// owner, and are therefore genuinely stuck. Two cases:
+//   - 'queued' older than @stuck_before — the ingest Enqueue failed, so the event
+//     was never put on the dqueue.
+//   - 'in_flight' on a CLI destination — the CLI dispatch path Acks the leased
+//     member at handoff to the WS tunnel, so if the tunnel died mid-flight nothing
+//     owns the event any more.
 //
-// HTTP 'in_flight' events are deliberately excluded: asynq owns their retry
-// backoff AND their worker-death recovery, so reaping them would double-deliver
-// and bypass the backoff schedule. @stuck_before must exceed the delivery + CLI
-// response timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently
-// without double-claiming (and locks only events, not the joined rows).
+// HTTP 'in_flight' events are deliberately excluded: the dqueue recoverer (the
+// dq:processing lease) plus the scheduled ZSET own their retry backoff AND their
+// worker-death recovery, so reaping them would double-deliver and bypass the
+// backoff schedule. @stuck_before must exceed the delivery + CLI response
+// timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently without
+// double-claiming (and locks only events, not the joined rows).
 // ponytail: a pathologically low rate limit (refill > @stuck_before) could let
 // a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
 // acceptable under the system's at-least-once contract.
@@ -67,7 +69,12 @@ func (q *Queries) ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsPara
 	items := []ClaimStuckEventsRow{}
 	for rows.Next() {
 		var i ClaimStuckEventsRow
-		if err := rows.Scan(&i.ID, &i.ConnectionID, &i.AttemptCount); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.ConnectionID,
+			&i.AttemptCount,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -391,6 +398,7 @@ SELECT e.id              AS id,
        e.status          AS status,
        e.attempt_count   AS attempt_count,
        e.created_at      AS created_at,
+       e.org_id          AS org_id,
        c.source_id       AS source_id,
        c.destination_id  AS destination_id,
        c.max_retries     AS max_retries,
@@ -421,6 +429,7 @@ type GetEventForDeliveryRow struct {
 	Status                    string             `json:"status"`
 	AttemptCount              int32              `json:"attempt_count"`
 	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	OrgID                     pgtype.UUID        `json:"org_id"`
 	SourceID                  pgtype.UUID        `json:"source_id"`
 	DestinationID             pgtype.UUID        `json:"destination_id"`
 	MaxRetries                int32              `json:"max_retries"`
@@ -449,6 +458,7 @@ func (q *Queries) GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetE
 		&i.Status,
 		&i.AttemptCount,
 		&i.CreatedAt,
+		&i.OrgID,
 		&i.SourceID,
 		&i.DestinationID,
 		&i.MaxRetries,

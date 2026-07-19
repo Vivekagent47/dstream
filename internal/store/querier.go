@@ -15,18 +15,19 @@ type Querier interface {
 	// Invalidate all of a user's outstanding signed session cookies by advancing
 	// their epoch. Used by logout (logout-all) and future disable/security flows.
 	BumpUserSessionEpoch(ctx context.Context, id pgtype.UUID) error
-	// Reaper: atomically re-queue events that have NO pending asynq task and are
-	// therefore genuinely stuck. Two cases:
-	//   * 'queued' older than @stuck_before — the ingest enqueue failed, so asynq
-	//     never received a task for it.
-	//   * 'in_flight' on a CLI destination — the CLI dispatch path returns
-	//     asynq.SkipRetry (handing off to the WS), so if the tunnel died mid-flight
-	//     nothing will ever retry it.
-	// HTTP 'in_flight' events are deliberately excluded: asynq owns their retry
-	// backoff AND their worker-death recovery, so reaping them would double-deliver
-	// and bypass the backoff schedule. @stuck_before must exceed the delivery + CLI
-	// response timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently
-	// without double-claiming (and locks only events, not the joined rows).
+	// Reaper: atomically re-queue events that never entered the dqueue or lost their
+	// owner, and are therefore genuinely stuck. Two cases:
+	//   * 'queued' older than @stuck_before — the ingest Enqueue failed, so the event
+	//     was never put on the dqueue.
+	//   * 'in_flight' on a CLI destination — the CLI dispatch path Acks the leased
+	//     member at handoff to the WS tunnel, so if the tunnel died mid-flight nothing
+	//     owns the event any more.
+	// HTTP 'in_flight' events are deliberately excluded: the dqueue recoverer (the
+	// dq:processing lease) plus the scheduled ZSET own their retry backoff AND their
+	// worker-death recovery, so reaping them would double-deliver and bypass the
+	// backoff schedule. @stuck_before must exceed the delivery + CLI response
+	// timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently without
+	// double-claiming (and locks only events, not the joined rows).
 	// ponytail: a pathologically low rate limit (refill > @stuck_before) could let
 	// a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
 	// acceptable under the system's at-least-once contract.

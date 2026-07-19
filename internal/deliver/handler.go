@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,13 +11,11 @@ import (
 	"time"
 
 	"github.com/go-redis/redis_rate/v10"
-	"github.com/google/uuid"
-	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
-	"github.com/Vivekagent47/dstream/internal/queue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -53,7 +50,11 @@ type Handler struct {
 	Limiter   *redis_rate.Limiter
 	BodyStore ingest.BodyStore
 	HTTP      *http.Client
-	Enqueuer  *queue.Client
+	Queue     *dqueue.Client
+
+	// PerOrgMaxInflight caps concurrent in-flight deliveries per org across the
+	// whole worker fleet (0 = disabled). Set by the worker from config.
+	PerOrgMaxInflight int
 }
 
 func New(
@@ -61,7 +62,7 @@ func New(
 	q *store.Queries,
 	rdb *redis.Client,
 	bs ingest.BodyStore,
-	enq *queue.Client,
+	dq *dqueue.Client,
 	allowPrivateDestinations bool,
 ) *Handler {
 	return &Handler{
@@ -71,20 +72,16 @@ func New(
 		Limiter:   redis_rate.NewLimiter(rdb),
 		BodyStore: bs,
 		HTTP:      newSafeHTTPClient(DeliveryTimeout, allowPrivateDestinations),
-		Enqueuer:  enq,
+		Queue:     dq,
 	}
 }
 
-// Register binds the handler to its asynq task name.
-func (h *Handler) Register(mux *asynq.ServeMux) {
-	mux.HandleFunc(queue.TaskDeliver, h.handle)
-}
-
-func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
-	var p queue.DeliverPayload
-	if err := json.Unmarshal(task.Payload(), &p); err != nil {
-		return fmt.Errorf("unmarshal payload: %w", err)
-	}
+// Process delivers one event picked off the fair queue. The payload arrives
+// already decoded; raw is the queue member Ack/DeadLetter operate on. At-least-
+// once: the event stays leased in dq:processing until this returns after a
+// terminal step (delivered / dead-lettered / rescheduled+Ack). Returning a
+// non-nil error WITHOUT Ack leaves it leased so the recoverer redelivers it.
+func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) error {
 	queuedFor := time.Duration(0)
 	if p.EnqueuedAt > 0 {
 		queuedFor = time.Since(time.UnixMilli(p.EnqueuedAt))
@@ -96,7 +93,7 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	}
 
 	if row.DestinationType == "cli" {
-		return h.dispatchToCLI(ctx, row, p.Manual)
+		return h.dispatchToCLI(ctx, row, p, raw)
 	}
 	if row.DestinationType != "http" {
 		return fmt.Errorf("delivery type %q not implemented", row.DestinationType)
@@ -112,7 +109,26 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	if err := ValidateDestinationURL(*row.DestinationUrl); err != nil {
 		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
 		_ = h.Queries.MarkEventFailed(ctx, row.ID)
-		return asynq.SkipRetry
+		_ = h.Queue.DeadLetter(ctx, raw)
+		return nil
+	}
+
+	// Per-org in-flight gate. Caps how many deliveries a single org runs at once
+	// across the whole worker fleet (the counter lives in Redis), so one org's
+	// slow/failing endpoint can't occupy the shared pool and starve other orgs.
+	// Same lease pattern as the per-destination gate below. Disabled (no-op) when
+	// PerOrgMaxInflight <= 0, which is the single-tenant default.
+	if h.PerOrgMaxInflight > 0 {
+		orgKey := "inflight:org:" + store.GoUUID(row.OrgID).String()
+		ttlSec := int(DeliveryTimeout * 5 / time.Second)
+		n, err := inflightIncrScript.Run(ctx, h.Redis, []string{orgKey}, ttlSec).Int64()
+		if err == nil {
+			if n > int64(h.PerOrgMaxInflight) {
+				_, _ = h.Redis.Decr(ctx, orgKey).Result()
+				return h.defer_(ctx, p, raw, 500*time.Millisecond, "per-org inflight")
+			}
+			defer h.Redis.Decr(ctx, orgKey)
+		}
 	}
 
 	// Rate-limit gate (per destination).
@@ -128,24 +144,12 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 			Period: time.Second,
 		})
 		if err == nil && res.Allowed == 0 {
-			// Re-enqueue with delay; do NOT count against retry budget.
+			// Re-schedule with delay; do NOT count against retry budget.
 			retryAfter := res.RetryAfter
 			if retryAfter <= 0 {
 				retryAfter = 100 * time.Millisecond
 			}
-			if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
-				EventID:             p.EventID,
-				Attempt:             p.Attempt,
-				EnqueuedAt:          time.Now().UnixMilli(),
-				RetryStrategy:       p.RetryStrategy,
-				RetryBaseMs:         p.RetryBaseMs,
-				RetryCapMs:          p.RetryCapMs,
-				RetryJitterPct:      p.RetryJitterPct,
-				CustomRetrySchedule: p.CustomRetrySchedule,
-			}, int(row.MaxRetries), asynq.ProcessIn(retryAfter)); err != nil {
-				return fmt.Errorf("rate-limit reenqueue: %w", err)
-			}
-			return asynq.SkipRetry
+			return h.defer_(ctx, p, raw, retryAfter, "rate-limit")
 		}
 	}
 
@@ -159,19 +163,7 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 		if err == nil {
 			if count > int64(*row.DestinationMaxInflight) {
 				_, _ = h.Redis.Decr(ctx, inflightKey).Result()
-				if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
-					EventID:             p.EventID,
-					Attempt:             p.Attempt,
-					EnqueuedAt:          time.Now().UnixMilli(),
-					RetryStrategy:       p.RetryStrategy,
-					RetryBaseMs:         p.RetryBaseMs,
-					RetryCapMs:          p.RetryCapMs,
-					RetryJitterPct:      p.RetryJitterPct,
-					CustomRetrySchedule: p.CustomRetrySchedule,
-				}, int(row.MaxRetries), asynq.ProcessIn(250*time.Millisecond)); err != nil {
-					return fmt.Errorf("inflight reenqueue: %w", err)
-				}
-				return asynq.SkipRetry
+				return h.defer_(ctx, p, raw, 250*time.Millisecond, "dest inflight")
 			}
 			defer h.Redis.Decr(ctx, inflightKey)
 		}
@@ -180,17 +172,42 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	// Mark in-flight.
 	_ = h.Queries.MarkEventInFlight(ctx, row.ID)
 
+	// failAttempt is the shared retry/terminate tail: bump the attempt and either
+	// dead-letter (budget exhausted) or re-schedule with the policy backoff, then
+	// Ack. p.Attempt plays asynq's old retry count; max_retries=N ⇒ N+1 total
+	// executions (fail#N+1 dead-letters). A Schedule/Ack Redis error returns
+	// without Ack so the leased member stays in dq:processing for the recoverer —
+	// never Ack before the event terminates. Used by the delivery-failure branch
+	// below and the two infra-error paths (missing body ref, request build) so a
+	// permanently-broken event terminates instead of being redelivered forever.
+	failAttempt := func() error {
+		p.Attempt++
+		if p.Attempt > int(row.MaxRetries) {
+			_ = h.Queries.MarkEventFailed(ctx, row.ID)
+			// DeadLetter is terminal (it ZREMs from processing itself, so no Ack).
+			// On error, leave the event leased so the recoverer redelivers it.
+			return h.Queue.DeadLetter(ctx, raw)
+		}
+		delay := RetryDelay(connFromRow(row), p.Attempt)
+		if err := h.Queue.Schedule(ctx, p, time.Now().Add(delay).UnixMilli()); err != nil {
+			return err // leave in processing; recoverer will retry
+		}
+		return h.Queue.Ack(ctx, raw)
+	}
+
 	body, err := h.BodyStore.Get(ctx, row.BodyRef)
 	if err != nil {
-		// Body ref must exist; treat as permanent failure for this attempt.
+		// Body ref may be permanently missing; count it against the retry budget
+		// and terminate rather than looping the recoverer forever on a poison pill.
 		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
-		return err
+		return failAttempt()
 	}
 
 	headers, _ := unmarshalHeaders(row.RequestHeaders)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", *row.DestinationUrl, bytes.NewReader(body))
 	if err != nil {
-		return err
+		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
+		return failAttempt()
 	}
 	for k, vs := range headers {
 		// Never forward credentials meant for dstream (Authorization, Cookie)
@@ -225,15 +242,39 @@ func (h *Handler) handle(ctx context.Context, task *asynq.Task) error {
 	h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, respStatus, respHeaders, respBody, queuedFor, dur, doErr)
 
 	if doErr != nil || respStatus == nil || *respStatus < 200 || *respStatus >= 300 {
-		// Failure — return error so asynq retries. RetryDelayFunc decides the schedule.
-		if doErr != nil {
-			return doErr
-		}
-		return fmt.Errorf("non-2xx response: %d", *respStatus)
+		// Delivery failure: run the shared retry/terminate tail (attempt already
+		// recorded above).
+		return failAttempt()
 	}
 
 	_ = h.Queries.MarkEventDelivered(ctx, row.ID)
-	return nil
+	return h.Queue.Ack(ctx, raw)
+}
+
+// defer_ re-schedules p after delay (a gate deferral: rate-limit / in-flight
+// backoff, NOT a retry — does not touch Attempt) and Acks the leased member so
+// the slot frees. On a Schedule/Ack error it returns the error without Ack so
+// the recoverer redelivers rather than dropping the event.
+func (h *Handler) defer_(ctx context.Context, p dqueue.Payload, raw string, delay time.Duration, what string) error {
+	p.EnqueuedAt = time.Now().UnixMilli()
+	if err := h.Queue.Schedule(ctx, p, time.Now().Add(delay).UnixMilli()); err != nil {
+		return fmt.Errorf("%s reschedule: %w", what, err)
+	}
+	return h.Queue.Ack(ctx, raw)
+}
+
+// connFromRow projects the delivery row's retry-policy columns into a
+// store.Connection so RetryDelay (which reads only those fields) can compute
+// the backoff without a second DB read.
+func connFromRow(row store.GetEventForDeliveryRow) store.Connection {
+	return store.Connection{
+		MaxRetries:          row.MaxRetries,
+		RetryStrategy:       row.RetryStrategy,
+		RetryBaseMs:         row.RetryBaseMs,
+		RetryCapMs:          row.RetryCapMs,
+		RetryJitterPct:      row.RetryJitterPct,
+		CustomRetrySchedule: row.CustomRetrySchedule,
+	}
 }
 
 func (h *Handler) recordAttempt(
@@ -268,92 +309,11 @@ func (h *Handler) recordAttempt(
 	}
 }
 
-// RetryDelayFunc returns an asynq RetryDelayFunc that consults the connection
-// policy attached to the task payload. If the payload has the policy fields
-// populated (new code path), we compute the delay with ZERO DB queries. If
-// the payload is older / lacks the snapshot, we fall back to the legacy
-// 2-query lookup so in-flight tasks during a deploy don't break.
-//
-// Trade-off: policy edits made AFTER an event is enqueued won't apply to
-// subsequent retries of that event — only to events enqueued post-edit.
-// For a retry policy this is acceptable; operators rarely tune retry
-// strategy mid-incident, and live edits already weren't atomic.
-func (h *Handler) RetryDelayFunc() asynq.RetryDelayFunc {
-	return func(n int, taskErr error, task *asynq.Task) time.Duration {
-		var p queue.DeliverPayload
-		if err := json.Unmarshal(task.Payload(), &p); err != nil {
-			return defaultRetry(n)
-		}
-		// asynq calls RetryDelayFunc with n = attempt number that just failed (1-based).
-		attempt := n + 1
-		if p.RetryStrategy != "" {
-			return RetryDelay(store.Connection{
-				RetryStrategy:       p.RetryStrategy,
-				RetryBaseMs:         p.RetryBaseMs,
-				RetryCapMs:          p.RetryCapMs,
-				RetryJitterPct:      p.RetryJitterPct,
-				CustomRetrySchedule: p.CustomRetrySchedule,
-			}, attempt)
-		}
-		// Legacy fallback for tasks enqueued before payload carried policy.
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		ev, err := h.Queries.GetEventByID(ctx, store.UUID(p.EventID))
-		if err != nil {
-			return defaultRetry(n)
-		}
-		conn, err := h.Queries.GetConnectionByID(ctx, ev.ConnectionID)
-		if err != nil {
-			return defaultRetry(n)
-		}
-		return RetryDelay(conn, attempt)
-	}
-}
-
-func defaultRetry(n int) time.Duration {
-	d := time.Duration(30*int64(n*n)) * time.Second
-	if d > time.Hour {
-		d = time.Hour
-	}
-	return d
-}
-
-// ErrorHandler flips an event to `failed` once asynq has exhausted its retry
-// budget for a genuine delivery error. asynq invokes this after every failed
-// handler run; we act only on the terminal one (retried == maxRetry), leaving
-// the row `in_flight` while retries remain.
-//
-// SkipRetry results are NOT failures — they're deferrals the handler manages
-// itself (rate-limit / in-flight backoff, CLI handoff, bad-URL already recorded
-// as failed). We ignore them so a deferred event isn't wrongly marked failed.
-func (h *Handler) ErrorHandler() asynq.ErrorHandler {
-	return asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
-		if errors.Is(err, asynq.SkipRetry) {
-			return
-		}
-		retried, _ := asynq.GetRetryCount(ctx)
-		maxRetry, _ := asynq.GetMaxRetry(ctx)
-		if retried < maxRetry {
-			return // more retries pending; stays in_flight
-		}
-		var p queue.DeliverPayload
-		if json.Unmarshal(task.Payload(), &p) != nil {
-			return
-		}
-		// The task ctx may already be cancelled (e.g. handler timeout), so use a
-		// fresh one for the terminal status write.
-		dbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if e := h.Queries.MarkEventFailed(dbCtx, store.UUID(p.EventID)); e != nil {
-			h.Log.Error("deliver: mark failed after retry exhaustion", "err", e, "event_id", p.EventID)
-		}
-	})
-}
-
 // dispatchToCLI hands the event off to a live CLI tunnel via Redis. The CLI
-// WebSocket handler does the actual forwarding + attempt recording, so this
-// path returns asynq.SkipRetry on success.
-func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDeliveryRow, manual bool) error {
+// WebSocket handler does the actual forwarding + attempt recording, so on
+// handoff this path just Acks the leased member.
+func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDeliveryRow, p dqueue.Payload, raw string) error {
+	manual := p.Manual
 	sessionKey := "cli:source:" + store.GoUUID(row.SourceID).String()
 	exists, err := h.Redis.Exists(ctx, sessionKey).Result()
 	if err != nil {
@@ -369,9 +329,10 @@ func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDelive
 			if err := h.Queries.MarkEventDiscarded(ctx, row.ID); err != nil {
 				h.Log.Error("cli discard", "err", err, "event_id", store.GoUUID(row.ID))
 			}
-			return asynq.SkipRetry
+			return h.Queue.Ack(ctx, raw)
 		}
-		// Still within the grace window: re-queue with backoff so the event isn't dropped.
+		// Still within the grace window: re-schedule with backoff so the event
+		// isn't dropped. Not a retry — leave p.Attempt untouched.
 		_ = h.Queries.ResetEventForRetry(ctx, store.ResetEventForRetryParams{
 			ID: row.ID,
 			NextRetryAt: pgtype.Timestamptz{
@@ -379,19 +340,7 @@ func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDelive
 				Valid: true,
 			},
 		})
-		if _, err := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
-			EventID:             store.GoUUID(row.ID),
-			Attempt:             int(row.AttemptCount),
-			EnqueuedAt:          time.Now().UnixMilli(),
-			RetryStrategy:       row.RetryStrategy,
-			RetryBaseMs:         row.RetryBaseMs,
-			RetryCapMs:          row.RetryCapMs,
-			RetryJitterPct:      row.RetryJitterPct,
-			CustomRetrySchedule: row.CustomRetrySchedule,
-		}, int(row.MaxRetries), asynq.ProcessIn(15*time.Second)); err != nil {
-			return fmt.Errorf("cli reenqueue: %w", err)
-		}
-		return asynq.SkipRetry
+		return h.defer_(ctx, p, raw, 15*time.Second, "cli")
 	}
 
 	dispatchKey := "cli:dispatch:" + store.GoUUID(row.SourceID).String()
@@ -399,8 +348,8 @@ func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDelive
 	if err := h.Redis.RPush(ctx, dispatchKey, payload).Err(); err != nil {
 		return fmt.Errorf("cli rpush: %w", err)
 	}
-	// CLI WS handler will record attempt + update status; we hand off.
-	return asynq.SkipRetry
+	// CLI WS handler will record attempt + update status; we hand off and Ack.
+	return h.Queue.Ack(ctx, raw)
 }
 
 // RunReaper periodically re-queues stuck events until ctx is cancelled. Run one
@@ -439,8 +388,9 @@ func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
 			h.Log.Error("reaper: load connection", "err", cerr, "event_id", store.GoUUID(ev.ID))
 			continue
 		}
-		if _, eerr := h.Enqueuer.EnqueueDeliver(ctx, queue.DeliverPayload{
+		if eerr := h.Queue.Enqueue(ctx, dqueue.Payload{
 			EventID:             store.GoUUID(ev.ID),
+			OrgID:               store.GoUUID(ev.OrgID),
 			Attempt:             0,
 			EnqueuedAt:          time.Now().UnixMilli(),
 			RetryStrategy:       conn.RetryStrategy,
@@ -448,7 +398,7 @@ func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
 			RetryCapMs:          conn.RetryCapMs,
 			RetryJitterPct:      conn.RetryJitterPct,
 			CustomRetrySchedule: conn.CustomRetrySchedule,
-		}, int(conn.MaxRetries)); eerr != nil {
+		}); eerr != nil {
 			h.Log.Error("reaper: re-enqueue", "err", eerr, "event_id", store.GoUUID(ev.ID))
 			continue
 		}
@@ -470,8 +420,3 @@ func unmarshalHeaders(raw []byte) (map[string][]string, error) {
 	}
 	return m, nil
 }
-
-// Compile-time unused-import guards.
-var _ = errors.New
-var _ = uuid.Nil
-var _ = pgtype.UUID{}
