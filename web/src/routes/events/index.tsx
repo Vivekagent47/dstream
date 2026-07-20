@@ -44,11 +44,17 @@ const PAGE_SIZE = 100
 // Time windows for the range picker. `bucket` is the date_trunc unit the graph
 // endpoint groups by — kept coarse enough that a window never yields a wall of
 // hairline bars.
+//
+// "Last hour" is a rolling window (now − 1h). The day/week/month windows cover
+// the last N whole calendar days ending today, aligned to UTC midnight to match
+// the server's date_trunc (UTC). `days` is that N, so "Last 7 days" is exactly 7
+// date columns (today + 6 prior) and the zero-fill grid merges cleanly with the
+// returned buckets — no off-by-one, no timezone drift.
 const RANGES = [
-  { key: '1h', label: 'Last hour', ms: 3_600_000, bucket: 'minute' },
-  { key: '24h', label: 'Last day', ms: 86_400_000, bucket: 'hour' },
-  { key: '7d', label: 'Last 7 days', ms: 604_800_000, bucket: 'hour' },
-  { key: '30d', label: 'Last 30 days', ms: 2_592_000_000, bucket: 'day' },
+  { key: '1h', label: 'Last hour', mode: 'rolling', ms: 3_600_000, bucket: 'minute' },
+  { key: '24h', label: 'Last day', mode: 'calendar', days: 1, bucket: 'hour' },
+  { key: '7d', label: 'Last 7 days', mode: 'calendar', days: 7, bucket: 'day' },
+  { key: '30d', label: 'Last 30 days', mode: 'calendar', days: 30, bucket: 'day' },
 ] as const
 type RangeKey = (typeof RANGES)[number]['key']
 
@@ -80,18 +86,25 @@ export const Route = createFileRoute('/events/')({
 })
 
 function EventsPage() {
-  const [range, setRange] = useState<RangeKey>('24h')
+  const [range, setRange] = useState<RangeKey>('7d')
   const [status, setStatus] = useState<string>('all')
   const [connId, setConnId] = useState<string>('all')
 
   const active = RANGES.find((r) => r.key === range)!
-  // `after` is frozen per range selection (recomputed only when the deps
-  // change), so polling reuses one query key instead of sliding every tick.
+  // `after` is frozen per range selection (recomputed only when the range
+  // changes), so polling reuses one query key instead of sliding every tick.
   // ponytail: window doesn't auto-slide; re-pick the range to advance it.
-  const after = useMemo(
-    () => new Date(Date.now() - active.ms).toISOString(),
-    [active.ms],
-  )
+  const after = useMemo(() => {
+    if (active.mode === 'rolling') {
+      return new Date(Date.now() - active.ms).toISOString()
+    }
+    // Calendar-aligned in UTC: start-of-today (UTC), back (days − 1) so the
+    // window spans exactly `days` date columns ending today.
+    const d = new Date()
+    d.setUTCHours(0, 0, 0, 0)
+    d.setUTCDate(d.getUTCDate() - (active.days - 1))
+    return d.toISOString()
+  }, [active])
 
   const filters = {
     after,
@@ -108,6 +121,8 @@ function EventsPage() {
     refetchInterval: 5000,
   })
 
+  // The API gap-fills the series (every bucket in the window, zeros included),
+  // so the graph just plots what it returns — no client-side reconstruction.
   const { data: histogram } = useQuery({
     queryKey: qk.eventsHistogram({ bucket: active.bucket, ...filters }),
     queryFn: () => api.eventsHistogram({ bucket: active.bucket, ...filters }),
@@ -141,10 +156,10 @@ function EventsPage() {
 
       {/* filter toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-6 py-3">
-        <Select value={range} onValueChange={(v) => setRange((v as RangeKey) ?? '24h')}>
+        <Select value={range} onValueChange={(v) => setRange((v as RangeKey) ?? '7d')}>
           <SelectTrigger className="h-8 w-36 text-xs">
             <SelectValue>
-              {(v: string | null) => RANGES.find((r) => r.key === v)?.label ?? 'Last day'}
+              {(v: string | null) => RANGES.find((r) => r.key === v)?.label ?? 'Last 7 days'}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -309,16 +324,19 @@ function Histogram({ buckets, bucket }: { buckets: EventHistogramBucket[]; bucke
   // Label granularity follows the bucket: a day-bucketed range shows dates
   // (midnight-UTC buckets otherwise render as a meaningless "05:30 AM" in
   // local tz); minute/hour buckets show the time.
+  // Day buckets are UTC-midnight timestamps; format them in UTC so a bucket
+  // renders as its own calendar date (formatting in local tz would shift a
+  // UTC-midnight bar onto the previous day). Intraday buckets stay local.
   const fmtTick = (ts: string) => {
     const d = new Date(ts)
     return bucket === 'day'
-      ? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' })
       : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
   const fmtLabel = (ts: string) => {
     const d = new Date(ts)
     return bucket === 'day'
-      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
       : d.toLocaleString()
   }
 
