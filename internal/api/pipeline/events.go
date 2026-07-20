@@ -183,6 +183,9 @@ func (d Handlers) EventsHistogram(w http.ResponseWriter, r *http.Request) {
 		Counts map[string]int64 `json:"counts"`
 		Total  int64            `json:"total"`
 	}
+	// The query gap-fills the series, so every bucket in the window is present;
+	// an empty bucket arrives as one row with a NULL status (count 0). Create the
+	// bucket regardless, but only tally rows that carry a status.
 	order := make([]string, 0)
 	idx := make(map[string]*bucketOut)
 	for _, row := range rows {
@@ -193,8 +196,10 @@ func (d Handlers) EventsHistogram(w http.ResponseWriter, r *http.Request) {
 			idx[key] = b
 			order = append(order, key)
 		}
-		b.Counts[row.Status] += row.Count
-		b.Total += row.Count
+		if row.Status != nil {
+			b.Counts[*row.Status] += row.Count
+			b.Total += row.Count
+		}
 	}
 	buckets := make([]*bucketOut, 0, len(order))
 	for _, k := range order {

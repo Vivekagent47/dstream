@@ -6,7 +6,8 @@ import { Pencil, Send, TerminalSquare, Trash2 } from 'lucide-react'
 
 import { api, qk, type Connection, type Destination } from '#/lib/api'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
-import { CopyValue, DetailRow, MetricCard } from '#/components/detail-page'
+import { CopyValue, DetailRow } from '#/components/detail-page'
+import { DestinationMetrics } from '#/components/entity-metrics'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
 import { Button } from '#/components/ui/button'
@@ -117,7 +118,7 @@ function DestinationDetail() {
 
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {tab === 'overview' && <OverviewTab dest={dest} />}
-        {tab === 'metrics' && <MetricsPlaceholders />}
+        {tab === 'metrics' && <DestinationMetrics id={dest.id} />}
         {tab === 'connections' && <ConnectionsTab connections={connections} />}
         {tab === 'settings' && <SettingsTab dest={dest} />}
       </div>
@@ -186,23 +187,7 @@ function OverviewTab({ dest }: { dest: Destination }) {
       {/* Metrics overview */}
       <div className="flex min-h-0 flex-col gap-3">
         <h2 className="text-base font-semibold">Metrics overview</h2>
-        <MetricCard title="Deliveries" className="min-h-40 flex-[3]" />
-        <div className="grid min-h-32 flex-[2] gap-3 xl:grid-cols-2">
-          <MetricCard title="Delivery rate" />
-          <MetricCard title="Avg. latency" />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function MetricsPlaceholders() {
-  return (
-    <div className="flex min-h-full flex-col gap-3">
-      <MetricCard title="Deliveries" className="min-h-40 flex-[3]" />
-      <div className="grid min-h-32 flex-[2] gap-3 xl:grid-cols-2">
-        <MetricCard title="Delivery rate" />
-        <MetricCard title="Avg. latency" />
+        <DestinationMetrics id={dest.id} />
       </div>
     </div>
   )

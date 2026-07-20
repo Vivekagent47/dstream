@@ -41,6 +41,7 @@ type Querier interface {
 	// (avoids an N+1 of CountEventsByConnectionSince). Handler folds by
 	// connection_id into delivered/failed/pending buckets.
 	CountEventsByOrgGroupedByConnection(ctx context.Context, arg CountEventsByOrgGroupedByConnectionParams) ([]CountEventsByOrgGroupedByConnectionRow, error)
+	CountEventsByStatePerConnection(ctx context.Context) ([]CountEventsByStatePerConnectionRow, error)
 	CountOrgMembershipsForUser(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -81,11 +82,22 @@ type Querier interface {
 	// remains. The whole operation is one statement, so two concurrent
 	// demote requests can't both pass a count-then-update race.
 	DemoteOrgOwnerIfNotLast(ctx context.Context, arg DemoteOrgOwnerIfNotLastParams) (int64, error)
+	// Gap-filled delivery outcomes over time for ONE destination. Events reach a
+	// destination through their connection, so join connections to filter. Same
+	// generate_series gap-fill + UTC buckets as EventsHistogram; empty buckets come
+	// back as a NULL-status row with count 0.
+	DestinationDeliveryHistogram(ctx context.Context, arg DestinationDeliveryHistogramParams) ([]DestinationDeliveryHistogramRow, error)
+	// Window totals for the delivery-rate + avg-latency cards. delivered/total gives
+	// the rate; avg_latency_ms averages the delivery HTTP call time recorded per
+	// attempt (NULL when no completed attempts in the window).
+	DestinationDeliveryStats(ctx context.Context, arg DestinationDeliveryStatsParams) (DestinationDeliveryStatsRow, error)
 	// Time-bucketed event counts by status for the events-page timeline graph.
-	// @bucket is a date_trunc unit ('hour' | 'day' | ...) chosen by the handler
-	// from the selected range. Same optional connection_id/status filters as
-	// ListEvents so the graph tracks the table; @after bounds the window (always a
-	// finite range). Includes test events, matching the list view.
+	// @bucket is a date_trunc unit ('minute' | 'hour' | 'day' | 'week') chosen by
+	// the handler from the selected range. The series is GAP-FILLED in SQL:
+	// generate_series emits every bucket from date_trunc(@after) through now(), so
+	// quiet buckets come back as one row with a NULL status and count 0 — the client
+	// plots the rows as-is, no reconstruction. Buckets are UTC-aligned. Same optional
+	// connection_id/status filters as ListEvents; includes test events.
 	EventsHistogram(ctx context.Context, arg EventsHistogramParams) ([]EventsHistogramRow, error)
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	// FOR UPDATE locks the row for the consume transaction so two concurrent
@@ -123,7 +135,9 @@ type Querier interface {
 	// LEFT JOIN may yield NULL for u/k columns; COALESCE so sqlc generates
 	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
 	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
+	ListConnectionInfo(ctx context.Context) ([]ListConnectionInfoRow, error)
 	ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error)
+	ListDestinationInfo(ctx context.Context) ([]ListDestinationInfoRow, error)
 	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)
 	ListEnabledConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
 	// Keyset pagination on (created_at DESC, id DESC). Optional connection_id and
@@ -141,6 +155,7 @@ type Querier interface {
 	ListOrgMembersByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgMembersByOrgRow, error)
 	ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error)
 	ListPendingOrgInvitesByEmail(ctx context.Context, email string) ([]OrgInvite, error)
+	ListSourceInfo(ctx context.Context) ([]ListSourceInfoRow, error)
 	ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]Source, error)
 	// attempt_count is bumped once per delivery cycle by MarkEventInFlight; the
 	// terminal transitions must NOT increment again (that double-counted attempts
@@ -165,10 +180,15 @@ type Querier interface {
 	// Do NOT reset attempt_count: zeroing it made the next attempt reuse
 	// attempt_num=1, colliding with the original attempt on UNIQUE(event_id,
 	// attempt_num) and silently dropping the retry's attempt row. Keep it monotonic;
-	// asynq's own retry budget is reset separately by re-enqueuing with Attempt=0.
+	// the fair-queue retry counter resets separately by re-enqueuing with Attempt=0.
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
+	// Gap-filled ingest-request volume over time for ONE source (single series, no
+	// status dimension). Same gap-fill contract as the delivery histogram.
+	SourceRequestHistogram(ctx context.Context, arg SourceRequestHistogramParams) ([]SourceRequestHistogramRow, error)
+	// Window totals for the requests-rate + avg-events-per-request (fan-out) cards.
+	SourceRequestStats(ctx context.Context, arg SourceRequestStatsParams) (SourceRequestStatsRow, error)
 	// Debounced: skip the write (and the WAL row / heap update / index churn)
 	// when the key was already touched within the past minute. Authenticated
 	// API traffic can exceed 1 req/s per key; without this gate the api_keys

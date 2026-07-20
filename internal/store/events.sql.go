@@ -229,45 +229,171 @@ func (q *Queries) CreateEventsBatch(ctx context.Context, arg CreateEventsBatchPa
 	return items, nil
 }
 
-const eventsHistogram = `-- name: EventsHistogram :many
-SELECT date_trunc($1::text, e.created_at)::timestamptz AS bucket,
-       e.status AS status,
-       count(*) AS count
+const destinationDeliveryHistogram = `-- name: DestinationDeliveryHistogram :many
+WITH series AS (
+  SELECT gs AS bucket
+  FROM generate_series(
+    date_trunc($1::text, $2::timestamptz),
+    date_trunc($1::text, now()),
+    ('1 ' || $1::text)::interval
+  ) AS gs
+),
+counts AS (
+  SELECT date_trunc($1::text, e.created_at) AS bucket, e.status AS status, count(*) AS count
+  FROM events e
+  JOIN connections c ON c.id = e.connection_id
+  WHERE c.destination_id = $3
+    AND e.org_id = $4
+    AND e.created_at >= $2::timestamptz
+  GROUP BY 1, 2
+)
+SELECT s.bucket::timestamptz     AS bucket,
+       c.status                  AS status,
+       coalesce(c.count, 0)::bigint AS count
+FROM series s
+LEFT JOIN counts c ON c.bucket = s.bucket
+ORDER BY s.bucket
+`
+
+type DestinationDeliveryHistogramParams struct {
+	Bucket        string             `json:"bucket"`
+	After         pgtype.Timestamptz `json:"after"`
+	DestinationID pgtype.UUID        `json:"destination_id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+}
+
+type DestinationDeliveryHistogramRow struct {
+	Bucket pgtype.Timestamptz `json:"bucket"`
+	Status *string            `json:"status"`
+	Count  int64              `json:"count"`
+}
+
+// Gap-filled delivery outcomes over time for ONE destination. Events reach a
+// destination through their connection, so join connections to filter. Same
+// generate_series gap-fill + UTC buckets as EventsHistogram; empty buckets come
+// back as a NULL-status row with count 0.
+func (q *Queries) DestinationDeliveryHistogram(ctx context.Context, arg DestinationDeliveryHistogramParams) ([]DestinationDeliveryHistogramRow, error) {
+	rows, err := q.db.Query(ctx, destinationDeliveryHistogram,
+		arg.Bucket,
+		arg.After,
+		arg.DestinationID,
+		arg.OrgID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DestinationDeliveryHistogramRow{}
+	for rows.Next() {
+		var i DestinationDeliveryHistogramRow
+		if err := rows.Scan(&i.Bucket, &i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const destinationDeliveryStats = `-- name: DestinationDeliveryStats :one
+SELECT
+  count(*)::bigint AS total,
+  count(*) FILTER (WHERE e.status = 'delivered')::bigint AS delivered,
+  coalesce((SELECT avg(a.duration_ms)
+   FROM attempts a
+   JOIN events e2 ON e2.id = a.event_id
+   JOIN connections c2 ON c2.id = e2.connection_id
+   WHERE c2.destination_id = $1
+     AND e2.org_id = $2
+     AND a.attempted_at >= $3::timestamptz
+     AND a.duration_ms IS NOT NULL), 0)::float8 AS avg_latency_ms
 FROM events e
-WHERE e.org_id = $2
-  AND ($3::uuid IS NULL OR e.connection_id = $3)
-  AND ($4::text        IS NULL OR e.status        = $4)
-  AND e.created_at >= $5::timestamptz
-GROUP BY bucket, e.status
-ORDER BY bucket
+JOIN connections c ON c.id = e.connection_id
+WHERE c.destination_id = $1
+  AND e.org_id = $2
+  AND e.created_at >= $3::timestamptz
+`
+
+type DestinationDeliveryStatsParams struct {
+	DestinationID pgtype.UUID        `json:"destination_id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	After         pgtype.Timestamptz `json:"after"`
+}
+
+type DestinationDeliveryStatsRow struct {
+	Total        int64   `json:"total"`
+	Delivered    int64   `json:"delivered"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+}
+
+// Window totals for the delivery-rate + avg-latency cards. delivered/total gives
+// the rate; avg_latency_ms averages the delivery HTTP call time recorded per
+// attempt (NULL when no completed attempts in the window).
+func (q *Queries) DestinationDeliveryStats(ctx context.Context, arg DestinationDeliveryStatsParams) (DestinationDeliveryStatsRow, error) {
+	row := q.db.QueryRow(ctx, destinationDeliveryStats, arg.DestinationID, arg.OrgID, arg.After)
+	var i DestinationDeliveryStatsRow
+	err := row.Scan(&i.Total, &i.Delivered, &i.AvgLatencyMs)
+	return i, err
+}
+
+const eventsHistogram = `-- name: EventsHistogram :many
+WITH series AS (
+  SELECT gs AS bucket
+  FROM generate_series(
+    date_trunc($1::text, $2::timestamptz),
+    date_trunc($1::text, now()),
+    ('1 ' || $1::text)::interval
+  ) AS gs
+),
+counts AS (
+  SELECT date_trunc($1::text, e.created_at) AS bucket,
+         e.status AS status,
+         count(*) AS count
+  FROM events e
+  WHERE e.org_id = $3
+    AND ($4::uuid IS NULL OR e.connection_id = $4)
+    AND ($5::text        IS NULL OR e.status        = $5)
+    AND e.created_at >= $2::timestamptz
+  GROUP BY 1, 2
+)
+SELECT s.bucket::timestamptz     AS bucket,
+       c.status                  AS status,
+       coalesce(c.count, 0)::bigint AS count
+FROM series s
+LEFT JOIN counts c ON c.bucket = s.bucket
+ORDER BY s.bucket
 `
 
 type EventsHistogramParams struct {
 	Bucket       string             `json:"bucket"`
+	After        pgtype.Timestamptz `json:"after"`
 	OrgID        pgtype.UUID        `json:"org_id"`
 	ConnectionID pgtype.UUID        `json:"connection_id"`
 	Status       *string            `json:"status"`
-	After        pgtype.Timestamptz `json:"after"`
 }
 
 type EventsHistogramRow struct {
 	Bucket pgtype.Timestamptz `json:"bucket"`
-	Status string             `json:"status"`
+	Status *string            `json:"status"`
 	Count  int64              `json:"count"`
 }
 
 // Time-bucketed event counts by status for the events-page timeline graph.
-// @bucket is a date_trunc unit ('hour' | 'day' | ...) chosen by the handler
-// from the selected range. Same optional connection_id/status filters as
-// ListEvents so the graph tracks the table; @after bounds the window (always a
-// finite range). Includes test events, matching the list view.
+// @bucket is a date_trunc unit ('minute' | 'hour' | 'day' | 'week') chosen by
+// the handler from the selected range. The series is GAP-FILLED in SQL:
+// generate_series emits every bucket from date_trunc(@after) through now(), so
+// quiet buckets come back as one row with a NULL status and count 0 — the client
+// plots the rows as-is, no reconstruction. Buckets are UTC-aligned. Same optional
+// connection_id/status filters as ListEvents; includes test events.
 func (q *Queries) EventsHistogram(ctx context.Context, arg EventsHistogramParams) ([]EventsHistogramRow, error) {
 	rows, err := q.db.Query(ctx, eventsHistogram,
 		arg.Bucket,
+		arg.After,
 		arg.OrgID,
 		arg.ConnectionID,
 		arg.Status,
-		arg.After,
 	)
 	if err != nil {
 		return nil, err
@@ -658,7 +784,7 @@ WHERE id = $1
 // Do NOT reset attempt_count: zeroing it made the next attempt reuse
 // attempt_num=1, colliding with the original attempt on UNIQUE(event_id,
 // attempt_num) and silently dropping the retry's attempt row. Keep it monotonic;
-// asynq's own retry budget is reset separately by re-enqueuing with Attempt=0.
+// the fair-queue retry counter resets separately by re-enqueuing with Attempt=0.
 func (q *Queries) ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, resetEventForManualRetry, id)
 	return err
@@ -680,4 +806,87 @@ type ResetEventForRetryParams struct {
 func (q *Queries) ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error {
 	_, err := q.db.Exec(ctx, resetEventForRetry, arg.ID, arg.NextRetryAt)
 	return err
+}
+
+const sourceRequestHistogram = `-- name: SourceRequestHistogram :many
+WITH series AS (
+  SELECT gs AS bucket
+  FROM generate_series(
+    date_trunc($1::text, $2::timestamptz),
+    date_trunc($1::text, now()),
+    ('1 ' || $1::text)::interval
+  ) AS gs
+),
+counts AS (
+  SELECT date_trunc($1::text, r.received_at) AS bucket, count(*) AS count
+  FROM requests r
+  WHERE r.source_id = $3
+    AND r.received_at >= $2::timestamptz
+  GROUP BY 1
+)
+SELECT s.bucket::timestamptz     AS bucket,
+       coalesce(c.count, 0)::bigint AS count
+FROM series s
+LEFT JOIN counts c ON c.bucket = s.bucket
+ORDER BY s.bucket
+`
+
+type SourceRequestHistogramParams struct {
+	Bucket   string             `json:"bucket"`
+	After    pgtype.Timestamptz `json:"after"`
+	SourceID pgtype.UUID        `json:"source_id"`
+}
+
+type SourceRequestHistogramRow struct {
+	Bucket pgtype.Timestamptz `json:"bucket"`
+	Count  int64              `json:"count"`
+}
+
+// Gap-filled ingest-request volume over time for ONE source (single series, no
+// status dimension). Same gap-fill contract as the delivery histogram.
+func (q *Queries) SourceRequestHistogram(ctx context.Context, arg SourceRequestHistogramParams) ([]SourceRequestHistogramRow, error) {
+	rows, err := q.db.Query(ctx, sourceRequestHistogram, arg.Bucket, arg.After, arg.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SourceRequestHistogramRow{}
+	for rows.Next() {
+		var i SourceRequestHistogramRow
+		if err := rows.Scan(&i.Bucket, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const sourceRequestStats = `-- name: SourceRequestStats :one
+SELECT
+  (SELECT count(*) FROM requests r
+   WHERE r.source_id = $1 AND r.received_at >= $2::timestamptz)::bigint AS requests,
+  (SELECT count(*) FROM events e
+   JOIN requests r ON r.id = e.request_id
+   WHERE r.source_id = $1 AND e.created_at >= $2::timestamptz)::bigint AS events
+`
+
+type SourceRequestStatsParams struct {
+	SourceID pgtype.UUID        `json:"source_id"`
+	After    pgtype.Timestamptz `json:"after"`
+}
+
+type SourceRequestStatsRow struct {
+	Requests int64 `json:"requests"`
+	Events   int64 `json:"events"`
+}
+
+// Window totals for the requests-rate + avg-events-per-request (fan-out) cards.
+func (q *Queries) SourceRequestStats(ctx context.Context, arg SourceRequestStatsParams) (SourceRequestStatsRow, error) {
+	row := q.db.QueryRow(ctx, sourceRequestStats, arg.SourceID, arg.After)
+	var i SourceRequestStatsRow
+	err := row.Scan(&i.Requests, &i.Events)
+	return i, err
 }

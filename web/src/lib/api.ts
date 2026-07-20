@@ -96,6 +96,31 @@ export interface EventsHistogram {
   buckets: EventHistogramBucket[]
 }
 
+// Per-destination delivery metrics (detail-page cards). `series` is gap-filled
+// by the backend; rate/latency are null when the window has no data.
+export interface DestinationMetrics {
+  bucket: string
+  series: EventHistogramBucket[]
+  total: number
+  delivered: number
+  delivery_rate: number | null
+  avg_latency_ms: number | null
+}
+
+export interface SourceMetricBucket {
+  ts: string
+  count: number
+}
+// Per-source ingest metrics (detail-page cards). `series` is gap-filled.
+export interface SourceMetrics {
+  bucket: string
+  series: SourceMetricBucket[]
+  requests: number
+  events: number
+  requests_rate: number
+  avg_events_per_request: number | null
+}
+
 // The originating HTTP request behind an event (shown in the detail page's
 // Request-data panel). `headers` is the raw stored header map — values arrive
 // as string arrays (Go http.Header) but tolerate scalars.
@@ -366,6 +391,10 @@ export const api = {
   }) => http.get<EventsHistogram>('/api/events/histogram', { params }).then((r) => r.data),
   getEvent: (id: string) => http.get<EventDetail>(`/api/events/${id}`).then((r) => r.data),
   retryEvent: (id: string) => http.post<void>(`/api/events/${id}/retry`).then((r) => r.data),
+  destinationMetrics: (id: string, params?: { bucket?: string; after?: string }) =>
+    http.get<DestinationMetrics>(`/api/destinations/${id}/metrics`, { params }).then((r) => r.data),
+  sourceMetrics: (id: string, params?: { bucket?: string; after?: string }) =>
+    http.get<SourceMetrics>(`/api/sources/${id}/metrics`, { params }).then((r) => r.data),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
@@ -405,4 +434,8 @@ export const qk = {
     status?: string
   }) => ['events', 'histogram', params ?? {}] as const,
   event: (id: string) => ['event', id] as const,
+  destinationMetrics: (id: string, params?: { bucket?: string; after?: string }) =>
+    ['destinations', id, 'metrics', params ?? {}] as const,
+  sourceMetrics: (id: string, params?: { bucket?: string; after?: string }) =>
+    ['sources', id, 'metrics', params ?? {}] as const,
 }
