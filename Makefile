@@ -25,11 +25,13 @@ help:
 dev:
 	@echo "Run 'make server' and 'make worker' in separate terminals."
 
+# Source repo-root .env before running (config reads env only — no dotenv loader).
+# `set -a` exports every var to the go process; compose loads .env on its own.
 server:
-	go run ./cmd/dstream server
+	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/dstream server
 
 worker:
-	go run ./cmd/dstream worker
+	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/dstream worker
 
 build:
 	mkdir -p bin
