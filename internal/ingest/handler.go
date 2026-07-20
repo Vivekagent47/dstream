@@ -23,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -77,6 +78,7 @@ type ingestResponse struct {
 
 func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	start := time.Now()
 	token := chi.URLParam(r, "token")
 
 	src, err := h.resolveSource(ctx, token)
@@ -91,6 +93,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourceID := store.GoUUID(src.ID)
+	defer func() { metrics.IngestDuration(sourceID, time.Since(start)) }()
 
 	if !methodAllowed(src.AllowedMethods, r.Method) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -130,6 +133,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.Log.Warn("ingest: dedup check failed (ignored)", "err", err)
 	}
+	metrics.IngestRequest(sourceID, dup)
 
 	// v7 so the request id sorts by creation time and clusters in the PK
 	// B-tree (matches the uuidv7() column defaults). NewV7 only errs if the

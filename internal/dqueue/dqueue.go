@@ -25,6 +25,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Payload is the unit of work carried through the queue. It mirrors the fields
@@ -32,16 +34,17 @@ import (
 // ownership), and a snapshot of the connection's retry policy so backoff can be
 // computed without a DB read.
 type Payload struct {
-	EventID             uuid.UUID `json:"event_id"`
-	OrgID               uuid.UUID `json:"org_id"`
-	Attempt             int       `json:"attempt"`
-	EnqueuedAt          int64     `json:"enqueued_at_unix_ms"`
-	Manual              bool      `json:"manual,omitempty"`
-	RetryStrategy       string    `json:"retry_strategy,omitempty"`
-	RetryBaseMs         int32     `json:"retry_base_ms,omitempty"`
-	RetryCapMs          int32     `json:"retry_cap_ms,omitempty"`
-	RetryJitterPct      int32     `json:"retry_jitter_pct,omitempty"`
-	CustomRetrySchedule []byte    `json:"custom_retry_schedule,omitempty"`
+	EventID             uuid.UUID         `json:"event_id"`
+	OrgID               uuid.UUID         `json:"org_id"`
+	Attempt             int               `json:"attempt"`
+	EnqueuedAt          int64             `json:"enqueued_at_unix_ms"`
+	Manual              bool              `json:"manual,omitempty"`
+	RetryStrategy       string            `json:"retry_strategy,omitempty"`
+	RetryBaseMs         int32             `json:"retry_base_ms,omitempty"`
+	RetryCapMs          int32             `json:"retry_cap_ms,omitempty"`
+	RetryJitterPct      int32             `json:"retry_jitter_pct,omitempty"`
+	CustomRetrySchedule []byte            `json:"custom_retry_schedule,omitempty"`
+	Trace               map[string]string `json:"trace,omitempty"`
 }
 
 // Client is a handle to the queue on a given Redis + keyspace prefix.
@@ -129,8 +132,20 @@ end
 return #expired
 `)
 
+// injectTrace writes the current span context into p.Trace so the worker can
+// continue the same trace across the Redis hop. Called on first Enqueue only;
+// Schedule (retries) preserves the existing carrier.
+func injectTrace(ctx context.Context, p *Payload) {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if len(carrier) > 0 {
+		p.Trace = carrier
+	}
+}
+
 // Enqueue pushes a payload onto its org's pending list, ready for FairPick.
 func (c *Client) Enqueue(ctx context.Context, p Payload) error {
+	injectTrace(ctx, &p)
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return err

@@ -9,6 +9,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Vivekagent47/dstream/internal/config"
 	"github.com/Vivekagent47/dstream/internal/deliver"
@@ -16,6 +18,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/logging"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/tracing"
 )
 
 func workerCmd() *cobra.Command {
@@ -33,6 +36,20 @@ func workerCmd() *cobra.Command {
 			// ctx cancels on SIGINT/SIGTERM; every loop below watches it and drains.
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+
+			tshutdown, err := tracing.Init(ctx, tracing.Config{
+				Enabled:      cfg.Tracing.Enabled,
+				OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
+				ServiceName:  cfg.Tracing.ServiceName,
+				SampleRatio:  cfg.Tracing.SampleRatio,
+			})
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tshutdown(context.Background()) }()
+			if cfg.Tracing.Enabled {
+				log.Info("tracing enabled", "otlp_endpoint", cfg.Tracing.OTLPEndpoint, "sample_ratio", cfg.Tracing.SampleRatio)
+			}
 
 			pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
 			if err != nil {
@@ -81,9 +98,22 @@ func workerCmd() *cobra.Command {
 							_ = dq.WaitNotify(ctx, 2*time.Second)
 							continue
 						}
-						if err := h.Process(ctx, p, raw); err != nil {
-							log.Error("process", "event_id", p.EventID, "err", err)
-						}
+						// Process one event in its own func so span.End runs on every
+						// path and a panic in delivery is contained to this event
+						// instead of killing the whole worker process.
+						func() {
+							dctx := otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(p.Trace))
+							dctx, span := otel.Tracer("dstream/deliver").Start(dctx, "deliver")
+							defer span.End()
+							defer func() {
+								if rec := recover(); rec != nil {
+									log.Error("process panic", "event_id", p.EventID, "panic", rec)
+								}
+							}()
+							if perr := h.Process(dctx, p, raw); perr != nil {
+								log.Error("process", "event_id", p.EventID, "err", perr)
+							}
+						}()
 					}
 				}()
 			}

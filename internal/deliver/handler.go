@@ -16,6 +16,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
+	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -92,6 +93,9 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		return fmt.Errorf("load event: %w", err)
 	}
 
+	destID := store.GoUUID(row.DestinationID)
+	connID := store.GoUUID(row.ConnectionID)
+
 	if row.DestinationType == "cli" {
 		return h.dispatchToCLI(ctx, row, p, raw)
 	}
@@ -110,6 +114,8 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
 		_ = h.Queries.MarkEventFailed(ctx, row.ID)
 		_ = h.Queue.DeadLetter(ctx, raw)
+		metrics.Delivery(destID, connID, "failed")
+		metrics.Attempt(connID, "deadletter")
 		return nil
 	}
 
@@ -125,6 +131,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		if err == nil {
 			if n > int64(h.PerOrgMaxInflight) {
 				_, _ = h.Redis.Decr(ctx, orgKey).Result()
+				metrics.InflightDeferred(destID, "org")
 				return h.defer_(ctx, p, raw, 500*time.Millisecond, "per-org inflight")
 			}
 			defer h.Redis.Decr(ctx, orgKey)
@@ -149,6 +156,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 			if retryAfter <= 0 {
 				retryAfter = 100 * time.Millisecond
 			}
+			metrics.RateLimited(destID)
 			return h.defer_(ctx, p, raw, retryAfter, "rate-limit")
 		}
 	}
@@ -163,6 +171,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		if err == nil {
 			if count > int64(*row.DestinationMaxInflight) {
 				_, _ = h.Redis.Decr(ctx, inflightKey).Result()
+				metrics.InflightDeferred(destID, "dest")
 				return h.defer_(ctx, p, raw, 250*time.Millisecond, "dest inflight")
 			}
 			defer h.Redis.Decr(ctx, inflightKey)
@@ -174,8 +183,8 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 
 	// failAttempt is the shared retry/terminate tail: bump the attempt and either
 	// dead-letter (budget exhausted) or re-schedule with the policy backoff, then
-	// Ack. p.Attempt plays asynq's old retry count; max_retries=N ⇒ N+1 total
-	// executions (fail#N+1 dead-letters). A Schedule/Ack Redis error returns
+	// Ack. p.Attempt counts retries; max_retries=N ⇒ N+1 total executions
+	// (fail#N+1 dead-letters). A Schedule/Ack Redis error returns
 	// without Ack so the leased member stays in dq:processing for the recoverer —
 	// never Ack before the event terminates. Used by the delivery-failure branch
 	// below and the two infra-error paths (missing body ref, request build) so a
@@ -185,13 +194,25 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		if p.Attempt > int(row.MaxRetries) {
 			_ = h.Queries.MarkEventFailed(ctx, row.ID)
 			// DeadLetter is terminal (it ZREMs from processing itself, so no Ack).
-			// On error, leave the event leased so the recoverer redelivers it.
-			return h.Queue.DeadLetter(ctx, raw)
+			// On error, leave the event leased so the recoverer redelivers it —
+			// so count the outcome only once the dead-letter actually commits,
+			// otherwise a replay would double-count this terminal failure.
+			if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+				return err
+			}
+			metrics.Delivery(destID, connID, "failed")
+			metrics.Attempt(connID, "deadletter")
+			return nil
 		}
 		delay := RetryDelay(connFromRow(row), p.Attempt)
 		if err := h.Queue.Schedule(ctx, p, time.Now().Add(delay).UnixMilli()); err != nil {
 			return err // leave in processing; recoverer will retry
 		}
+		// Count only after the retry is durably scheduled — a Schedule error
+		// above leaves the event leased for the recoverer, and counting before
+		// it would double-count on replay.
+		metrics.Delivery(destID, connID, "error")
+		metrics.Attempt(connID, "retry")
 		return h.Queue.Ack(ctx, raw)
 	}
 
@@ -225,6 +246,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	start := time.Now()
 	resp, doErr := h.HTTP.Do(httpReq)
 	dur := time.Since(start)
+	metrics.DeliveryDuration(destID, dur)
 
 	var (
 		respStatus  *int32
@@ -247,6 +269,8 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		return failAttempt()
 	}
 
+	metrics.Delivery(destID, connID, "delivered")
+	metrics.Attempt(connID, "success")
 	_ = h.Queries.MarkEventDelivered(ctx, row.ID)
 	return h.Queue.Ack(ctx, raw)
 }

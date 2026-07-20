@@ -9,6 +9,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // newSafeHTTPClient returns an http.Client for outbound webhook delivery whose
@@ -42,16 +45,22 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 			return nil
 		},
 	}
+	base := &http.Transport{
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &http.Client{
 		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext:           dialer.DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+		// Trace the outbound call locally, but inject NO propagation headers: a
+		// no-op propagator stops dstream's internal traceparent/tracestate (and
+		// baggage) from leaking to customer-controlled destination URLs. The span
+		// is still recorded on our side.
+		Transport: otelhttp.NewTransport(base,
+			otelhttp.WithPropagators(propagation.NewCompositeTextMapPropagator())),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")

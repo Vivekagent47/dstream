@@ -28,6 +28,7 @@ That single command builds and starts everything:
 | `migrate`  | **Runs DB migrations automatically**, then exits | —       |
 | `postgres` | State of record                                 | host :5433 |
 | `redis`    | Queue + rate limit + cache                      | :6379   |
+| `jaeger`   | Trace collector + UI (OpenTelemetry)            | http://localhost:16686 |
 
 **Migrations are automatic** — the `migrate` service runs on every `up` and `server`/`worker` wait for it to finish, so the database is always current. You never run a migrate command by hand.
 
@@ -37,6 +38,18 @@ Check it's healthy:
 docker compose -f deploy/docker/docker-compose.yml ps
 docker compose -f deploy/docker/docker-compose.yml logs -f server
 ```
+
+Traces: with the dev stack up, open the Jaeger UI at http://localhost:16686 and
+select the `dstream` service to see a webhook's ingest→queue→delivery trace.
+Tracing is off by default (`DSTREAM_TRACING_ENABLED`); the compose stack turns it
+on and points it at the `jaeger` service. If you enable tracing without a
+reachable OTLP collector, the server/worker still start but log periodic span
+export errors — expected, not a crash.
+
+Metrics: `/metrics` (Prometheus text format) is gated to super-admins because it
+exposes tenant ids and names. It is therefore browse-only in Phase 1 — a logged-in
+super-admin can view it, but no automated scraper ships in the dev stack (a stock
+Prometheus can't present the session cookie).
 
 ### Sign in
 
@@ -162,7 +175,7 @@ Combined positioning: **the dev IDE for webhooks** — OSS-first, self-hostable 
    ┌─────────┐   store request+body    ┌──────────┐
    │ ingest  │ ──────────────────────► │ Postgres │
    └────┬────┘   dedup + enqueue       └──────────┘
-        │  asynq task
+        │  fair-queue task
         ▼
    ┌─────────┐   ┌────────────────────────────────────────┐
    │  Redis  │◄──│ worker: rate-limit → deliver → retry     │
@@ -170,13 +183,13 @@ Combined positioning: **the dev IDE for webhooks** — OSS-first, self-hostable 
    └─────────┘   │   └─ CLI tunnel (WebSocket to your laptop)│
                  └────────────────────────────────────────┘
         ▲
-   dashboard (:3000) + admin queue UI (/admin/queues)
+   dashboard (:3000) + admin queue stats (/admin/queues)
 ```
 
 One Go binary, several subcommands (`server`, `worker`, `cli`, `migrate`, `admin`) — a **modular monolith**. Self-hosters run one container set; scale by running more `server`/`worker` replicas of the same image.
 
 - **Backend:** Go, chi router, sqlc-generated Postgres access, Atlas-managed migrations.
-- **Queue:** Redis via `hibiken/asynq` (retries, scheduling, dead-letter) + `asynqmon` ops UI at `/admin/queues`.
+- **Queue:** a custom Redis-backed per-org fair scheduler (`internal/dqueue`) — round-robin across orgs, at-least-once via a processing lease + recoverer, own retry/backoff + dead-letter. Aggregate queue stats at `/admin/queues`.
 - **Frontend:** Tanstack Start (React 19, Vite, Tailwind).
 - **Storage:** request bodies in Postgres (`bytea`) behind a `BodyStore` interface (object-store backend can drop in later). Postgres 18 for native `uuidv7()` — time-ordered ids keep insert-heavy tables clustered.
 
@@ -193,11 +206,30 @@ All config is via environment variables in `.env` (copied from `.env.example`). 
 | `DSTREAM_COOKIE_SECURE` | `false` (in example) | `false` for local HTTP; **set true behind TLS** (server refuses to boot insecure on a non-localhost URL). |
 | `DSTREAM_ALLOW_PRIVATE_DESTINATIONS` | `false` | Keep `false`: outbound delivery blocks loopback/private/metadata IPs (SSRF guard). Only enable on trusted self-host that delivers to private ranges. |
 | `DSTREAM_INGEST_RATE_LIMIT_RPS` | `100` | Per-source ingest rate limit (`0` disables). |
-| `DSTREAM_WORKER_CONCURRENCY` | `50` | Delivery worker pool size. |
+| `DSTREAM_WORKER_CONCURRENCY` | `50` | Delivery worker pool size (goroutines per worker process). |
+| `DSTREAM_WORKER_PER_ORG_MAX_INFLIGHT` | `0` (off) | Max concurrent in-flight deliveries per org, **fleet-wide**. Set `>0` (e.g. `20`) in multi-tenant deployments so one org can't monopolize the worker pool. |
 | `DSTREAM_MAGIC_LINK_TTL` | `15m` | Sign-in link validity. |
 | `DSTREAM_DB_URL`, `DSTREAM_REDIS_ADDR` | local defaults | Overridden automatically inside Docker to the in-network services. |
 
 For production: set a real `DSTREAM_SESSION_SECRET`, `DSTREAM_DEV_MODE=false`, `DSTREAM_COOKIE_SECURE=true`, and a non-localhost `DSTREAM_PUBLIC_BASE_URL` (served over TLS).
+
+### Scaling workers
+
+Delivery scales horizontally — run more `worker` processes. They all drain the
+**same Redis fair queue**, and dequeue is a single atomic Lua script, so each
+task is processed by **exactly one** worker; no double-processing, no locks, no
+coordination to configure.
+
+```bash
+# run 3 worker replicas of the same image
+docker compose -f deploy/docker/docker-compose.yml up -d --scale worker=3
+```
+
+- **Total throughput** = `replicas × DSTREAM_WORKER_CONCURRENCY` (e.g. 3 × 50 = 150 concurrent deliveries).
+- **No leader election needed.** Each worker runs the scheduler + recoverer loops; they're idempotent (atomic Lua), so running them on every replica is safe.
+- **Per-org fairness and the per-org cap are fleet-wide.** The round-robin ring and the `DSTREAM_WORKER_PER_ORG_MAX_INFLIGHT` counter live in Redis, so they're enforced across *all* replicas combined — size the cap against the total pool (`replicas × concurrency`), not per node.
+- **At-least-once across restarts.** If a worker crashes mid-delivery, its in-flight events are re-delivered by the recoverer once their lease expires; destinations should dedupe on the `Dstream-Event-Id` header. Shut down with `SIGTERM` (`docker compose stop`) for a graceful drain.
+- **Kubernetes / other orchestrators:** same idea — scale the `worker` Deployment's replica count. All replicas share one Redis + Postgres; nothing is pinned to a node.
 
 ---
 
@@ -235,9 +267,9 @@ cmd/dstream/      CLI entry — server | worker | cli | migrate | admin
 internal/
   ingest/         HTTP receiver, dedup, signature verify, enqueue, body store
   deliver/        HTTP delivery, retry policy, rate limit, SSRF guard, reaper
-  queue/          asynq client + task payloads
+  dqueue/         Redis per-org fair-scheduling delivery queue (Lua + client)
   api/            REST API (sources, destinations, connections, events, CLI tunnel)
-  admin/          /admin/* routes (asynqmon + admin pages)
+  admin/          /admin/* routes (overview, orgs, queue stats)
   auth/           API keys, signed sessions, magic links, CSRF, middleware
   store/          sqlc-generated Postgres access
   config/ logging/  Viper config, slog

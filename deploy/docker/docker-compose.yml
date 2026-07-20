@@ -35,6 +35,13 @@ services:
       timeout: 5s
       retries: 10
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP receiver
+    restart: unless-stopped
+
   # --- application ---
   # All three build the same image from the repo-root Dockerfile and load
   # config from the repo-root .env, then override the host-style addresses
@@ -65,12 +72,16 @@ services:
     environment:
       DSTREAM_DB_URL: postgres://dstream:dstream@postgres:5432/dstream?sslmode=disable
       DSTREAM_REDIS_ADDR: redis:6379
+      DSTREAM_TRACING_ENABLED: "true"
+      DSTREAM_TRACING_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
+        condition: service_started
+      jaeger:
         condition: service_started
     restart: unless-stopped
 
@@ -83,10 +94,14 @@ services:
     environment:
       DSTREAM_DB_URL: postgres://dstream:dstream@postgres:5432/dstream?sslmode=disable
       DSTREAM_REDIS_ADDR: redis:6379
+      DSTREAM_TRACING_ENABLED: "true"
+      DSTREAM_TRACING_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
+        condition: service_started
+      jaeger:
         condition: service_started
     restart: unless-stopped
 

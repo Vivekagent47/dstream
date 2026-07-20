@@ -62,3 +62,18 @@ func TestLoad_SMTPHostBinding(t *testing.T) {
 		t.Fatalf("SMTP.Host got %q", c.SMTP.Host)
 	}
 }
+
+// Regression: tracing.otlp_endpoint must bind from env. viper's AutomaticEnv
+// only reads env for keys with a registered default/BindEnv, so without the
+// SetDefault for this key the value is silently dropped and the exporter falls
+// back to localhost — breaking compose's http://jaeger:4318 override.
+func TestLoad_TracingOTLPEndpointBinding(t *testing.T) {
+	t.Setenv("DSTREAM_TRACING_OTLP_ENDPOINT", "http://jaeger:4318")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Tracing.OTLPEndpoint != "http://jaeger:4318" {
+		t.Fatalf("OTLPEndpoint got %q want %q", c.Tracing.OTLPEndpoint, "http://jaeger:4318")
+	}
+}

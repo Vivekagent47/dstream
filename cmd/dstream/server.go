@@ -24,8 +24,12 @@ import (
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/logging"
+	"github.com/Vivekagent47/dstream/internal/metrics"
 	mw "github.com/Vivekagent47/dstream/internal/middleware"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/tracing"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // isLocalBaseURL reports whether raw points at a loopback host, used to allow
@@ -69,12 +73,27 @@ func serverCmd() *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
+			tshutdown, err := tracing.Init(ctx, tracing.Config{
+				Enabled:      cfg.Tracing.Enabled,
+				OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
+				ServiceName:  cfg.Tracing.ServiceName,
+				SampleRatio:  cfg.Tracing.SampleRatio,
+			})
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tshutdown(context.Background()) }()
+			if cfg.Tracing.Enabled {
+				log.Info("tracing enabled", "otlp_endpoint", cfg.Tracing.OTLPEndpoint, "sample_ratio", cfg.Tracing.SampleRatio)
+			}
+
 			pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
 			if err != nil {
 				return err
 			}
 			defer pool.Close()
 			q := store.New(pool)
+			metrics.Reg.MustRegister(metrics.NewCollector(q, log))
 
 			rdb := redis.NewClient(&redis.Options{
 				Addr:     cfg.Redis.Addr,
@@ -99,6 +118,7 @@ func serverCmd() *cobra.Command {
 			r := chi.NewRouter()
 			r.Use(middleware.RequestID)
 			r.Use(realIP)
+			r.Use(metrics.HTTPMiddleware)
 			r.Use(middleware.Recoverer)
 			// 30s deadline applies to every request EXCEPT long-lived
 			// websockets — those handlers detach from r.Context() onto a
@@ -113,6 +133,7 @@ func serverCmd() *cobra.Command {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("ready"))
 			})
+			r.With(auth.SuperAdminOnly(q, signer)).Handle("/metrics", metrics.Handler())
 
 			ih := &ingest.Handler{
 				Log:            log,
@@ -151,7 +172,7 @@ func serverCmd() *cobra.Command {
 
 			srv := &http.Server{
 				Addr:              cfg.HTTPAddr,
-				Handler:           r,
+				Handler:           otelhttp.NewHandler(r, "http.server"),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 

@@ -235,7 +235,7 @@ CREATE TABLE request_bodies (
 
 -- events: the unit of delivery — one per (request × enabled connection) at
 -- ingest fan-out. Tracks the delivery lifecycle; each concrete try is an
--- attempts row. asynq drives state via the deliveries queue.
+-- attempts row. The delivery worker drives state via the fair per-org queue.
 CREATE TABLE events (
     id              UUID PRIMARY KEY DEFAULT uuidv7(),
     request_id      UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,

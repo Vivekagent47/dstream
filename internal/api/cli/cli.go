@@ -17,6 +17,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/ingest"
+	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -119,6 +120,9 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	metrics.CLIConnected()
+	disconnectReason := "closed"
+	defer func() { metrics.CLIDisconnected(disconnectReason) }()
 	conn.SetReadLimit(cliReadLimit)
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 
@@ -144,6 +148,7 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 	sessionKey := SessionKey(sid)
 	if err := d.Redis.Set(ctx, sessionKey, "active", cliSessionTTL).Err(); err != nil {
 		d.Log.Error("cli: register session", "err", err)
+		disconnectReason = "register_failed"
 		return
 	}
 	defer d.Redis.Del(context.Background(), sessionKey)
@@ -249,6 +254,8 @@ func (d Handlers) dispatchEventToCLI(
 		d.Log.Error("cli dispatch: load event", "err", err)
 		return
 	}
+	destID := store.GoUUID(row.DestinationID)
+	connID := store.GoUUID(row.ConnectionID)
 	body, err := bs.Get(ctx, row.BodyRef)
 	if err != nil {
 		d.Log.Error("cli dispatch: body", "err", err)
@@ -271,7 +278,7 @@ func (d Handlers) dispatchEventToCLI(
 		"body":     body,
 	}
 	if err := writeFn(frame); err != nil {
-		d.recordCLIFailure(ctx, row.ID, row.AttemptCount+1, err)
+		d.recordCLIFailure(ctx, destID, connID, row.ID, row.AttemptCount+1, err)
 		return
 	}
 
@@ -280,7 +287,7 @@ func (d Handlers) dispatchEventToCLI(
 	case <-ctx.Done():
 		return
 	case <-time.After(35 * time.Second):
-		d.recordCLIFailure(ctx, row.ID, row.AttemptCount+1, fmt.Errorf("cli response timeout"))
+		d.recordCLIFailure(ctx, destID, connID, row.ID, row.AttemptCount+1, fmt.Errorf("cli response timeout"))
 		return
 	case resp := <-ch:
 		dur := int32(time.Since(start) / time.Millisecond)
@@ -315,13 +322,19 @@ func (d Handlers) dispatchEventToCLI(
 		}
 		if errStr == "" && status >= 200 && status < 300 {
 			_ = d.Queries.MarkEventDelivered(ctx, row.ID)
+			metrics.Delivery(destID, connID, "delivered")
+			metrics.Attempt(connID, "success")
 		} else {
 			_ = d.Queries.MarkEventFailed(ctx, row.ID)
+			// CLI deliveries are terminal (no retry budget), so a bad response is
+			// a dead-letter-equivalent outcome.
+			metrics.Delivery(destID, connID, "failed")
+			metrics.Attempt(connID, "deadletter")
 		}
 	}
 }
 
-func (d Handlers) recordCLIFailure(ctx context.Context, eventID pgtype.UUID, attemptNum int32, deliverErr error) {
+func (d Handlers) recordCLIFailure(ctx context.Context, destID, connID uuid.UUID, eventID pgtype.UUID, attemptNum int32, deliverErr error) {
 	msg := deliverErr.Error()
 	if _, err := d.Queries.CreateAttempt(ctx, store.CreateAttemptParams{
 		EventID:      eventID,
@@ -331,6 +344,8 @@ func (d Handlers) recordCLIFailure(ctx context.Context, eventID pgtype.UUID, att
 		d.Log.Error("cli dispatch: record failure", "err", err)
 	}
 	_ = d.Queries.MarkEventFailed(ctx, eventID)
+	metrics.Delivery(destID, connID, "failed")
+	metrics.Attempt(connID, "deadletter")
 }
 
 // pendingMap correlates outbound event frames with the response frames that

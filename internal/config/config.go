@@ -40,6 +40,8 @@ type Config struct {
 	Redis  RedisConfig  `mapstructure:"redis"`
 	Worker WorkerConfig `mapstructure:"worker"`
 	SMTP   SMTPConfig   `mapstructure:"smtp"`
+
+	Tracing TracingConfig `mapstructure:"tracing"`
 }
 
 type DBConfig struct {
@@ -64,6 +66,13 @@ type SMTPConfig struct {
 	User string `mapstructure:"user"`
 	Pass string `mapstructure:"pass"`
 	From string `mapstructure:"from"`
+}
+
+type TracingConfig struct {
+	Enabled      bool    `mapstructure:"enabled"`
+	OTLPEndpoint string  `mapstructure:"otlp_endpoint"`
+	ServiceName  string  `mapstructure:"service_name"`
+	SampleRatio  float64 `mapstructure:"sample_ratio"`
 }
 
 func Load() (Config, error) {
@@ -103,6 +112,15 @@ func Load() (Config, error) {
 	v.SetDefault("smtp.user", "")
 	v.SetDefault("smtp.pass", "")
 	v.SetDefault("smtp.from", "noreply@localhost")
+
+	v.SetDefault("tracing.enabled", false)
+	// Empty default is load-bearing: viper's AutomaticEnv+Unmarshal only reads
+	// env for keys it already knows (from a default/BindEnv). Without this line
+	// DSTREAM_TRACING_OTLP_ENDPOINT is silently ignored and the exporter falls
+	// back to localhost:4318 — so compose's http://jaeger:4318 never takes.
+	v.SetDefault("tracing.otlp_endpoint", "")
+	v.SetDefault("tracing.service_name", "dstream")
+	v.SetDefault("tracing.sample_ratio", 1.0)
 
 	var c Config
 	if err := v.Unmarshal(&c, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(

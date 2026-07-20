@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -62,6 +63,7 @@ func (d Handlers) RequestMagicLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if res.Allowed == 0 {
+			metrics.MagicLink("rate_limited")
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
 			httpx.Err(w, http.StatusTooManyRequests, "too many requests")
 			return
@@ -70,9 +72,11 @@ func (d Handlers) RequestMagicLink(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.IssueMagicLink(r.Context(), d.Queries, email, magicLinkTTL)
 	if err != nil {
+		metrics.MagicLink("issue_error")
 		d.Log.Error("auth: issue magic link", "err", err, "email", email)
 		// still return 202 to avoid leaking the failure mode
 	} else {
+		metrics.MagicLink("issued")
 		// TODO(phase-1.4): send email via SMTP. The plaintext token is
 		// logged ONLY in dev mode — in prod the log is an audit-bypass
 		// vector (anyone with log-read access could grab the link, click
@@ -119,9 +123,11 @@ func (d Handlers) VerifyMagicLink(w http.ResponseWriter, r *http.Request) {
 	}
 	u, orgID, err := auth.ConsumeMagicLink(r.Context(), d.Pool, d.Queries, token)
 	if err != nil {
+		metrics.MagicLink("verify_failed")
 		httpx.Err(w, http.StatusUnauthorized, "invalid or expired link")
 		return
 	}
+	metrics.MagicLink("verified")
 	d.Signer.Issue(w, store.GoUUID(u.ID), orgID, int64(u.SessionEpoch))
 	w.WriteHeader(http.StatusNoContent)
 }

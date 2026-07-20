@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/exaring/otelpgx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +18,7 @@ func NewPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 	if maxConns > 0 {
 		cfg.MaxConns = int32(maxConns)
 	}
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect db: %w", err)
