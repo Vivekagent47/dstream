@@ -242,14 +242,6 @@ function ConnectionsPage() {
             <SelectItem value="disabled">Disabled</SelectItem>
           </SelectContent>
         </Select>
-        <Select value="source" onValueChange={() => {}}>
-          <SelectTrigger className="w-[160px]">
-            <SelectValue>{() => 'Group by Source'}</SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="source">Group by Source</SelectItem>
-          </SelectContent>
-        </Select>
         <Select value={order} onValueChange={(v) => setOrder(v as 'newest' | 'oldest')}>
           <SelectTrigger className="ml-auto w-[170px]">
             <SelectValue>
