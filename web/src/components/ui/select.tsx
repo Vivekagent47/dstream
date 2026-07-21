@@ -35,7 +35,19 @@ const SelectContent = React.forwardRef<
   }
 >(({ className, popupClassName, children, ...props }, ref) => (
   <BaseSelect.Portal>
-    <BaseSelect.Positioner ref={ref} className={cn('z-50', className)} sideOffset={4} {...props}>
+    <BaseSelect.Positioner
+      ref={ref}
+      className={cn('z-50', className)}
+      // Default (true) overlays the popup on the trigger and shifts it so the
+      // selected item sits over the trigger — so a mid-list selection pushes the
+      // popup up over the header. Anchor it below the trigger like a normal
+      // dropdown instead.
+      alignItemWithTrigger={false}
+      side="bottom"
+      align="start"
+      sideOffset={4}
+      {...props}
+    >
       <BaseSelect.Popup
         className={cn(
           'max-h-(--available-height) min-w-(--anchor-width) overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md',
