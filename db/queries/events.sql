@@ -327,3 +327,38 @@ SELECT
   (SELECT count(*) FROM events e
    JOIN requests r ON r.id = e.request_id
    WHERE r.source_id = @source_id AND e.created_at >= @after::timestamptz)::bigint AS events;
+
+-- name: HotDestinations :many
+-- Cross-tenant (super-admin console): destinations with delivery failures in the
+-- last 24h, worst first. total/failed let the handler compute a failure rate.
+-- Only destinations that actually failed are returned (HAVING).
+SELECT d.id                                                        AS destination_id,
+       d.name                                                      AS destination_name,
+       count(*)::bigint                                            AS total,
+       count(*) FILTER (WHERE e.status IN ('failed', 'dead'))::bigint AS failed
+FROM events e
+JOIN connections c ON c.id = e.connection_id
+JOIN destinations d ON d.id = c.destination_id
+WHERE e.created_at >= now() - interval '24 hours'
+GROUP BY d.id, d.name
+HAVING count(*) FILTER (WHERE e.status IN ('failed', 'dead')) > 0
+ORDER BY failed DESC, total DESC
+LIMIT 20;
+
+-- name: AdminEventsSince :one
+-- Cross-tenant event throughput for the super-admin overview (count since @since).
+SELECT count(*)::bigint FROM events WHERE created_at >= @since::timestamptz;
+
+-- name: AdminTopSources :many
+-- Cross-tenant top sources by event volume since @since (source reached via the
+-- originating request), for the super-admin overview.
+SELECT s.id            AS source_id,
+       s.name          AS source_name,
+       count(*)::bigint AS events
+FROM events e
+JOIN requests r ON r.id = e.request_id
+JOIN sources s ON s.id = r.source_id
+WHERE e.created_at >= @since::timestamptz
+GROUP BY s.id, s.name
+ORDER BY events DESC
+LIMIT 5;

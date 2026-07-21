@@ -252,6 +252,9 @@ export interface AuditFilters {
 export interface AdminOverview {
   organizations: number
   users: number
+  events_24h: number
+  events_per_min: number
+  top_sources: { source_id: string; source_name: string; events: number }[]
 }
 
 export interface AdminQueueStats {
@@ -260,6 +263,26 @@ export interface AdminQueueStats {
   processing: number
   dead: number
   top_orgs: { org_id: string; pending: number }[]
+}
+
+export interface AdminHotDestination {
+  destination_id: string
+  destination_name: string
+  total: number
+  failed: number
+  failure_rate: number
+}
+
+export interface AdminSystem {
+  version: string
+  postgres: {
+    total_conns: number
+    acquired_conns: number
+    idle_conns: number
+    max_conns: number
+  }
+  redis_info: string
+  queue_deliveries_name: string
 }
 
 export const api = {
@@ -323,6 +346,9 @@ export const api = {
   adminOverview: () => http.get<AdminOverview>('/admin/overview').then((r) => r.data),
   adminOrgs: () => http.get<Org[]>('/admin/orgs').then((r) => r.data),
   adminQueues: () => http.get<AdminQueueStats>('/admin/queues').then((r) => r.data),
+  adminHotDestinations: () =>
+    http.get<AdminHotDestination[]>('/admin/destinations/hot').then((r) => r.data),
+  adminSystem: () => http.get<AdminSystem>('/admin/system').then((r) => r.data),
 
   // Sources
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
@@ -404,6 +430,8 @@ export const qk = {
   adminOverview: () => ['admin', 'overview'] as const,
   adminOrgs: () => ['admin', 'orgs'] as const,
   adminQueues: () => ['admin', 'queues'] as const,
+  adminHotDestinations: () => ['admin', 'destinations', 'hot'] as const,
+  adminSystem: () => ['admin', 'system'] as const,
   orgs: () => ['orgs'] as const,
   members: (org_id: string) => ['members', org_id] as const,
   invites: (org_id: string) => ['invites', org_id] as const,

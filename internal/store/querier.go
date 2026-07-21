@@ -12,6 +12,11 @@ import (
 
 type Querier interface {
 	AddOrgMember(ctx context.Context, arg AddOrgMemberParams) error
+	// Cross-tenant event throughput for the super-admin overview (count since @since).
+	AdminEventsSince(ctx context.Context, since pgtype.Timestamptz) (int64, error)
+	// Cross-tenant top sources by event volume since @since (source reached via the
+	// originating request), for the super-admin overview.
+	AdminTopSources(ctx context.Context, since pgtype.Timestamptz) ([]AdminTopSourcesRow, error)
 	// Invalidate all of a user's outstanding signed session cookies by advancing
 	// their epoch. Used by logout (logout-all) and future disable/security flows.
 	BumpUserSessionEpoch(ctx context.Context, id pgtype.UUID) error
@@ -127,6 +132,10 @@ type Querier interface {
 	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	// Cross-tenant (super-admin console): destinations with delivery failures in the
+	// last 24h, worst first. total/failed let the handler compute a failure rate.
+	// Only destinations that actually failed are returned (HAVING).
+	HotDestinations(ctx context.Context) ([]HotDestinationsRow, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
 	ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error)

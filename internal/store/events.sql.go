@@ -11,6 +11,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adminEventsSince = `-- name: AdminEventsSince :one
+SELECT count(*)::bigint FROM events WHERE created_at >= $1::timestamptz
+`
+
+// Cross-tenant event throughput for the super-admin overview (count since @since).
+func (q *Queries) AdminEventsSince(ctx context.Context, since pgtype.Timestamptz) (int64, error) {
+	row := q.db.QueryRow(ctx, adminEventsSince, since)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const adminTopSources = `-- name: AdminTopSources :many
+SELECT s.id            AS source_id,
+       s.name          AS source_name,
+       count(*)::bigint AS events
+FROM events e
+JOIN requests r ON r.id = e.request_id
+JOIN sources s ON s.id = r.source_id
+WHERE e.created_at >= $1::timestamptz
+GROUP BY s.id, s.name
+ORDER BY events DESC
+LIMIT 5
+`
+
+type AdminTopSourcesRow struct {
+	SourceID   pgtype.UUID `json:"source_id"`
+	SourceName string      `json:"source_name"`
+	Events     int64       `json:"events"`
+}
+
+// Cross-tenant top sources by event volume since @since (source reached via the
+// originating request), for the super-admin overview.
+func (q *Queries) AdminTopSources(ctx context.Context, since pgtype.Timestamptz) ([]AdminTopSourcesRow, error) {
+	rows, err := q.db.Query(ctx, adminTopSources, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminTopSourcesRow{}
+	for rows.Next() {
+		var i AdminTopSourcesRow
+		if err := rows.Scan(&i.SourceID, &i.SourceName, &i.Events); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimStuckEvents = `-- name: ClaimStuckEvents :many
 UPDATE events
    SET status = 'queued', next_retry_at = now(), updated_at = now()
@@ -636,6 +689,56 @@ func (q *Queries) GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) 
 		&i.IsTest,
 	)
 	return i, err
+}
+
+const hotDestinations = `-- name: HotDestinations :many
+SELECT d.id                                                        AS destination_id,
+       d.name                                                      AS destination_name,
+       count(*)::bigint                                            AS total,
+       count(*) FILTER (WHERE e.status IN ('failed', 'dead'))::bigint AS failed
+FROM events e
+JOIN connections c ON c.id = e.connection_id
+JOIN destinations d ON d.id = c.destination_id
+WHERE e.created_at >= now() - interval '24 hours'
+GROUP BY d.id, d.name
+HAVING count(*) FILTER (WHERE e.status IN ('failed', 'dead')) > 0
+ORDER BY failed DESC, total DESC
+LIMIT 20
+`
+
+type HotDestinationsRow struct {
+	DestinationID   pgtype.UUID `json:"destination_id"`
+	DestinationName string      `json:"destination_name"`
+	Total           int64       `json:"total"`
+	Failed          int64       `json:"failed"`
+}
+
+// Cross-tenant (super-admin console): destinations with delivery failures in the
+// last 24h, worst first. total/failed let the handler compute a failure rate.
+// Only destinations that actually failed are returned (HAVING).
+func (q *Queries) HotDestinations(ctx context.Context) ([]HotDestinationsRow, error) {
+	rows, err := q.db.Query(ctx, hotDestinations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HotDestinationsRow{}
+	for rows.Next() {
+		var i HotDestinationsRow
+		if err := rows.Scan(
+			&i.DestinationID,
+			&i.DestinationName,
+			&i.Total,
+			&i.Failed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listEvents = `-- name: ListEvents :many

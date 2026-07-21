@@ -166,9 +166,9 @@ func serverCmd() *cobra.Command {
 				Redis:   rdb,
 				Signer:  signer,
 				Queue:   dq,
+				Pool:    pool,
+				Version: version,
 			})
-
-			// TODO(phase-1.4 follow-up): mount /web/* dashboard.
 
 			srv := &http.Server{
 				Addr:              cfg.HTTPAddr,
