@@ -11,14 +11,10 @@ import (
 )
 
 func NewPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+	cfg, err := poolConfig(dsn, maxConns)
 	if err != nil {
-		return nil, fmt.Errorf("parse db dsn: %w", err)
+		return nil, err
 	}
-	if maxConns > 0 {
-		cfg.MaxConns = int32(maxConns)
-	}
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect db: %w", err)
@@ -28,6 +24,28 @@ func NewPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
 	return pool, nil
+}
+
+// poolConfig builds the pgxpool config. Split out from NewPool so the session
+// settings (notably the UTC timezone pin) are unit-testable without a live DB.
+func poolConfig(dsn string, maxConns int) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse db dsn: %w", err)
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = int32(maxConns)
+	}
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	// Force every pooled connection's session timezone to UTC so 2-arg
+	// date_trunc(unit, ts) buckets align to UTC midnight, matching the Go
+	// handlers that label those buckets .UTC(). Without this, a dev Postgres
+	// whose session TZ ≠ UTC (e.g. IST) misaligns/mislabels chart dates (audit #7).
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["timezone"] = "UTC"
+	return cfg, nil
 }
 
 // UUID wraps a google/uuid.UUID into pgtype.UUID. uuid.Nil maps to SQL

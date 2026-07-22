@@ -158,7 +158,7 @@ func serverCmd() *cobra.Command {
 				PublicBaseURL:    cfg.PublicBaseURL,
 				DevMode:          cfg.DevMode,
 				EvictSourceCache: ih.InvalidateSource,
-			}, mw.CSRF(cfg.CookieSecure))
+			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{
 				Log:     log,
@@ -171,9 +171,19 @@ func serverCmd() *cobra.Command {
 			})
 
 			srv := &http.Server{
-				Addr:              cfg.HTTPAddr,
-				Handler:           otelhttp.NewHandler(r, "http.server"),
+				Addr:    cfg.HTTPAddr,
+				Handler: otelhttp.NewHandler(r, "http.server"),
+				// ReadHeaderTimeout guards the header phase; ReadTimeout caps the
+				// whole request read (headers + body) so a slow-loris trickling a
+				// sub-5MiB body 1 B/s can't tie up a goroutine/FD indefinitely —
+				// middleware.Timeout(30s) only cancels ctx, it can't interrupt the
+				// socket read. 60s comfortably covers a legit 5 MiB body upload.
+				// No WriteTimeout: the CLI tunnel is a long-lived WebSocket served
+				// through this same server (otelhttp-wrapped chi router), and a
+				// WriteTimeout would abort its writes and kill the tunnel; ReadTimeout
+				// does not affect an already-upgraded connection's writes.
 				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       60 * time.Second,
 			}
 
 			errCh := make(chan error, 1)

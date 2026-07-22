@@ -96,10 +96,18 @@ if tonumber(redis.call('LLEN', pkey)) > 0 then redis.call('RPUSH', p..':orgs', o
 return evt
 `)
 
-// deadLetterScript: terminate an event — move it from processing to the dead list.
+// deadListCap bounds <p>:dead to the most recent N entries. The dead list is a
+// debug tail only — the authoritative terminal state is in Postgres
+// (MarkEventFailed) — so without a cap it would accumulate forever and OOM Redis.
+const deadListCap = 10000
+
+// deadLetterScript: terminate an event — move it from processing to the dead
+// list, then LTRIM the dead list to its most recent deadListCap entries (ARGV[3])
+// so it stays a bounded debug tail rather than growing without bound.
 var deadLetterScript = redis.NewScript(`
 local p = ARGV[1]
 redis.call('RPUSH', p..':dead', ARGV[2])
+redis.call('LTRIM', p..':dead', -tonumber(ARGV[3]), -1)
 redis.call('ZREM', p..':processing', ARGV[2])
 return 1
 `)
@@ -193,7 +201,7 @@ func (c *Client) Ack(ctx context.Context, raw string) error {
 
 // DeadLetter terminates an event: move it from processing to the dead list.
 func (c *Client) DeadLetter(ctx context.Context, raw string) error {
-	return deadLetterScript.Run(ctx, c.rdb, nil, c.prefix, raw).Err()
+	return deadLetterScript.Run(ctx, c.rdb, nil, c.prefix, raw, deadListCap).Err()
 }
 
 // PromoteDue moves up to limit scheduled events whose time has come into the

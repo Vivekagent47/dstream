@@ -14,6 +14,16 @@ import (
 func RetryDelay(c store.Connection, attempt int) time.Duration {
 	base := time.Duration(c.RetryBaseMs) * time.Millisecond
 	cap := time.Duration(c.RetryCapMs) * time.Millisecond
+	// Floor misconfigured non-positive base/cap (the schema has no CHECK > 0): a
+	// 0 collapses every strategy's backoff to ~0, hammering the destination at
+	// the promote cadence. ponytail: small sane minimums (cap floor mirrors the
+	// schema default 1h).
+	if base <= 0 {
+		base = time.Second
+	}
+	if cap <= 0 {
+		cap = time.Hour
+	}
 
 	var d time.Duration
 	switch c.RetryStrategy {
@@ -37,6 +47,11 @@ func RetryDelay(c store.Connection, attempt int) time.Duration {
 		d = cap
 	}
 	d = applyJitter(d, int(c.RetryJitterPct))
+	// Re-clamp after jitter: positive jitter can push d above cap (up to 2x at
+	// pct=100), so cap must be reapplied to stay a hard ceiling.
+	if d > cap {
+		d = cap
+	}
 	if d < 0 {
 		d = 0
 	}
@@ -64,6 +79,10 @@ func customDelay(raw []byte, attempt int, fallback time.Duration) time.Duration 
 		return fallback
 	}
 	idx := attempt - 1
+	// Guard attempt<1 → schedule[-1] panic (callers pass attempt>=1 today).
+	if idx < 0 {
+		idx = 0
+	}
 	if idx >= len(schedule) {
 		idx = len(schedule) - 1
 	}

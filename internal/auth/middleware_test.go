@@ -168,6 +168,31 @@ func TestAuthenticate_Session_PopulatesPrincipal(t *testing.T) {
 	}
 }
 
+func TestAuthenticate_Session_UnknownUser_401(t *testing.T) {
+	pool := testPool(t)
+	q := store.New(pool)
+	s := newSigner(t)
+
+	// Sign a valid cookie for a user that does not exist. GetUserByID errors
+	// (pgx.ErrNoRows), so the epoch (revocation) check can't run — Authenticate
+	// must fail closed with 401, not serve the request (audit #4).
+	w := httptest.NewRecorder()
+	s.Issue(w, uuid.New(), uuid.New(), 0)
+	r := readSetCookie(t, w)
+
+	cap := &captured{}
+	mw := Authenticate(q, s)(cap.handler())
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want 401 (fail closed on unknown user)", rec.Code)
+	}
+	if cap.called {
+		t.Fatal("next handler was invoked; Authenticate failed open on lookup error")
+	}
+}
+
 func TestAuthenticate_NoCreds_401(t *testing.T) {
 	pool := testPool(t)
 	q := store.New(pool)

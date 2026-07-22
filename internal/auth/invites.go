@@ -74,18 +74,30 @@ func IssueOrgInvite(
 // NOT demote. Never lateral-moves between owner and admin via this path
 // (ownership changes go through the transfer flow).
 func ConsumeOrgInvite(
-	ctx context.Context, q *store.Queries,
+	ctx context.Context, pool TxBeginner, q *store.Queries,
 	token string, userID uuid.UUID,
 ) (store.GetActiveOrgInviteByTokenHashRow, error) {
+	// One transaction so lookup → add-member → mark-accepted serialize against a
+	// concurrent consumer of the same token. GetActiveOrgInviteByTokenHash is
+	// `FOR UPDATE OF i`, so a second consumer blocks on the invite row and, after
+	// this tx commits, re-evaluates `accepted_at IS NULL` to zero rows — enforcing
+	// single-use atomically. Mirrors ConsumeMagicLink (audit #21).
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return store.GetActiveOrgInviteByTokenHashRow{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit (ErrTxClosed swallowed)
+	qtx := q.WithTx(tx)
+
 	h := sha256.Sum256([]byte(token))
-	row, err := q.GetActiveOrgInviteByTokenHash(ctx, h[:])
+	row, err := qtx.GetActiveOrgInviteByTokenHash(ctx, h[:])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.GetActiveOrgInviteByTokenHashRow{}, ErrInvalidOrgInvite
 		}
 		return store.GetActiveOrgInviteByTokenHashRow{}, err
 	}
-	if err := q.AddOrgMember(ctx, store.AddOrgMemberParams{
+	if err := qtx.AddOrgMember(ctx, store.AddOrgMemberParams{
 		OrgID:  row.OrgID,
 		UserID: store.UUID(userID),
 		Role:   row.Role,
@@ -96,11 +108,14 @@ func ConsumeOrgInvite(
 		// Already a member. Upgrade existing role if the invite grants
 		// more privilege. We do NOT downgrade — a re-issued lower-role
 		// invite must not strip privilege the user already holds.
-		if err := upgradeMemberRole(ctx, q, row.OrgID, store.UUID(userID), Role(row.Role)); err != nil {
+		if err := upgradeMemberRole(ctx, qtx, row.OrgID, store.UUID(userID), Role(row.Role)); err != nil {
 			return store.GetActiveOrgInviteByTokenHashRow{}, err
 		}
 	}
-	if err := q.MarkOrgInviteAccepted(ctx, row.ID); err != nil {
+	if err := qtx.MarkOrgInviteAccepted(ctx, row.ID); err != nil {
+		return store.GetActiveOrgInviteByTokenHashRow{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return store.GetActiveOrgInviteByTokenHashRow{}, err
 	}
 	return row, nil

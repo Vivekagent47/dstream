@@ -13,10 +13,45 @@ import (
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
+// maxHistogramBuckets caps how many time buckets one histogram/metrics query may
+// span. Without it, a hand-crafted `after` far in the past plus a fine bucket
+// (e.g. minute) makes generate_series emit millions of rows, exhausting DB + API
+// memory (2026-07-21 audit #2). 1500 is far more points than any chart renders,
+// so clamping is invisible to the real UI and only bites a malicious caller.
+const maxHistogramBuckets = 1500
+
+// bucketInterval is the wall-clock width of one bucket of the given unit.
+func bucketInterval(bucket string) time.Duration {
+	switch bucket {
+	case "minute":
+		return time.Minute
+	case "day":
+		return 24 * time.Hour
+	case "week":
+		return 7 * 24 * time.Hour
+	default: // hour
+		return time.Hour
+	}
+}
+
+// clampAfter floors `after` so the window [after, now] spans at most
+// maxHistogramBuckets of the given bucket size, moving it forward if needed.
+func clampAfter(bucket string, after pgtype.Timestamptz) pgtype.Timestamptz {
+	if !after.Valid {
+		return after
+	}
+	earliest := time.Now().Add(-maxHistogramBuckets * bucketInterval(bucket))
+	if after.Time.Before(earliest) {
+		return pgtype.Timestamptz{Time: earliest, Valid: true}
+	}
+	return after
+}
+
 // parseMetricsWindow reads the `bucket` + `after` query params for the detail-
 // page metric endpoints. bucket defaults to hour; after defaults to the last 7
-// days. Both mirror the events histogram, so the graph and the summary numbers
-// cover the same window the UI's range picker selected.
+// days and is clamped to the bucket-count ceiling. Both mirror the events
+// histogram, so the graph and the summary numbers cover the same window the
+// UI's range picker selected.
 func parseMetricsWindow(r *http.Request) (bucket string, after pgtype.Timestamptz) {
 	bucket = r.URL.Query().Get("bucket")
 	switch bucket {
@@ -24,12 +59,13 @@ func parseMetricsWindow(r *http.Request) (bucket string, after pgtype.Timestampt
 	default:
 		bucket = "hour"
 	}
+	after = pgtype.Timestamptz{Time: time.Now().Add(-7 * 24 * time.Hour), Valid: true}
 	if v := r.URL.Query().Get("after"); v != "" {
 		if ts, err := time.Parse(time.RFC3339, v); err == nil {
-			return bucket, pgtype.Timestamptz{Time: ts, Valid: true}
+			after = pgtype.Timestamptz{Time: ts, Valid: true}
 		}
 	}
-	return bucket, pgtype.Timestamptz{Time: time.Now().Add(-7 * 24 * time.Hour), Valid: true}
+	return bucket, clampAfter(bucket, after)
 }
 
 // histBucket is one gap-filled time bucket with per-status counts, matching the
@@ -100,12 +136,18 @@ func (d Handlers) DestinationMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// delivery_rate/avg_latency are null (not 0) when there's nothing to average,
-	// so the UI can show "—" rather than a misleading 0%.
-	var deliveryRate, avgLatency *float64
+	// delivery_rate is null (not 0) when there are no events, so the UI shows
+	// "—" rather than a misleading 0%.
+	var deliveryRate *float64
 	if stats.Total > 0 {
 		rate := float64(stats.Delivered) / float64(stats.Total)
 		deliveryRate = &rate
+	}
+	// avg_latency is null when there were no completed (timed) attempts in the
+	// window — gated on the sample count, not Total, so events with zero finished
+	// attempts show "—" not a misleading 0 ms (audit N4).
+	var avgLatency *float64
+	if stats.LatencySamples > 0 {
 		lat := stats.AvgLatencyMs
 		avgLatency = &lat
 	}
@@ -152,6 +194,7 @@ func (d Handlers) SourceMetrics(w http.ResponseWriter, r *http.Request) {
 		Bucket:   bucket,
 		After:    after,
 		SourceID: store.UUID(id),
+		OrgID:    store.UUID(p.OrgID),
 	})
 	if err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "metrics")
@@ -160,6 +203,7 @@ func (d Handlers) SourceMetrics(w http.ResponseWriter, r *http.Request) {
 	stats, err := d.Queries.SourceRequestStats(r.Context(), store.SourceRequestStatsParams{
 		SourceID: store.UUID(id),
 		After:    after,
+		OrgID:    store.UUID(p.OrgID),
 	})
 	if err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "metrics")

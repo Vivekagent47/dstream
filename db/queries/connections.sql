@@ -11,11 +11,16 @@ SELECT * FROM connections
 WHERE source_id = $1 AND enabled = TRUE;
 
 -- name: ListConnectionsByOrg :many
+-- LIMIT is a safety bound against a pathological org, not paging: connections
+-- are inherently low-cardinality (≤ sources×destinations) and the dashboard
+-- filters/sorts them client-side, so 1000 never truncates a real org. Add
+-- keyset paging here + on the page if that assumption ever breaks (audit N8).
 SELECT c.*
   FROM connections c
   JOIN sources s ON s.id = c.source_id
  WHERE s.org_id = $1
- ORDER BY c.created_at DESC;
+ ORDER BY c.created_at DESC
+ LIMIT 1000;
 
 -- name: GetConnectionForOrg :one
 SELECT c.*

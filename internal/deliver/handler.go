@@ -23,11 +23,26 @@ import (
 const (
 	DeliveryTimeout = 30 * time.Second
 
-	// Reaper cadence + safety window. reapStuckAfter must exceed the delivery
-	// timeout AND the CLI response timeout so live deliveries are never reaped.
-	reapInterval   = 30 * time.Second
-	reapStuckAfter = 2 * time.Minute
-	reapBatch      = 100
+	// Reaper cadence + safety windows.
+	reapInterval = 30 * time.Second
+	reapBatch    = 100
+
+	// reapQueuedStuckAfter: how long an event may sit 'queued' before the reaper
+	// assumes its ingest Enqueue never made it onto the dqueue and re-queues it.
+	// It must comfortably exceed the delivery lease (150s) AND the rate-limit /
+	// in-flight defer churn: defer_ reschedules an event through the scheduled
+	// ZSET (roughly every second when a destination is rate-limited) while its
+	// Postgres status stays 'queued' and updated_at is NOT bumped, so a
+	// merely-slow or repeatedly-deferred event would otherwise be reaped into a
+	// duplicate copy. Ceiling: a destination rate-limited continuously for longer
+	// than this window still yields one duplicate re-enqueue per window — accepted
+	// under the at-least-once contract (the terminal-status guard in Process stops
+	// re-firing of events that already finished, but not of still-'queued' ones).
+	reapQueuedStuckAfter = 15 * time.Minute
+	// reapCliStuckAfter: a CLI 'in_flight' event whose tunnel died mid-flight has
+	// no other owner (dispatch already Ack'd the leased member), so the reaper is
+	// its only recovery path — keep this short. Must exceed the CLI response timeout.
+	reapCliStuckAfter = 2 * time.Minute
 
 	// cliWaitTimeout is how long a CLI-destined event keeps re-queuing while no
 	// tunnel is connected before it's discarded (terminal; manual retry only).
@@ -77,6 +92,17 @@ func New(
 	}
 }
 
+// isTerminalStatus reports whether an event has already reached an end state and
+// must never be delivered again. Mirrors the terminal writes in events.sql
+// (MarkEventDelivered/Failed/Discarded) plus the schema's 'dead'.
+func isTerminalStatus(s string) bool {
+	switch s {
+	case "delivered", "failed", "discarded", "dead":
+		return true
+	}
+	return false
+}
+
 // Process delivers one event picked off the fair queue. The payload arrives
 // already decoded; raw is the queue member Ack/DeadLetter operate on. At-least-
 // once: the event stays leased in dq:processing until this returns after a
@@ -91,6 +117,16 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	row, err := h.Queries.GetEventForDelivery(ctx, store.UUID(p.EventID))
 	if err != nil {
 		return fmt.Errorf("load event: %w", err)
+	}
+
+	// Idempotency guard: a terminal event that got re-injected must NOT re-fire.
+	// This happens when a terminal step's Ack/DeadLetter was lost (Redis blip) so
+	// the dqueue lease recoverer reinjected the already-finished event, or on any
+	// duplicate enqueue. Ack the leased copy and stop — the outcome is already
+	// recorded in Postgres. (The reaper never reclaims terminal rows, so it can't
+	// produce these; this covers the queue-lease recoverer and dupes.)
+	if isTerminalStatus(row.Status) {
+		return h.Queue.Ack(ctx, raw)
 	}
 
 	destID := store.GoUUID(row.DestinationID)
@@ -113,7 +149,12 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	if err := ValidateDestinationURL(*row.DestinationUrl); err != nil {
 		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
 		_ = h.Queries.MarkEventFailed(ctx, row.ID)
-		_ = h.Queue.DeadLetter(ctx, raw)
+		// DeadLetter is terminal (ZREMs from processing). On error, leave the
+		// event leased for the recoverer and count only after it commits — else a
+		// replay re-counts failed+deadletter each loop (mirrors failAttempt).
+		if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+			return err
+		}
 		metrics.Delivery(destID, connID, "failed")
 		metrics.Attempt(connID, "deadletter")
 		return nil
@@ -130,11 +171,16 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		n, err := inflightIncrScript.Run(ctx, h.Redis, []string{orgKey}, ttlSec).Int64()
 		if err == nil {
 			if n > int64(h.PerOrgMaxInflight) {
-				_, _ = h.Redis.Decr(ctx, orgKey).Result()
+				// bg ctx: a release must run even if the delivery ctx is cancelled,
+				// else go-redis rejects the Decr and the slot leaks until its TTL.
+				_, _ = h.Redis.Decr(context.Background(), orgKey).Result()
 				metrics.InflightDeferred(destID, "org")
 				return h.defer_(ctx, p, raw, 500*time.Millisecond, "per-org inflight")
 			}
-			defer h.Redis.Decr(ctx, orgKey)
+			// bg ctx: this runs at return, when the delivery ctx may be done
+			// (worker shutdown / Do() returning context.Canceled); on the request
+			// ctx the Decr would be rejected and the slot would leak until its lease.
+			defer h.Redis.Decr(context.Background(), orgKey)
 		}
 	}
 
@@ -170,11 +216,16 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		count, err := inflightIncrScript.Run(ctx, h.Redis, []string{inflightKey}, ttlSec).Int64()
 		if err == nil {
 			if count > int64(*row.DestinationMaxInflight) {
-				_, _ = h.Redis.Decr(ctx, inflightKey).Result()
+				// bg ctx: a release must run even if the delivery ctx is cancelled,
+				// else go-redis rejects the Decr and the slot leaks until its TTL.
+				_, _ = h.Redis.Decr(context.Background(), inflightKey).Result()
 				metrics.InflightDeferred(destID, "dest")
 				return h.defer_(ctx, p, raw, 250*time.Millisecond, "dest inflight")
 			}
-			defer h.Redis.Decr(ctx, inflightKey)
+			// bg ctx: this runs at return, when the delivery ctx may be done
+			// (worker shutdown / Do() returning context.Canceled); on the request
+			// ctx the Decr would be rejected and the slot would leak until its lease.
+			defer h.Redis.Decr(context.Background(), inflightKey)
 		}
 	}
 
@@ -213,6 +264,8 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		// it would double-count on replay.
 		metrics.Delivery(destID, connID, "error")
 		metrics.Attempt(connID, "retry")
+		// ponytail: an Ack failure here re-counts this retry on redelivery — an
+		// inherent at-least-once edge (rare Redis blip), accepted.
 		return h.Queue.Ack(ctx, raw)
 	}
 
@@ -398,9 +451,11 @@ func (h *Handler) RunReaper(ctx context.Context) {
 // died mid-delivery (stuck 'in_flight'). Returns the count reclaimed. The claim
 // is atomic (FOR UPDATE SKIP LOCKED) so concurrent reapers don't double-claim.
 func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
+	now := time.Now()
 	rows, err := h.Queries.ClaimStuckEvents(ctx, store.ClaimStuckEventsParams{
-		StuckBefore: pgtype.Timestamptz{Time: time.Now().Add(-reapStuckAfter), Valid: true},
-		RowLimit:    reapBatch,
+		QueuedStuckBefore: pgtype.Timestamptz{Time: now.Add(-reapQueuedStuckAfter), Valid: true},
+		CliStuckBefore:    pgtype.Timestamptz{Time: now.Add(-reapCliStuckAfter), Valid: true},
+		RowLimit:          reapBatch,
 	})
 	if err != nil {
 		return 0, err

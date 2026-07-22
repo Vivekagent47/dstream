@@ -77,7 +77,7 @@ function ConsoleOverview() {
         <StatCard label="Events (24h)" value={data?.events_24h} />
         <StatCard
           label="Events / min (24h avg)"
-          value={data ? data.events_per_min.toFixed(1) : undefined}
+          value={data ? (data.events_per_min ?? 0).toFixed(1) : undefined}
         />
       </div>
 
@@ -137,7 +137,7 @@ function ConsoleOverview() {
                   <TableCell className="text-right tabular-nums">{h.total}</TableCell>
                   <TableCell className="text-right tabular-nums text-destructive">{h.failed}</TableCell>
                   <TableCell className="pr-4 text-right tabular-nums">
-                    {(h.failure_rate * 100).toFixed(1)}%
+                    {((h.failure_rate ?? 0) * 100).toFixed(1)}%
                   </TableCell>
                 </TableRow>
               ))}

@@ -108,6 +108,13 @@ func workerCmd() *cobra.Command {
 							defer func() {
 								if rec := recover(); rec != nil {
 									log.Error("process panic", "event_id", p.EventID, "panic", rec)
+									// Terminate the poisoned event so neither the queue
+									// recoverer nor the DB reaper re-injects it into an
+									// endless panic loop (audit #5). Background ctx: the
+									// delivery ctx may already be cancelled.
+									bg := context.Background()
+									_ = dq.DeadLetter(bg, raw)
+									_ = q.MarkEventFailed(bg, store.UUID(p.EventID))
 								}
 							}()
 							if perr := h.Process(dctx, p, raw); perr != nil {

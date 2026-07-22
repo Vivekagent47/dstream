@@ -9,7 +9,8 @@ SELECT i.*, o.name AS org_name
   JOIN organizations o ON o.id = i.org_id
  WHERE i.token_hash = $1
    AND i.accepted_at IS NULL
-   AND i.expires_at > now();
+   AND i.expires_at > now()
+ FOR UPDATE OF i;
 
 -- name: MarkOrgInviteAccepted :exec
 UPDATE org_invites SET accepted_at = now() WHERE id = $1;

@@ -165,6 +165,9 @@ func (d Handlers) EventsHistogram(w http.ResponseWriter, r *http.Request) {
 	default:
 		bucket = "hour"
 	}
+	// Cap the bucket count so a hand-crafted far-past `after` can't make
+	// generate_series emit millions of rows (2026-07-21 audit #2).
+	after = clampAfter(bucket, after)
 
 	rows, err := d.Queries.EventsHistogram(r.Context(), store.EventsHistogramParams{
 		Bucket:       bucket,
@@ -286,7 +289,8 @@ func (d Handlers) RetryEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := d.Queries.ResetEventForManualRetry(r.Context(), ev.ID); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "reset: "+err.Error())
+		d.Log.Error("retry event: reset", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "retry failed")
 		return
 	}
 	conn, err := d.Queries.GetConnectionByID(r.Context(), ev.ConnectionID)
@@ -306,7 +310,8 @@ func (d Handlers) RetryEvent(w http.ResponseWriter, r *http.Request) {
 		RetryJitterPct:      conn.RetryJitterPct,
 		CustomRetrySchedule: conn.CustomRetrySchedule,
 	}); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "enqueue: "+err.Error())
+		d.Log.Error("retry event: enqueue", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "retry failed")
 		return
 	}
 	evID := store.GoUUID(ev.ID)

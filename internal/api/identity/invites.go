@@ -345,7 +345,7 @@ func (d Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	if uid, _, epoch, err := d.Signer.Parse(r); err == nil {
 		u, gerr := d.Queries.GetUserByID(r.Context(), store.UUID(uid))
 		if gerr == nil && int64(u.SessionEpoch) == epoch && strings.EqualFold(u.Email, inv.Email) {
-			row, cerr := auth.ConsumeOrgInvite(r.Context(), d.Queries, token, uid)
+			row, cerr := auth.ConsumeOrgInvite(r.Context(), d.Pool, d.Queries, token, uid)
 			if cerr != nil {
 				if errors.Is(cerr, auth.ErrInvalidOrgInvite) {
 					httpx.Err(w, http.StatusNotFound, "invalid invite")

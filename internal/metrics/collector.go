@@ -115,14 +115,23 @@ func (c *dbCollector) gather() ([]prometheus.Metric, bool) {
 		}
 	}
 
+	// Live entity id sets, collected here so pruneStaleSeries can drop counter
+	// series for entities that no longer exist (audit #18). Per-dimension ok
+	// flags gate pruning so a failed query doesn't wipe live counters.
+	liveSources, liveDests, liveConns := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	var srcOK, destOK, connOK bool
+
 	if rows, err := c.q.ListSourceInfo(ctx); err != nil {
 		c.log.Warn("metrics: source_info query failed", "err", err)
 		scrapeErrors.WithLabelValues("source_info").Inc()
 		ok = false
 	} else {
+		srcOK = true
 		for _, r := range rows {
+			id := store.GoUUID(r.ID).String()
+			liveSources[id] = struct{}{}
 			out = append(out, prometheus.MustNewConstMetric(sourceInfoDesc, prometheus.GaugeValue, 1,
-				store.GoUUID(r.ID).String(), r.Name))
+				id, r.Name))
 		}
 	}
 
@@ -131,9 +140,12 @@ func (c *dbCollector) gather() ([]prometheus.Metric, bool) {
 		scrapeErrors.WithLabelValues("destination_info").Inc()
 		ok = false
 	} else {
+		destOK = true
 		for _, r := range rows {
+			id := store.GoUUID(r.ID).String()
+			liveDests[id] = struct{}{}
 			out = append(out, prometheus.MustNewConstMetric(destinationInfoDesc, prometheus.GaugeValue, 1,
-				store.GoUUID(r.ID).String(), r.Name))
+				id, r.Name))
 		}
 	}
 
@@ -142,15 +154,22 @@ func (c *dbCollector) gather() ([]prometheus.Metric, bool) {
 		scrapeErrors.WithLabelValues("connection_info").Inc()
 		ok = false
 	} else {
+		connOK = true
 		for _, r := range rows {
+			id := store.GoUUID(r.ID).String()
+			liveConns[id] = struct{}{}
 			name := ""
 			if r.Name != nil {
 				name = *r.Name
 			}
 			out = append(out, prometheus.MustNewConstMetric(connectionInfoDesc, prometheus.GaugeValue, 1,
-				store.GoUUID(r.ID).String(), name))
+				id, name))
 		}
 	}
+
+	// Drop counter series for entities that have since been deleted, so their
+	// label cardinality doesn't accumulate for the process lifetime (audit #18).
+	pruneStaleSeries(srcOK, liveSources, destOK, liveDests, connOK, liveConns)
 
 	return out, ok
 }

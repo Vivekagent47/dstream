@@ -131,8 +131,13 @@ SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_st
   JOIN sources s ON s.id = c.source_id
  WHERE s.org_id = $1
  ORDER BY c.created_at DESC
+ LIMIT 1000
 `
 
+// LIMIT is a safety bound against a pathological org, not paging: connections
+// are inherently low-cardinality (≤ sources×destinations) and the dashboard
+// filters/sorts them client-side, so 1000 never truncates a real org. Add
+// keyset paging here + on the page if that assumption ever breaks (audit N8).
 func (q *Queries) ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error) {
 	rows, err := q.db.Query(ctx, listConnectionsByOrg, orgID)
 	if err != nil {

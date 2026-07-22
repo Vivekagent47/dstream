@@ -86,6 +86,7 @@ SELECT i.id, i.org_id, i.email, i.role, i.token_hash, i.invited_by, i.expires_at
  WHERE i.token_hash = $1
    AND i.accepted_at IS NULL
    AND i.expires_at > now()
+ FOR UPDATE OF i
 `
 
 type GetActiveOrgInviteByTokenHashRow struct {

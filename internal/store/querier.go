@@ -21,20 +21,26 @@ type Querier interface {
 	// their epoch. Used by logout (logout-all) and future disable/security flows.
 	BumpUserSessionEpoch(ctx context.Context, id pgtype.UUID) error
 	// Reaper: atomically re-queue events that never entered the dqueue or lost their
-	// owner, and are therefore genuinely stuck. Two cases:
-	//   * 'queued' older than @stuck_before — the ingest Enqueue failed, so the event
-	//     was never put on the dqueue.
-	//   * 'in_flight' on a CLI destination — the CLI dispatch path Acks the leased
-	//     member at handoff to the WS tunnel, so if the tunnel died mid-flight nothing
-	//     owns the event any more.
+	// owner, and are therefore genuinely stuck. Two cases with SEPARATE staleness
+	// windows because they have very different safe thresholds:
+	//   * 'queued' older than @queued_stuck_before — the ingest Enqueue failed, so
+	//     the event was never put on the dqueue. This window is WIDE: a still-'queued'
+	//     event that is merely slow or being repeatedly rate-limit/in-flight deferred
+	//     (defer_ reschedules via the scheduled ZSET without bumping updated_at) is
+	//     making legitimate progress, and re-queuing it mints a duplicate copy the
+	//     terminal-status guard in Process cannot catch (both copies are non-terminal).
+	//     So the window must exceed the delivery lease + defer churn.
+	//   * 'in_flight' on a CLI destination older than @cli_stuck_before — the CLI
+	//     dispatch path Acks the leased member at handoff to the WS tunnel, so if the
+	//     tunnel died mid-flight nothing owns the event any more. The reaper is its
+	//     only recovery, so this window is SHORT (just past the CLI response timeout).
 	// HTTP 'in_flight' events are deliberately excluded: the dqueue recoverer (the
 	// dq:processing lease) plus the scheduled ZSET own their retry backoff AND their
 	// worker-death recovery, so reaping them would double-deliver and bypass the
-	// backoff schedule. @stuck_before must exceed the delivery + CLI response
-	// timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently without
-	// double-claiming (and locks only events, not the joined rows).
-	// ponytail: a pathologically low rate limit (refill > @stuck_before) could let
-	// a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
+	// backoff schedule. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently
+	// without double-claiming (and locks only events, not the joined rows).
+	// ponytail: a destination rate-limited continuously for longer than
+	// @queued_stuck_before still yields one duplicate re-enqueue per window;
 	// acceptable under the system's at-least-once contract.
 	ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsParams) ([]ClaimStuckEventsRow, error)
 	// Per-status event counts for one connection over a recent window, excluding
@@ -145,6 +151,10 @@ type Querier interface {
 	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
 	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
 	ListConnectionInfo(ctx context.Context) ([]ListConnectionInfoRow, error)
+	// LIMIT is a safety bound against a pathological org, not paging: connections
+	// are inherently low-cardinality (≤ sources×destinations) and the dashboard
+	// filters/sorts them client-side, so 1000 never truncates a real org. Add
+	// keyset paging here + on the page if that assumption ever breaks (audit N8).
 	ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error)
 	ListDestinationInfo(ctx context.Context) ([]ListDestinationInfoRow, error)
 	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)

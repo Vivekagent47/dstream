@@ -73,7 +73,7 @@ func TestConsumeOrgInvite_AddsMemberMarksAccepted(t *testing.T) {
 		t.Fatalf("IssueOrgInvite: %v", err)
 	}
 
-	row, err := ConsumeOrgInvite(ctx, q, tok, store.GoUUID(invitee.ID))
+	row, err := ConsumeOrgInvite(ctx, pool, q, tok, store.GoUUID(invitee.ID))
 	if err != nil {
 		t.Fatalf("ConsumeOrgInvite: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestConsumeOrgInvite_AlreadyMember_StillAccepts(t *testing.T) {
 		t.Fatalf("IssueOrgInvite: %v", err)
 	}
 
-	if _, err := ConsumeOrgInvite(ctx, q, tok, store.GoUUID(invitee.ID)); err != nil {
+	if _, err := ConsumeOrgInvite(ctx, pool, q, tok, store.GoUUID(invitee.ID)); err != nil {
 		t.Fatalf("ConsumeOrgInvite: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestConsumeOrgInvite_Expired_Returns_ErrInvalid(t *testing.T) {
 		t.Fatalf("create expired invite: %v", err)
 	}
 
-	if _, err := ConsumeOrgInvite(ctx, q, tokRaw, store.GoUUID(invitee.ID)); !errors.Is(err, ErrInvalidOrgInvite) {
+	if _, err := ConsumeOrgInvite(ctx, pool, q, tokRaw, store.GoUUID(invitee.ID)); !errors.Is(err, ErrInvalidOrgInvite) {
 		t.Fatalf("err: got %v, want ErrInvalidOrgInvite", err)
 	}
 }
@@ -200,10 +200,10 @@ func TestConsumeOrgInvite_AlreadyAccepted_Returns_ErrInvalid(t *testing.T) {
 		t.Fatalf("IssueOrgInvite: %v", err)
 	}
 
-	if _, err := ConsumeOrgInvite(ctx, q, tok, store.GoUUID(invitee.ID)); err != nil {
+	if _, err := ConsumeOrgInvite(ctx, pool, q, tok, store.GoUUID(invitee.ID)); err != nil {
 		t.Fatalf("first consume: %v", err)
 	}
-	if _, err := ConsumeOrgInvite(ctx, q, tok, store.GoUUID(invitee.ID)); !errors.Is(err, ErrInvalidOrgInvite) {
+	if _, err := ConsumeOrgInvite(ctx, pool, q, tok, store.GoUUID(invitee.ID)); !errors.Is(err, ErrInvalidOrgInvite) {
 		t.Fatalf("second consume err: got %v, want ErrInvalidOrgInvite", err)
 	}
 }
@@ -218,7 +218,7 @@ func TestConsumeOrgInvite_UnknownToken_Returns_ErrInvalid(t *testing.T) {
 	_, _ = seedUserAndOrg(t, q, RoleOwner)
 	bogusUser := uuid.New()
 
-	if _, err := ConsumeOrgInvite(ctx, q, "not-a-real-token", bogusUser); !errors.Is(err, ErrInvalidOrgInvite) {
+	if _, err := ConsumeOrgInvite(ctx, pool, q, "not-a-real-token", bogusUser); !errors.Is(err, ErrInvalidOrgInvite) {
 		t.Fatalf("err: got %v, want ErrInvalidOrgInvite", err)
 	}
 }

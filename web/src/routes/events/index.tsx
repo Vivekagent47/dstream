@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { queryOptions, useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { MoveRight } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts'
 import {
@@ -23,6 +23,7 @@ import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
 import { Button } from '#/components/ui/button'
+import { Skeleton } from '#/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -45,14 +46,14 @@ const PAGE_SIZE = 100
 // endpoint groups by — kept coarse enough that a window never yields a wall of
 // hairline bars.
 //
-// "Last hour" is a rolling window (now − 1h). The day/week/month windows cover
-// the last N whole calendar days ending today, aligned to UTC midnight to match
-// the server's date_trunc (UTC). `days` is that N, so "Last 7 days" is exactly 7
-// date columns (today + 6 prior) and the zero-fill grid merges cleanly with the
-// returned buckets — no off-by-one, no timezone drift.
+// "Last hour" and "Last day" are rolling windows (now − 1h / now − 24h). The
+// week/month windows cover the last N whole calendar days ending today, aligned
+// to UTC midnight to match the server's date_trunc (UTC). `days` is that N, so
+// "Last 7 days" is exactly 7 date columns (today + 6 prior) and the zero-fill
+// grid merges cleanly with the returned buckets — no off-by-one, no timezone drift.
 const RANGES = [
   { key: '1h', label: 'Last hour', mode: 'rolling', ms: 3_600_000, bucket: 'minute' },
-  { key: '24h', label: 'Last day', mode: 'calendar', days: 1, bucket: 'hour' },
+  { key: '24h', label: 'Last day', mode: 'rolling', ms: 86_400_000, bucket: 'hour' },
   { key: '7d', label: 'Last 7 days', mode: 'calendar', days: 7, bucket: 'day' },
   { key: '30d', label: 'Last 30 days', mode: 'calendar', days: 30, bucket: 'day' },
 ] as const
@@ -91,20 +92,29 @@ function EventsPage() {
   const [connId, setConnId] = useState<string>('all')
 
   const active = RANGES.find((r) => r.key === range)!
-  // `after` is frozen per range selection (recomputed only when the range
-  // changes), so polling reuses one query key instead of sliding every tick.
-  // ponytail: window doesn't auto-slide; re-pick the range to advance it.
+  // Advance the window as time passes so a page left open doesn't go stale — a
+  // calendar day rolling past UTC midnight, or a rolling window falling behind.
+  // Tick coarsely (once a minute) and quantize `after` to the minute: the query
+  // key then changes at most once per minute for rolling ranges, and only at
+  // UTC midnight for calendar ranges (same string until then → no refetch),
+  // rather than freezing at selection time (audit N8).
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
   const after = useMemo(() => {
+    const now = Math.floor(nowTick / 60_000) * 60_000 // floor to the minute
     if (active.mode === 'rolling') {
-      return new Date(Date.now() - active.ms).toISOString()
+      return new Date(now - active.ms).toISOString()
     }
     // Calendar-aligned in UTC: start-of-today (UTC), back (days − 1) so the
     // window spans exactly `days` date columns ending today.
-    const d = new Date()
+    const d = new Date(now)
     d.setUTCHours(0, 0, 0, 0)
     d.setUTCDate(d.getUTCDate() - (active.days - 1))
     return d.toISOString()
-  }, [active])
+  }, [active, nowTick])
 
   const filters = {
     after,
@@ -123,7 +133,11 @@ function EventsPage() {
 
   // The API gap-fills the series (every bucket in the window, zeros included),
   // so the graph just plots what it returns — no client-side reconstruction.
-  const { data: histogram } = useQuery({
+  const {
+    data: histogram,
+    isLoading: histLoading,
+    isError: histError,
+  } = useQuery({
     queryKey: qk.eventsHistogram({ bucket: active.bucket, ...filters }),
     queryFn: () => api.eventsHistogram({ bucket: active.bucket, ...filters }),
     refetchInterval: 5000,
@@ -214,7 +228,12 @@ function EventsPage() {
       </div>
 
       {/* timeline graph */}
-      <Histogram buckets={histogram?.buckets ?? []} bucket={active.bucket} />
+      <Histogram
+        buckets={histogram?.buckets ?? []}
+        bucket={active.bucket}
+        isLoading={histLoading}
+        isError={histError}
+      />
 
       <div className="flex-1 overflow-x-auto">
         {error && (
@@ -318,8 +337,18 @@ const STATUS_ORDER = Object.keys(eventChartConfig)
 // bucket, segmented by status; only statuses present in the window render.
 // ponytail: empty buckets aren't back-filled, so a sparse window packs its bars
 // together; back-fill from `after`→now stepped by bucket if precise spacing matters.
-function Histogram({ buckets, bucket }: { buckets: EventHistogramBucket[]; bucket: string }) {
-  const present = STATUS_ORDER.filter((k) => buckets.some((b) => (b.counts[k] ?? 0) > 0))
+function Histogram({
+  buckets,
+  bucket,
+  isLoading,
+  isError,
+}: {
+  buckets: EventHistogramBucket[]
+  bucket: string
+  isLoading: boolean
+  isError: boolean
+}) {
+  const present = STATUS_ORDER.filter((k) => buckets.some((b) => (b.counts?.[k] ?? 0) > 0))
   const data = buckets.map((b) => ({ ts: b.ts, ...b.counts }))
   // Label granularity follows the bucket: a day-bucketed range shows dates
   // (midnight-UTC buckets otherwise render as a meaningless "05:30 AM" in
@@ -343,7 +372,13 @@ function Histogram({ buckets, bucket }: { buckets: EventHistogramBucket[]; bucke
   if (buckets.length === 0) {
     return (
       <div className="flex h-28 items-center justify-center border-b border-border px-6 text-xs text-muted-foreground">
-        No events in this window
+        {isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : isError ? (
+          <span className="text-destructive">{"Couldn't load chart"}</span>
+        ) : (
+          'No events in this window'
+        )}
       </div>
     )
   }

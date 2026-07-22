@@ -72,21 +72,21 @@ UPDATE events
      FROM events e
      JOIN connections c  ON c.id = e.connection_id
      JOIN destinations d ON d.id = c.destination_id
-    WHERE e.updated_at < $1
-      AND (
-        e.status = 'queued'
-        OR (e.status = 'in_flight' AND d.type = 'cli')
+    WHERE (
+        (e.status = 'queued' AND e.updated_at < $1)
+        OR (e.status = 'in_flight' AND d.type = 'cli' AND e.updated_at < $2)
       )
     ORDER BY e.updated_at ASC
-    LIMIT $2
+    LIMIT $3
     FOR UPDATE OF e SKIP LOCKED
  )
 RETURNING id, org_id, connection_id, attempt_count
 `
 
 type ClaimStuckEventsParams struct {
-	StuckBefore pgtype.Timestamptz `json:"stuck_before"`
-	RowLimit    int32              `json:"row_limit"`
+	QueuedStuckBefore pgtype.Timestamptz `json:"queued_stuck_before"`
+	CliStuckBefore    pgtype.Timestamptz `json:"cli_stuck_before"`
+	RowLimit          int32              `json:"row_limit"`
 }
 
 type ClaimStuckEventsRow struct {
@@ -97,24 +97,30 @@ type ClaimStuckEventsRow struct {
 }
 
 // Reaper: atomically re-queue events that never entered the dqueue or lost their
-// owner, and are therefore genuinely stuck. Two cases:
-//   - 'queued' older than @stuck_before — the ingest Enqueue failed, so the event
-//     was never put on the dqueue.
-//   - 'in_flight' on a CLI destination — the CLI dispatch path Acks the leased
-//     member at handoff to the WS tunnel, so if the tunnel died mid-flight nothing
-//     owns the event any more.
+// owner, and are therefore genuinely stuck. Two cases with SEPARATE staleness
+// windows because they have very different safe thresholds:
+//   - 'queued' older than @queued_stuck_before — the ingest Enqueue failed, so
+//     the event was never put on the dqueue. This window is WIDE: a still-'queued'
+//     event that is merely slow or being repeatedly rate-limit/in-flight deferred
+//     (defer_ reschedules via the scheduled ZSET without bumping updated_at) is
+//     making legitimate progress, and re-queuing it mints a duplicate copy the
+//     terminal-status guard in Process cannot catch (both copies are non-terminal).
+//     So the window must exceed the delivery lease + defer churn.
+//   - 'in_flight' on a CLI destination older than @cli_stuck_before — the CLI
+//     dispatch path Acks the leased member at handoff to the WS tunnel, so if the
+//     tunnel died mid-flight nothing owns the event any more. The reaper is its
+//     only recovery, so this window is SHORT (just past the CLI response timeout).
 //
 // HTTP 'in_flight' events are deliberately excluded: the dqueue recoverer (the
 // dq:processing lease) plus the scheduled ZSET own their retry backoff AND their
 // worker-death recovery, so reaping them would double-deliver and bypass the
-// backoff schedule. @stuck_before must exceed the delivery + CLI response
-// timeouts. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently without
-// double-claiming (and locks only events, not the joined rows).
-// ponytail: a pathologically low rate limit (refill > @stuck_before) could let
-// a rate-limit-deferred 'queued' event be reaped early → one duplicate delivery;
+// backoff schedule. FOR UPDATE OF e SKIP LOCKED lets replicas run concurrently
+// without double-claiming (and locks only events, not the joined rows).
+// ponytail: a destination rate-limited continuously for longer than
+// @queued_stuck_before still yields one duplicate re-enqueue per window;
 // acceptable under the system's at-least-once contract.
 func (q *Queries) ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsParams) ([]ClaimStuckEventsRow, error) {
-	rows, err := q.db.Query(ctx, claimStuckEvents, arg.StuckBefore, arg.RowLimit)
+	rows, err := q.db.Query(ctx, claimStuckEvents, arg.QueuedStuckBefore, arg.CliStuckBefore, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +367,17 @@ SELECT
    WHERE c2.destination_id = $1
      AND e2.org_id = $2
      AND a.attempted_at >= $3::timestamptz
-     AND a.duration_ms IS NOT NULL), 0)::float8 AS avg_latency_ms
+     AND a.duration_ms IS NOT NULL), 0)::float8 AS avg_latency_ms,
+  -- Count of timed attempts so the handler can distinguish "genuinely ~0ms"
+  -- from "no completed attempts" and emit null (—) not a misleading 0 (audit N4).
+  (SELECT count(*)
+   FROM attempts a
+   JOIN events e2 ON e2.id = a.event_id
+   JOIN connections c2 ON c2.id = e2.connection_id
+   WHERE c2.destination_id = $1
+     AND e2.org_id = $2
+     AND a.attempted_at >= $3::timestamptz
+     AND a.duration_ms IS NOT NULL)::bigint AS latency_samples
 FROM events e
 JOIN connections c ON c.id = e.connection_id
 WHERE c.destination_id = $1
@@ -376,9 +392,10 @@ type DestinationDeliveryStatsParams struct {
 }
 
 type DestinationDeliveryStatsRow struct {
-	Total        int64   `json:"total"`
-	Delivered    int64   `json:"delivered"`
-	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	Total          int64   `json:"total"`
+	Delivered      int64   `json:"delivered"`
+	AvgLatencyMs   float64 `json:"avg_latency_ms"`
+	LatencySamples int64   `json:"latency_samples"`
 }
 
 // Window totals for the delivery-rate + avg-latency cards. delivered/total gives
@@ -387,7 +404,12 @@ type DestinationDeliveryStatsRow struct {
 func (q *Queries) DestinationDeliveryStats(ctx context.Context, arg DestinationDeliveryStatsParams) (DestinationDeliveryStatsRow, error) {
 	row := q.db.QueryRow(ctx, destinationDeliveryStats, arg.DestinationID, arg.OrgID, arg.After)
 	var i DestinationDeliveryStatsRow
-	err := row.Scan(&i.Total, &i.Delivered, &i.AvgLatencyMs)
+	err := row.Scan(
+		&i.Total,
+		&i.Delivered,
+		&i.AvgLatencyMs,
+		&i.LatencySamples,
+	)
 	return i, err
 }
 
@@ -923,7 +945,9 @@ WITH series AS (
 counts AS (
   SELECT date_trunc($1::text, r.received_at) AS bucket, count(*) AS count
   FROM requests r
+  JOIN sources s ON s.id = r.source_id
   WHERE r.source_id = $3
+    AND s.org_id = $4
     AND r.received_at >= $2::timestamptz
   GROUP BY 1
 )
@@ -938,6 +962,7 @@ type SourceRequestHistogramParams struct {
 	Bucket   string             `json:"bucket"`
 	After    pgtype.Timestamptz `json:"after"`
 	SourceID pgtype.UUID        `json:"source_id"`
+	OrgID    pgtype.UUID        `json:"org_id"`
 }
 
 type SourceRequestHistogramRow struct {
@@ -948,7 +973,12 @@ type SourceRequestHistogramRow struct {
 // Gap-filled ingest-request volume over time for ONE source (single series, no
 // status dimension). Same gap-fill contract as the delivery histogram.
 func (q *Queries) SourceRequestHistogram(ctx context.Context, arg SourceRequestHistogramParams) ([]SourceRequestHistogramRow, error) {
-	rows, err := q.db.Query(ctx, sourceRequestHistogram, arg.Bucket, arg.After, arg.SourceID)
+	rows, err := q.db.Query(ctx, sourceRequestHistogram,
+		arg.Bucket,
+		arg.After,
+		arg.SourceID,
+		arg.OrgID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -970,14 +1000,18 @@ func (q *Queries) SourceRequestHistogram(ctx context.Context, arg SourceRequestH
 const sourceRequestStats = `-- name: SourceRequestStats :one
 SELECT
   (SELECT count(*) FROM requests r
-   WHERE r.source_id = $1 AND r.received_at >= $2::timestamptz)::bigint AS requests,
+   JOIN sources s ON s.id = r.source_id
+   WHERE r.source_id = $1 AND s.org_id = $2
+     AND r.received_at >= $3::timestamptz)::bigint AS requests,
   (SELECT count(*) FROM events e
    JOIN requests r ON r.id = e.request_id
-   WHERE r.source_id = $1 AND e.created_at >= $2::timestamptz)::bigint AS events
+   WHERE r.source_id = $1 AND e.org_id = $2
+     AND e.created_at >= $3::timestamptz)::bigint AS events
 `
 
 type SourceRequestStatsParams struct {
 	SourceID pgtype.UUID        `json:"source_id"`
+	OrgID    pgtype.UUID        `json:"org_id"`
 	After    pgtype.Timestamptz `json:"after"`
 }
 
@@ -988,7 +1022,7 @@ type SourceRequestStatsRow struct {
 
 // Window totals for the requests-rate + avg-events-per-request (fan-out) cards.
 func (q *Queries) SourceRequestStats(ctx context.Context, arg SourceRequestStatsParams) (SourceRequestStatsRow, error) {
-	row := q.db.QueryRow(ctx, sourceRequestStats, arg.SourceID, arg.After)
+	row := q.db.QueryRow(ctx, sourceRequestStats, arg.SourceID, arg.OrgID, arg.After)
 	var i SourceRequestStatsRow
 	err := row.Scan(&i.Requests, &i.Events)
 	return i, err

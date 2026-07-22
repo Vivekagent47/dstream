@@ -31,6 +31,15 @@ const (
 	MaxBodyBytes   = 5 << 20 // 5 MiB
 	DedupWindow    = 60 * time.Second
 	SourceCacheTTL = 60 * time.Second
+
+	// NegativeSourceCacheTTL caches an unknown ingest token so a flood of the
+	// same bad token (unauthenticated POST /e/{random}) collapses to one DB
+	// round-trip per TTL instead of one per request — otherwise every miss hits
+	// Postgres (GetSourceByIngestToken) and burns a pool slot, and the per-source
+	// rate limiter can't fire for a source that never resolves (audit #12). Kept
+	// much shorter than SourceCacheTTL so a source created just after a bad-token
+	// probe becomes reachable within a few seconds.
+	NegativeSourceCacheTTL = 3 * time.Second
 )
 
 type Handler struct {
@@ -59,8 +68,9 @@ type Handler struct {
 }
 
 type sourceCacheEntry struct {
-	src     store.Source
-	expires time.Time
+	src      store.Source
+	expires  time.Time
+	notFound bool // negative entry: token resolved to ErrSourceNotFound
 }
 
 func (h *Handler) Mount(r chi.Router) {
@@ -113,6 +123,13 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 			Burst:  burst,
 			Period: time.Second,
 		})
+		if rlErr != nil {
+			// Fail-open by design (availability beats strict limiting), but a
+			// swallowed error means a Redis limiter outage silently disables
+			// ingest rate limiting with zero signal (audit N6) — log so it's
+			// observable. Still proceed below.
+			h.Log.Warn("ingest: rate limiter error (fail-open)", "err", rlErr, "source_id", sourceID.String())
+		}
 		if rlErr == nil && res.Allowed == 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
@@ -134,6 +151,23 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		h.Log.Warn("ingest: dedup check failed (ignored)", "err", err)
 	}
 	metrics.IngestRequest(sourceID, dup)
+
+	// If we just claimed the dedup key (not a duplicate, and the SetNX
+	// succeeded), roll it back on any failure return before the events are
+	// durably created. Otherwise the sender's retry within the dedup window is
+	// deduped and the webhook is silently lost — a request row exists but no
+	// events were ever created, and the reaper can't recover what was never
+	// inserted (2026-07-21 audit #1). Background ctx: request-ctx cancellation
+	// mid-insert is one of the triggers, so r.Context() may already be done.
+	dedupClaimed := !dup && err == nil
+	committed := false
+	if dedupClaimed {
+		defer func() {
+			if !committed {
+				_ = h.Redis.Del(context.Background(), dedupKey(sourceID, bodyHash)).Err()
+			}
+		}()
+	}
 
 	// v7 so the request id sorts by creation time and clusters in the PK
 	// B-tree (matches the uuidv7() column defaults). NewV7 only errs if the
@@ -184,7 +218,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(conns) == 0 {
 		// Source has no enabled connections — nothing to fan out to. Still a
-		// successful ingest (the request + body are persisted for replay).
+		// successful ingest (the request + body are persisted for replay), and
+		// a retry would produce the same zero-event result, so keep the dedup key.
+		committed = true
 		writeJSON(w, http.StatusAccepted, resp)
 		return
 	}
@@ -233,6 +269,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		resp.EventIDs = append(resp.EventIDs, store.GoUUID(ev.ID).String())
 	}
 
+	// Events are durably in Postgres now (CreateEventsBatch committed); a failed
+	// enqueue leaves them 'queued' for the reaper. Keep the dedup key.
+	committed = true
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
@@ -246,10 +285,13 @@ func (h *Handler) InvalidateSource(token string) {
 }
 
 func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source, error) {
-	// Cache hit?
+	// Cache hit? (positive or negative)
 	if v, ok := h.sourceCache.Load(token); ok {
 		entry := v.(sourceCacheEntry)
 		if time.Now().Before(entry.expires) {
+			if entry.notFound {
+				return store.Source{}, ErrSourceNotFound
+			}
 			return entry.src, nil
 		}
 		// Expired — fall through to a fresh lookup. We delete eagerly to
@@ -260,6 +302,15 @@ func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source
 	src, err := h.Queries.GetSourceByIngestToken(ctx, token)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Negative-cache the miss so a bad-token flood can't hammer the DB
+			// pool (audit #12). Short TTL: a source created moments later still
+			// resolves once the entry lapses.
+			// ponytail: if this proves insufficient under attack, add a global
+			// per-IP rate limit before token resolution (heavier, out of scope here).
+			h.sourceCache.Store(token, sourceCacheEntry{
+				expires:  time.Now().Add(NegativeSourceCacheTTL),
+				notFound: true,
+			})
 			return store.Source{}, ErrSourceNotFound
 		}
 		return store.Source{}, err
@@ -274,8 +325,7 @@ func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source
 // checkDedup returns true if the body is a duplicate of one seen within the
 // dedup window for this source.
 func (h *Handler) checkDedup(ctx context.Context, sourceID uuid.UUID, bodyHash string) (bool, error) {
-	key := "dedup:" + sourceID.String() + ":" + bodyHash
-	ok, err := h.Redis.SetNX(ctx, key, 1, DedupWindow).Result()
+	ok, err := h.Redis.SetNX(ctx, dedupKey(sourceID, bodyHash), 1, DedupWindow).Result()
 	if err != nil {
 		return false, err
 	}
@@ -283,9 +333,34 @@ func (h *Handler) checkDedup(ctx context.Context, sourceID uuid.UUID, bodyHash s
 	return !ok, nil
 }
 
+// dedupKey is the Redis key for a source's per-body dedup marker. Kept in one
+// place so the claim (checkDedup) and the failure rollback (handleIngest) can
+// never drift apart — a mismatched key would silently fail to roll back.
+func dedupKey(sourceID uuid.UUID, bodyHash string) string {
+	return "dedup:" + sourceID.String() + ":" + bodyHash
+}
+
+// sensitiveHeaders are credential-bearing request headers whose VALUES are
+// redacted before persisting to requests.headers — the row is later viewable by
+// org members, and a sender's Authorization/Cookie must not leak at rest (audit
+// N5). Keys are kept (value replaced) so it stays visible one was sent.
+// ponytail: inbound header auth is post-release scope (PLAN.md); revisit if a
+// future signature-verification path needs the raw value.
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Cookie":              true,
+	"Proxy-Authorization": true,
+}
+
 func captureHeaders(h http.Header) []byte {
 	out := make(map[string][]string, len(h))
 	for k, v := range h {
+		// http.Header keys are already canonicalized; canonicalize again to be
+		// safe against a non-canonical key reaching this via a direct call.
+		if sensitiveHeaders[http.CanonicalHeaderKey(k)] {
+			out[k] = []string{"[redacted]"}
+			continue
+		}
 		out[k] = v
 	}
 	b, _ := json.Marshal(out)
@@ -293,14 +368,10 @@ func captureHeaders(h http.Header) []byte {
 }
 
 func parseRemoteAddr(r *http.Request) *netip.Addr {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if comma := strings.IndexByte(xff, ','); comma >= 0 {
-			xff = xff[:comma]
-		}
-		if addr, err := netip.ParseAddr(strings.TrimSpace(xff)); err == nil {
-			return &addr
-		}
-	}
+	// Trust ONLY r.RemoteAddr: the TrustedRealIP middleware has already
+	// normalized it to the real client IP, peeling X-Forwarded-For only through
+	// configured trusted proxies. Parsing raw XFF here would bypass that gate and
+	// let any client forge the stored ingest_ip (GHSA-3fxj-6jh8-hvhx, audit #10).
 	host := r.RemoteAddr
 	if i := strings.LastIndexByte(host, ':'); i >= 0 {
 		host = host[:i]

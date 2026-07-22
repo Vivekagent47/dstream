@@ -3,6 +3,7 @@ package dqueue
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -63,5 +64,24 @@ func TestFairPickRoundRobin(t *testing.T) {
 	first3 := map[uuid.UUID]bool{order[0]: true, order[1]: true, order[2]: true}
 	if len(first3) != 3 {
 		t.Errorf("first 3 picks not round-robin across orgs: %v", order[:3])
+	}
+}
+
+// TestDeadLetterCap dead-letters more entries than deadListCap and asserts the
+// dead list is LTRIM-bounded to the cap (not growing without bound).
+func TestDeadLetterCap(t *testing.T) {
+	c := testClient(t)
+	ctx := context.Background()
+	for i := 0; i < deadListCap+50; i++ {
+		if err := c.DeadLetter(ctx, "evt-"+strconv.Itoa(i)); err != nil {
+			t.Fatalf("deadletter %d: %v", i, err)
+		}
+	}
+	n, err := c.rdb.LLen(ctx, c.prefix+":dead").Result()
+	if err != nil {
+		t.Fatalf("llen: %v", err)
+	}
+	if n != int64(deadListCap) {
+		t.Errorf("dead list len = %d, want cap %d", n, deadListCap)
 	}
 }

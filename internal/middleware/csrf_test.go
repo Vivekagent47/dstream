@@ -9,8 +9,10 @@ import (
 	"github.com/Vivekagent47/dstream/internal/auth"
 )
 
+var csrfTestSecret = []byte("test-csrf-secret-at-least-32-bytes-long")
+
 func csrfChain() http.Handler {
-	return CSRF(false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return CSRF(false, csrfTestSecret)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -22,9 +24,8 @@ func TestCSRF_SetsCookieOnFirstGet(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status=%d", rec.Code)
 	}
-	cookies := rec.Result().Cookies()
 	found := false
-	for _, c := range cookies {
+	for _, c := range rec.Result().Cookies() {
 		if c.Name == CSRFCookieName && c.Value != "" {
 			found = true
 		}
@@ -38,7 +39,6 @@ func TestCSRF_SafeMethodsBypass(t *testing.T) {
 	for _, m := range []string{"GET", "HEAD", "OPTIONS"} {
 		req := httptest.NewRequest(m, "/", nil)
 		req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "fake"})
-		// No CSRF header — should still pass on safe methods.
 		rec := httptest.NewRecorder()
 		csrfChain().ServeHTTP(rec, req)
 		if rec.Code != 200 {
@@ -59,7 +59,6 @@ func TestCSRF_BearerAuthBypass(t *testing.T) {
 }
 
 func TestCSRF_NoSessionBypass(t *testing.T) {
-	// POST without session cookie → CSRF doesn't apply (no session to forge).
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
 	csrfChain().ServeHTTP(rec, req)
@@ -71,8 +70,6 @@ func TestCSRF_NoSessionBypass(t *testing.T) {
 func TestCSRF_SessionPostMissingHeader_Forbidden(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{}"))
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
-	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "csrf-token-here"})
-	// No X-CSRF-Token header.
 	rec := httptest.NewRecorder()
 	csrfChain().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -80,11 +77,15 @@ func TestCSRF_SessionPostMissingHeader_Forbidden(t *testing.T) {
 	}
 }
 
-func TestCSRF_SessionPostMatchingHeader_OK(t *testing.T) {
+func TestCSRF_SessionPostBoundToken_OK(t *testing.T) {
+	tok, err := newBoundCSRFToken("session", csrfTestSecret)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{}"))
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
-	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "csrf-token-here"})
-	req.Header.Set(CSRFHeaderName, "csrf-token-here")
+	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: tok})
+	req.Header.Set(CSRFHeaderName, tok)
 	rec := httptest.NewRecorder()
 	csrfChain().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -92,11 +93,30 @@ func TestCSRF_SessionPostMatchingHeader_OK(t *testing.T) {
 	}
 }
 
-func TestCSRF_SessionPostMismatchedHeader_Forbidden(t *testing.T) {
+// TestCSRF_TokenBoundToOtherSession_Forbidden is the N7 protection: a token
+// that is a valid HMAC but bound to a DIFFERENT session (e.g. one an attacker
+// planted via a cookie they control) must not validate against the victim's
+// session. Plain double-submit would have accepted this (cookie == header).
+func TestCSRF_TokenBoundToOtherSession_Forbidden(t *testing.T) {
+	other, err := newBoundCSRFToken("attacker-session", csrfTestSecret)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/", strings.NewReader("{}"))
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "victim-session"})
+	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: other})
+	req.Header.Set(CSRFHeaderName, other) // cookie == header, but bound to a different session
+	rec := httptest.NewRecorder()
+	csrfChain().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (token bound to other session), got %d", rec.Code)
+	}
+}
+
+func TestCSRF_GarbageHeader_Forbidden(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{}"))
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
-	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "csrf-token-here"})
-	req.Header.Set(CSRFHeaderName, "different-token")
+	req.Header.Set(CSRFHeaderName, "not-a-valid-token")
 	rec := httptest.NewRecorder()
 	csrfChain().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {

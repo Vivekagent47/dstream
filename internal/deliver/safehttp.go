@@ -73,10 +73,18 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	}
 }
 
+// Ranges netip's IsPrivate() doesn't cover but that route to internal infra:
+// RFC 6598 CGNAT (100.64.0.0/10, common for k8s pod/service meshes and cloud
+// internal networks) and RFC 2544 benchmarking (198.18.0.0/15). Parsed once.
+var (
+	cgnatRange     = netip.MustParsePrefix("100.64.0.0/10")
+	benchmarkRange = netip.MustParsePrefix("198.18.0.0/15")
+)
+
 // isPublicIP reports whether ip is a globally-routable unicast address safe to
 // deliver to. Rejects loopback, private (RFC1918 + ULA fc00::/7), link-local
-// (incl. 169.254.169.254 cloud metadata and fe80::/10), multicast, and the
-// unspecified address.
+// (incl. 169.254.169.254 cloud metadata and fe80::/10), multicast, the
+// unspecified address, and the CGNAT + benchmarking ranges netip omits.
 func isPublicIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.IsValid() {
@@ -84,6 +92,9 @@ func isPublicIP(ip netip.Addr) bool {
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return false
+	}
+	if cgnatRange.Contains(ip) || benchmarkRange.Contains(ip) {
 		return false
 	}
 	return true

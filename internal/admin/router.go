@@ -45,7 +45,8 @@ func Mount(parent chi.Router, d Deps) {
 func (d Deps) handleQueues(w http.ResponseWriter, r *http.Request) {
 	s, err := d.Queue.Stats(r.Context())
 	if err != nil {
-		http.Error(w, "queue stats: "+err.Error(), http.StatusInternalServerError)
+		d.Log.Error("admin queues: queue stats", "err", err)
+		http.Error(w, "queues", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
@@ -53,12 +54,32 @@ func (d Deps) handleQueues(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	orgs, _ := d.Queries.CountOrganizations(ctx)
-	users, _ := d.Queries.CountUsers(ctx)
+	orgs, err := d.Queries.CountOrganizations(ctx)
+	if err != nil {
+		d.Log.Error("admin overview: count organizations", "err", err)
+		http.Error(w, "overview", http.StatusInternalServerError)
+		return
+	}
+	users, err := d.Queries.CountUsers(ctx)
+	if err != nil {
+		d.Log.Error("admin overview: count users", "err", err)
+		http.Error(w, "overview", http.StatusInternalServerError)
+		return
+	}
 
 	since := pgtype.Timestamptz{Time: time.Now().Add(-24 * time.Hour), Valid: true}
-	events24h, _ := d.Queries.AdminEventsSince(ctx, since)
-	topRows, _ := d.Queries.AdminTopSources(ctx, since)
+	events24h, err := d.Queries.AdminEventsSince(ctx, since)
+	if err != nil {
+		d.Log.Error("admin overview: events since", "err", err)
+		http.Error(w, "overview", http.StatusInternalServerError)
+		return
+	}
+	topRows, err := d.Queries.AdminTopSources(ctx, since)
+	if err != nil {
+		d.Log.Error("admin overview: top sources", "err", err)
+		http.Error(w, "overview", http.StatusInternalServerError)
+		return
+	}
 	topSources := make([]map[string]any, 0, len(topRows))
 	for _, s := range topRows {
 		topSources = append(topSources, map[string]any{
@@ -80,7 +101,8 @@ func (d Deps) handleOverview(w http.ResponseWriter, r *http.Request) {
 func (d Deps) handleListOrgs(w http.ResponseWriter, r *http.Request) {
 	rows, err := d.Queries.ListAllOrganizations(r.Context())
 	if err != nil {
-		http.Error(w, "list orgs: "+err.Error(), http.StatusInternalServerError)
+		d.Log.Error("admin orgs: list organizations", "err", err)
+		http.Error(w, "orgs", http.StatusInternalServerError)
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -98,7 +120,8 @@ func (d Deps) handleListOrgs(w http.ResponseWriter, r *http.Request) {
 func (d Deps) handleHotDestinations(w http.ResponseWriter, r *http.Request) {
 	rows, err := d.Queries.HotDestinations(r.Context())
 	if err != nil {
-		http.Error(w, "hot destinations: "+err.Error(), http.StatusInternalServerError)
+		d.Log.Error("admin hot destinations", "err", err)
+		http.Error(w, "hot destinations", http.StatusInternalServerError)
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))

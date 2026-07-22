@@ -313,6 +313,13 @@ function SettingsTab({ dest }: { dest: Destination }) {
     numOrNull(burst) !== dest.rate_limit_burst ||
     numOrNull(inflight) !== dest.max_inflight
 
+  // A non-empty limit must be a non-negative integer (empty = null = unlimited).
+  // Blocks save on garbage/negatives, which numOrNull would otherwise silently
+  // map to null — clearing the limit instead of warning (audit N8).
+  const limitsValid = [rps, burst, inflight].every(
+    (s) => s.trim() === '' || (Number.isInteger(Number(s)) && Number(s) >= 0),
+  )
+
   return (
     <div className="max-w-3xl space-y-8">
       {/* General */}
@@ -344,7 +351,7 @@ function SettingsTab({ dest }: { dest: Destination }) {
             />
           </div>
         ) : null}
-        <Button size="sm" onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
+        <Button size="sm" onClick={() => save.mutate()} disabled={!dirty || save.isPending || !limitsValid}>
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
       </section>

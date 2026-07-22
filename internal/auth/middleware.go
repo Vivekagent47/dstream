@@ -44,24 +44,32 @@ func Authenticate(q *store.Queries, s *SessionSigner) func(http.Handler) http.Ha
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			// Session path. Resolve the user's email NOW so downstream
-			// audit.Log calls don't each fire a fresh GetUserByID — every
-			// authenticated mutation pays for that lookup otherwise.
+			// Session path. Resolve the user NOW: this verifies the session
+			// epoch (revocation) and resolves the email so downstream audit.Log
+			// calls don't each fire a fresh GetUserByID.
 			if userID, orgID, epoch, err := s.Parse(r); err == nil {
-				p := Principal{
-					Source: SourceSession,
-					UserID: userID,
-					OrgID:  orgID, // may be uuid.Nil if user has no active org yet
+				u, uerr := q.GetUserByID(r.Context(), store.UUID(userID))
+				if uerr != nil {
+					// Fail closed. session_epoch is the only revocation
+					// mechanism; without the user row we can't check it, so
+					// serving the request here would let a revoked (logged-out /
+					// disabled) cookie through on any transient lookup error
+					// (audit #4). Mirror SuperAdminOnly, which already fails closed.
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
 				}
-				if u, uerr := q.GetUserByID(r.Context(), store.UUID(userID)); uerr == nil {
-					// Epoch mismatch means the session was revoked (logout-all /
-					// disable) after this cookie was issued — reject it.
-					if int64(u.SessionEpoch) != epoch {
-						http.Error(w, "unauthorized", http.StatusUnauthorized)
-						return
-					}
-					p.UserEmail = u.Email
-					p.SessionEpoch = int64(u.SessionEpoch)
+				// Epoch mismatch means the session was revoked (logout-all /
+				// disable) after this cookie was issued — reject it.
+				if int64(u.SessionEpoch) != epoch {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				p := Principal{
+					Source:       SourceSession,
+					UserID:       userID,
+					OrgID:        orgID, // may be uuid.Nil if user has no active org yet
+					UserEmail:    u.Email,
+					SessionEpoch: int64(u.SessionEpoch),
 				}
 				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 				return

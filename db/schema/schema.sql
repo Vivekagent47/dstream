@@ -259,6 +259,11 @@ CREATE INDEX events_org_created_idx       ON events (org_id, created_at DESC, id
 -- index, so a page is a bounded range scan instead of sorting the connection's
 -- full event set. events_connection_status_idx can't serve the ordering.
 CREATE INDEX events_connection_created_idx ON events (connection_id, created_at DESC, id DESC);
+-- Cross-tenant created_at range scans by the super-admin console (HotDestinations,
+-- AdminEventsSince, AdminTopSources) have no org/status prefix, so the org- and
+-- status-leading indexes above can't serve them — this plain created_at index
+-- turns those seq scans into range scans (audit #17).
+CREATE INDEX events_created_at_idx ON events (created_at DESC);
 
 -- attempts: one row per concrete delivery try of an event — the response
 -- (or error) the destination gave. Immutable; the dashboard's event detail

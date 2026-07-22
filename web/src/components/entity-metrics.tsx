@@ -11,6 +11,7 @@ import {
   type ChartConfig,
 } from '#/components/ui/chart'
 import { Card, CardContent, CardHeader, CardTitle } from '#/components/ui/card'
+import { Skeleton } from '#/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -20,12 +21,12 @@ import {
 } from '#/components/ui/select'
 import { api, qk } from '#/lib/api'
 
-// Range picker windows, identical semantics to the Events page: "Last hour" is
-// rolling, the day/week/month windows are UTC calendar-aligned so the graph is
-// exactly N date columns and lines up with the server's gap-filled buckets.
+// Range picker windows, identical semantics to the Events page: "Last hour" and
+// "Last day" are rolling, the week/month windows are UTC calendar-aligned so the
+// graph is exactly N date columns and lines up with the server's gap-filled buckets.
 const RANGES = [
   { key: '1h', label: 'Last hour', mode: 'rolling', ms: 3_600_000, bucket: 'minute' },
-  { key: '24h', label: 'Last day', mode: 'calendar', days: 1, bucket: 'hour' },
+  { key: '24h', label: 'Last day', mode: 'rolling', ms: 86_400_000, bucket: 'hour' },
   { key: '7d', label: 'Last 7 days', mode: 'calendar', days: 7, bucket: 'day' },
   { key: '30d', label: 'Last 30 days', mode: 'calendar', days: 30, bucket: 'day' },
 ] as const
@@ -92,17 +93,22 @@ const DELIVERY_STATUS_ORDER = Object.keys(deliveryConfig)
 
 const requestConfig = { count: { label: 'Requests', color: '#3b82f6' } } satisfies ChartConfig
 
-// ChartCard wraps a titled bordered card around a bar timeline. `empty` renders
-// the "no data" message centred (the series is always present/gap-filled, so
-// this only shows on a load error or a genuinely empty account).
+// ChartCard wraps a titled bordered card around a bar timeline. The series is
+// always present/gap-filled, so the centred fallbacks distinguish the three
+// non-chart states: still loading (skeleton), a failed fetch (error), or a
+// genuinely empty account (no data).
 function ChartCard({
   title,
   empty,
+  loading,
+  error,
   children,
   className,
 }: {
   title: string
   empty: boolean
+  loading: boolean
+  error: boolean
   children: React.ReactNode
   className?: string
 }) {
@@ -112,7 +118,11 @@ function ChartCard({
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 items-center justify-center px-4 pb-3">
-        {empty ? (
+        {loading ? (
+          <Skeleton className="h-full w-full" />
+        ) : error ? (
+          <span className="text-sm text-destructive">{"Couldn't load chart."}</span>
+        ) : empty ? (
           <span className="text-sm text-muted-foreground">No data to display.</span>
         ) : (
           children
@@ -145,7 +155,7 @@ function fmtLatency(ms: number | null): string | null {
 
 export function DestinationMetrics({ id }: { id: string }) {
   const { range, setRange, active, after } = useMetricsWindow()
-  const { data } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: qk.destinationMetrics(id, { bucket: active.bucket, after }),
     queryFn: () => api.destinationMetrics(id, { bucket: active.bucket, after }),
     refetchInterval: 5000,
@@ -153,7 +163,7 @@ export function DestinationMetrics({ id }: { id: string }) {
 
   const series = data?.series ?? []
   const present = DELIVERY_STATUS_ORDER.filter((k) =>
-    series.some((b) => (b.counts[k] ?? 0) > 0),
+    series.some((b) => (b.counts?.[k] ?? 0) > 0),
   )
   const chartData = series.map((b) => ({ ts: b.ts, ...b.counts }))
   const rate = data?.delivery_rate
@@ -164,7 +174,13 @@ export function DestinationMetrics({ id }: { id: string }) {
       <div className="flex justify-end">
         <RangePicker range={range} setRange={setRange} />
       </div>
-      <ChartCard title="Deliveries" empty={present.length === 0} className="min-h-40 flex-[3]">
+      <ChartCard
+        title="Deliveries"
+        empty={present.length === 0}
+        loading={isLoading}
+        error={isError}
+        className="min-h-40 flex-[3]"
+      >
         <ChartContainer config={deliveryConfig} className="aspect-auto h-40 w-full">
           <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap={2}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -202,7 +218,7 @@ export function DestinationMetrics({ id }: { id: string }) {
 
 export function SourceMetrics({ id }: { id: string }) {
   const { range, setRange, active, after } = useMetricsWindow()
-  const { data } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: qk.sourceMetrics(id, { bucket: active.bucket, after }),
     queryFn: () => api.sourceMetrics(id, { bucket: active.bucket, after }),
     refetchInterval: 5000,
@@ -218,7 +234,13 @@ export function SourceMetrics({ id }: { id: string }) {
       <div className="flex justify-end">
         <RangePicker range={range} setRange={setRange} />
       </div>
-      <ChartCard title="Requests" empty={!hasData} className="min-h-40 flex-[3]">
+      <ChartCard
+        title="Requests"
+        empty={!hasData}
+        loading={isLoading}
+        error={isError}
+        className="min-h-40 flex-[3]"
+      >
         <ChartContainer config={requestConfig} className="aspect-auto h-40 w-full">
           <BarChart data={series} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap={2}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" />

@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/ingest"
@@ -40,6 +41,16 @@ func SessionKey(sourceID uuid.UUID) string { return "cli:source:" + sourceID.Str
 // DispatchKey returns the Redis list key where the delivery worker pushes
 // events destined for the CLI tunnel.
 func DispatchKey(sourceID uuid.UUID) string { return "cli:dispatch:" + sourceID.String() }
+
+// releaseSession deletes the session key only if it still holds this
+// connection's token — a compare-and-delete so an older connection's teardown
+// can't wipe a newer connection's registration (audit #3).
+var releaseSession = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("del", KEYS[1])
+end
+return 0
+`)
 
 // originHost extracts the host[:port] from the configured public base URL, used
 // to pin the WebSocket Origin allowlist. Returns "" if unparseable, in which
@@ -145,13 +156,20 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 	}
 	sem := make(chan struct{}, maxConcurrentDispatch)
 
+	// Per-connection token so a reconnect (or a second CLI on this source) can't
+	// have its registration deleted by an older connection's teardown. The
+	// worker only checks the key's existence (deliver.dispatchToCLI), so the
+	// value matters solely for the compare-and-delete on teardown (audit #3).
 	sessionKey := SessionKey(sid)
-	if err := d.Redis.Set(ctx, sessionKey, "active", cliSessionTTL).Err(); err != nil {
+	sessionToken := uuid.NewString()
+	if err := d.Redis.Set(ctx, sessionKey, sessionToken, cliSessionTTL).Err(); err != nil {
 		d.Log.Error("cli: register session", "err", err)
 		disconnectReason = "register_failed"
 		return
 	}
-	defer d.Redis.Del(context.Background(), sessionKey)
+	// Release only if we still own the key. Background ctx: the session ctx is
+	// cancelled by the time this defer runs.
+	defer releaseSession.Run(context.Background(), d.Redis, []string{sessionKey}, sessionToken)
 
 	_ = writeJSON(map[string]any{
 		"type":      "hello",
@@ -161,6 +179,12 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 
 	// Ping loop keeps the session key alive.
 	go func() {
+		// A panic here must not crash the whole API process; log and unwind.
+		defer func() {
+			if rec := recover(); rec != nil {
+				d.Log.Error("cli goroutine panic", "goroutine", "ping", "panic", rec)
+			}
+		}()
 		t := time.NewTicker(cliPingEvery)
 		defer t.Stop()
 		for {
@@ -168,7 +192,10 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				d.Redis.Expire(ctx, sessionKey, cliSessionTTL)
+				// Re-Set (not Expire) so the key is re-established if it was
+				// wiped, e.g. by a racing older connection's teardown — bounds
+				// any invisibility window to one ping interval (audit #3).
+				d.Redis.Set(ctx, sessionKey, sessionToken, cliSessionTTL)
 				if err := writeJSON(map[string]any{"type": "ping"}); err != nil {
 					return
 				}
@@ -181,6 +208,14 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 
 	// Reader: handles response frames from the CLI.
 	go func() {
+		// A panic parsing an external frame must tear down this tunnel, not the
+		// whole API process. cancel() so the dispatch loop drains cleanly.
+		defer func() {
+			if rec := recover(); rec != nil {
+				d.Log.Error("cli goroutine panic", "goroutine", "reader", "panic", rec)
+				cancel()
+			}
+		}()
 		for {
 			var frame map[string]json.RawMessage
 			if err := wsjson.Read(ctx, conn, &frame); err != nil {
@@ -237,6 +272,13 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 		}
 		go func() {
 			defer func() { <-sem }()
+			// A panic in per-event handling (nil map, bad frame) must be contained
+			// to this event — like the worker — not crash the whole API process.
+			defer func() {
+				if rec := recover(); rec != nil {
+					d.Log.Error("cli goroutine panic", "goroutine", "dispatch", "event_id", evUUID.String(), "panic", rec)
+				}
+			}()
 			d.dispatchEventToCLI(ctx, writeJSON, bs, pending, evUUID)
 		}()
 	}

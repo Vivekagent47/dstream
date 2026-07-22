@@ -13,18 +13,27 @@ func TestIsPublicIP(t *testing.T) {
 		{"1.1.1.1", true},
 		{"8.8.8.8", true},
 		{"2606:4700:4700::1111", true},
-		{"127.0.0.1", false},        // loopback
-		{"::1", false},              // loopback v6
-		{"169.254.169.254", false},  // cloud metadata (link-local)
-		{"10.0.0.5", false},         // RFC1918
-		{"172.16.4.2", false},       // RFC1918
-		{"192.168.1.1", false},      // RFC1918
-		{"0.0.0.0", false},          // unspecified
-		{"fe80::1", false},          // link-local v6
-		{"fc00::1", false},          // ULA
-		{"224.0.0.1", false},        // multicast
-		{"::ffff:127.0.0.1", false}, // v4-mapped loopback must not slip through
-		{"::ffff:10.0.0.1", false},  // v4-mapped private
+		{"127.0.0.1", false},         // loopback
+		{"::1", false},               // loopback v6
+		{"169.254.169.254", false},   // cloud metadata (link-local)
+		{"10.0.0.5", false},          // RFC1918
+		{"172.16.4.2", false},        // RFC1918
+		{"192.168.1.1", false},       // RFC1918
+		{"0.0.0.0", false},           // unspecified
+		{"fe80::1", false},           // link-local v6
+		{"fc00::1", false},           // ULA
+		{"224.0.0.1", false},         // multicast
+		{"::ffff:127.0.0.1", false},  // v4-mapped loopback must not slip through
+		{"::ffff:10.0.0.1", false},   // v4-mapped private
+		{"100.64.0.1", false},        // CGNAT (RFC 6598) low edge
+		{"100.127.255.254", false},   // CGNAT (RFC 6598) high edge
+		{"::ffff:100.64.0.1", false}, // v4-mapped CGNAT must not slip through
+		{"198.18.0.1", false},        // benchmarking (RFC 2544) low edge
+		{"198.19.255.254", false},    // benchmarking (RFC 2544) high edge
+		{"100.63.255.255", true},     // just below CGNAT — still public
+		{"100.128.0.1", true},        // just above CGNAT — still public
+		{"198.17.255.255", true},     // just below benchmarking — still public
+		{"198.20.0.1", true},         // just above benchmarking — still public
 	}
 	for _, c := range cases {
 		ip, err := netip.ParseAddr(c.ip)
