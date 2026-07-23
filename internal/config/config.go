@@ -14,6 +14,7 @@ type Config struct {
 	LogLevel       string        `mapstructure:"log_level"`
 	LogFormat      string        `mapstructure:"log_format"`
 	PublicBaseURL  string        `mapstructure:"public_base_url"`
+	AppBaseURL     string        `mapstructure:"app_base_url"`
 	SessionSecret  string        `mapstructure:"session_secret"`
 	MagicLinkTTL   time.Duration `mapstructure:"magic_link_ttl"`
 	TrustedProxies []string      `mapstructure:"trusted_proxies"`
@@ -85,6 +86,10 @@ func Load() (Config, error) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("log_format", "json")
 	v.SetDefault("public_base_url", "http://localhost:8080")
+	// Frontend/SPA origin used to build user-facing links in emails (magic-link
+	// verify, invite). Empty => falls back to public_base_url after load. Set it
+	// when the web app is a separate origin from the API (e.g. dev web on :3000).
+	v.SetDefault("app_base_url", "")
 	v.SetDefault("session_secret", "")
 	v.SetDefault("magic_link_ttl", "15m")
 	v.SetDefault("trusted_proxies", []string{})
@@ -128,6 +133,11 @@ func Load() (Config, error) {
 		mapstructure.StringToTimeDurationHookFunc(),
 	))); err != nil {
 		return Config{}, fmt.Errorf("unmarshal config: %w", err)
+	}
+	// Single-origin deployments (API also serves the SPA) need no separate app
+	// URL — default it to the API origin.
+	if c.AppBaseURL == "" {
+		c.AppBaseURL = c.PublicBaseURL
 	}
 	return c, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/logging"
+	"github.com/Vivekagent47/dstream/internal/mailer"
 	"github.com/Vivekagent47/dstream/internal/store"
 	"github.com/Vivekagent47/dstream/internal/tracing"
 )
@@ -70,6 +72,12 @@ func workerCmd() *cobra.Command {
 			h := deliver.New(log, q, rdb, bs, dq, cfg.AllowPrivateDestinations)
 			h.PerOrgMaxInflight = cfg.Worker.PerOrgMaxInflight
 
+			sender, err := mailer.NewSender(cfg.SMTP)
+			if err != nil {
+				return fmt.Errorf("init mailer: %w", err)
+			}
+			emailHandler := mailer.EmailHandler{Sender: sender, Log: log, DevMode: cfg.DevMode}
+
 			// 5× the delivery timeout, matching the in-flight lease: long enough
 			// that a live delivery never has its lease reclaimed mid-flight, short
 			// enough that a crashed worker's events are recovered promptly.
@@ -102,6 +110,19 @@ func workerCmd() *cobra.Command {
 						// path and a panic in delivery is contained to this event
 						// instead of killing the whole worker process.
 						func() {
+							if p.Kind == "email" {
+								defer func() {
+									if rec := recover(); rec != nil {
+										log.Error("email process panic", "panic", rec)
+										// No events row for email; just terminate the task.
+										_ = dq.DeadLetter(context.Background(), raw)
+									}
+								}()
+								if err := emailHandler.Process(ctx, p, raw, dq); err != nil {
+									log.Error("email process", "err", err)
+								}
+								return
+							}
 							dctx := otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(p.Trace))
 							dctx, span := otel.Tracer("dstream/deliver").Start(dctx, "deliver")
 							defer span.End()
@@ -129,8 +150,14 @@ func workerCmd() *cobra.Command {
 			// pending ring. Recoverer: reinject events whose lease expired (crashed
 			// worker) so at-least-once holds.
 			wg.Add(2)
-			go func() { defer wg.Done(); tick(ctx, time.Second, func() { _, _ = dq.PromoteDue(ctx, time.Now().UnixMilli(), 500) }) }()
-			go func() { defer wg.Done(); tick(ctx, 30*time.Second, func() { _, _ = dq.Recover(ctx, time.Now().UnixMilli()) }) }()
+			go func() {
+				defer wg.Done()
+				tick(ctx, time.Second, func() { _, _ = dq.PromoteDue(ctx, time.Now().UnixMilli(), 500) })
+			}()
+			go func() {
+				defer wg.Done()
+				tick(ctx, 30*time.Second, func() { _, _ = dq.Recover(ctx, time.Now().UnixMilli()) })
+			}()
 
 			// DB-level safety net: re-queue events stuck with NO queue entry — an
 			// ingest enqueue that failed after the row was written, or a CLI tunnel

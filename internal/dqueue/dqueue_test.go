@@ -67,6 +67,24 @@ func TestFairPickRoundRobin(t *testing.T) {
 	}
 }
 
+func TestPayloadEmailRoundTrip(t *testing.T) {
+	c := testClient(t)
+	ctx := context.Background()
+	if err := c.Enqueue(ctx, Payload{Kind: "email", OrgID: uuid.Nil, Data: []byte(`{"template":"magic_link"}`)}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, p, ok, err := c.FairPick(ctx, 10000)
+	if err != nil || !ok {
+		t.Fatalf("fairpick ok=%v err=%v", ok, err)
+	}
+	if p.Kind != "email" {
+		t.Fatalf("kind=%q, want email", p.Kind)
+	}
+	if string(p.Data) != `{"template":"magic_link"}` {
+		t.Fatalf("data=%s", p.Data)
+	}
+}
+
 // TestDeadLetterCap dead-letters more entries than deadListCap and asserts the
 // dead list is LTRIM-bounded to the cap (not growing without bound).
 func TestDeadLetterCap(t *testing.T) {

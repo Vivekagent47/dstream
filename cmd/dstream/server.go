@@ -156,7 +156,7 @@ func serverCmd() *cobra.Command {
 				BodyStore:        bodyStore,
 				Signer:           signer,
 				PublicBaseURL:    cfg.PublicBaseURL,
-				DevMode:          cfg.DevMode,
+				AppBaseURL:       cfg.AppBaseURL,
 				EvictSourceCache: ih.InvalidateSource,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 

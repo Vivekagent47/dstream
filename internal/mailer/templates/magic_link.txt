@@ -1,0 +1,7 @@
+Sign in to dstream
+
+Click the link below to sign in. It expires in 15 minutes and can be used once.
+
+{{.Link}}
+
+If you didn't request this, ignore this email.

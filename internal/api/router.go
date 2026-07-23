@@ -30,13 +30,12 @@ type Deps struct {
 	Queue     *dqueue.Client
 	BodyStore ingest.BodyStore
 	Signer    *auth.SessionSigner
-	// PublicBaseURL is the externally-visible scheme://host[:port] for the
-	// service. Used to render invite links (and similar) into emails / logs.
+	// PublicBaseURL is the externally-visible scheme://host[:port] for the API
+	// (ingest URLs, CLI WebSocket Origin pin).
 	PublicBaseURL string
-	// DevMode gates dev-only conveniences (notably: logging plaintext
-	// magic-link and invite tokens to the server log). Production must
-	// leave this off, since the server log is then an audit-bypass vector.
-	DevMode bool
+	// AppBaseURL is the frontend/SPA origin used to build user-facing links in
+	// emails (magic-link verify, invite). May differ from PublicBaseURL.
+	AppBaseURL string
 	// EvictSourceCache drops a source from the ingest in-process cache so
 	// enable/disable and allowed-methods edits take effect immediately.
 	// nil-safe: nil means no cache to evict.
@@ -53,9 +52,9 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		Queries:       d.Queries,
 		Pool:          d.Pool,
 		Redis:         d.Redis,
+		Queue:         d.Queue,
 		Signer:        d.Signer,
-		PublicBaseURL: d.PublicBaseURL,
-		DevMode:       d.DevMode,
+		AppBaseURL:    d.AppBaseURL,
 	}
 	pl := pipeline.Handlers{
 		Log:              d.Log,

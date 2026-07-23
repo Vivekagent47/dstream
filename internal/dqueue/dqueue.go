@@ -45,6 +45,13 @@ type Payload struct {
 	RetryJitterPct      int32             `json:"retry_jitter_pct,omitempty"`
 	CustomRetrySchedule []byte            `json:"custom_retry_schedule,omitempty"`
 	Trace               map[string]string `json:"trace,omitempty"`
+	// Kind selects the worker handler. Empty (or "delivery") = webhook event
+	// delivery (the default path). "email" = a transactional-email task whose
+	// details live in Data.
+	Kind string `json:"kind,omitempty"`
+	// Data is the kind-specific payload for non-delivery tasks (email: a JSON
+	// {template,to,vars}). Unused by the delivery path.
+	Data []byte `json:"data,omitempty"`
 }
 
 // Client is a handle to the queue on a given Redis + keyspace prefix.

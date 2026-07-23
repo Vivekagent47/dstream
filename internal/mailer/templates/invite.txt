@@ -1,0 +1,5 @@
+You've been invited to dstream
+
+Click the link below to accept the invitation:
+
+{{.Link}}

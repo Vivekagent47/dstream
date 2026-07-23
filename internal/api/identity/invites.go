@@ -19,6 +19,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/mailer"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -197,15 +198,12 @@ func (d Handlers) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(SMTP): send email. The plaintext invite link is logged ONLY in
-	// dev mode — in prod the log is an audit-bypass vector (anyone with
-	// log-read access could click the link and join the org as the
-	// invited identity).
-	if d.DevMode {
-		link := strings.TrimRight(d.PublicBaseURL, "/") + "/invites/" + token
-		d.Log.Info("org invite issued", "org_id", orgID, "email", email, "link", link)
-	} else {
-		d.Log.Info("org invite issued", "org_id", orgID, "email", email)
+	// Enqueue the invite link as a durable email task (the worker sends it).
+	// The link is only ever logged in dev (see mailer.EmailHandler); prod
+	// never logs it — it's an auth-bypass vector.
+	link := strings.TrimRight(d.AppBaseURL, "/") + "/invites/" + token
+	if err := mailer.Enqueue(r.Context(), d.Queue, "invite", email, map[string]any{"Link": link}, orgID); err != nil {
+		d.Log.Error("invites: enqueue invite email", "err", err, "org_id", orgID, "email", email)
 	}
 
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
@@ -427,12 +425,9 @@ func (d Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusInternalServerError, "magic link")
 		return
 	}
-	if d.DevMode {
-		d.Log.Info("magic link for invite accept (dev)",
-			"email", inv.Email,
-			"link", "/api/auth/magic-link/verify?token="+url.QueryEscape(mlTok))
-	} else {
-		d.Log.Info("magic link for invite accept", "email", inv.Email)
+	mlLink := strings.TrimRight(d.AppBaseURL, "/") + "/auth/verify?token=" + url.QueryEscape(mlTok)
+	if err := mailer.Enqueue(r.Context(), d.Queue, "magic_link", inv.Email, map[string]any{"Link": mlLink}, uuid.Nil); err != nil {
+		d.Log.Error("invites: enqueue accept-invite magic link email", "err", err, "email", inv.Email)
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"requires_login": true})
 }

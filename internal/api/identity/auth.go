@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/mailer"
 	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
@@ -77,16 +78,14 @@ func (d Handlers) RequestMagicLink(w http.ResponseWriter, r *http.Request) {
 		// still return 202 to avoid leaking the failure mode
 	} else {
 		metrics.MagicLink("issued")
-		// TODO(phase-1.4): send email via SMTP. The plaintext token is
-		// logged ONLY in dev mode — in prod the log is an audit-bypass
-		// vector (anyone with log-read access could grab the link, click
-		// it, and pin the victim's session to themselves).
-		if d.DevMode {
-			d.Log.Info("magic link issued (dev: open in browser)",
-				"email", email,
-				"link", "/auth/verify?token="+url.QueryEscape(token))
-		} else {
-			d.Log.Info("magic link issued", "email", email)
+		// Enqueue the sign-in link as a durable email task (the worker sends
+		// it). The link is only ever logged in dev (see mailer.EmailHandler);
+		// prod never logs it — it's an auth-bypass vector.
+		link := strings.TrimRight(d.AppBaseURL, "/") + "/auth/verify?token=" + url.QueryEscape(token)
+		if err := mailer.Enqueue(r.Context(), d.Queue, "magic_link", email, map[string]any{"Link": link}, uuid.Nil); err != nil {
+			// Log and still return 202: the response must not depend on send
+			// success (no-leak). User can re-request (rate-limited, 15m TTL).
+			d.Log.Error("auth: enqueue magic link email", "err", err, "email", email)
 		}
 	}
 	w.WriteHeader(http.StatusAccepted)
