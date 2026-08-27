@@ -56,6 +56,10 @@ type Handler struct {
 	RateLimitRPS   int
 	RateLimitBurst int
 
+	// MaxWebhookHops rejects an ingest request whose Dstream-Webhook-Hops
+	// header has already reached this ceiling (loop guard). 0 disables.
+	MaxWebhookHops int
+
 	// In-process cache for source lookups keyed by ingest_token. The
 	// ingest hot path was hitting Postgres on every webhook (~0.5–1ms per
 	// request) even though source rows change rarely; this collapses
@@ -107,6 +111,14 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	if !methodAllowed(src.AllowedMethods, r.Method) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Loop guard: refuse a request that has already bounced through dstream too
+	// many times (deliver→ingest→deliver…). No enqueue, before reading the body.
+	if h.MaxWebhookHops > 0 && hopCount(r) >= h.MaxWebhookHops {
+		h.Log.Warn("ingest: webhook loop guard tripped", "source_id", src.ID, "hops", hopCount(r))
+		http.Error(w, "loop detected: Dstream-Webhook-Hops limit reached", http.StatusForbidden)
 		return
 	}
 
@@ -381,6 +393,14 @@ func parseRemoteAddr(r *http.Request) *netip.Addr {
 		return nil
 	}
 	return &addr
+}
+
+// hopCount reads the Dstream-Webhook-Hops request header (0 if absent/invalid).
+func hopCount(r *http.Request) int {
+	if n, err := strconv.Atoi(r.Header.Get("Dstream-Webhook-Hops")); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 func optStr(s string) *string {

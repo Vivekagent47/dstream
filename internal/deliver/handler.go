@@ -295,6 +295,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	}
 	httpReq.Header.Set("Dstream-Event-Id", store.GoUUID(row.ID).String())
 	httpReq.Header.Set("Dstream-Event-Attempt", fmt.Sprintf("%d", row.AttemptCount+1))
+	httpReq.Header.Set("Dstream-Webhook-Hops", fmt.Sprintf("%d", incomingHops(headers)+1))
 
 	start := time.Now()
 	resp, doErr := h.HTTP.Do(httpReq)

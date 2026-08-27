@@ -10,6 +10,7 @@ import (
 
 	apicli "github.com/Vivekagent47/dstream/internal/api/cli"
 	"github.com/Vivekagent47/dstream/internal/api/identity"
+	"github.com/Vivekagent47/dstream/internal/api/outbound"
 	"github.com/Vivekagent47/dstream/internal/api/pipeline"
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
@@ -40,6 +41,9 @@ type Deps struct {
 	// enable/disable and allowed-methods edits take effect immediately.
 	// nil-safe: nil means no cache to evict.
 	EvictSourceCache func(token string)
+	// SelfHosts are dstream's own hostnames; a webhook endpoint/destination
+	// pointing at one is rejected at create/patch (loop guard).
+	SelfHosts []string
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
@@ -48,13 +52,13 @@ type Deps struct {
 // still declared here so the auth layering stays visible in one place.
 func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) {
 	id := identity.Handlers{
-		Log:           d.Log,
-		Queries:       d.Queries,
-		Pool:          d.Pool,
-		Redis:         d.Redis,
-		Queue:         d.Queue,
-		Signer:        d.Signer,
-		AppBaseURL:    d.AppBaseURL,
+		Log:        d.Log,
+		Queries:    d.Queries,
+		Pool:       d.Pool,
+		Redis:      d.Redis,
+		Queue:      d.Queue,
+		Signer:     d.Signer,
+		AppBaseURL: d.AppBaseURL,
 	}
 	pl := pipeline.Handlers{
 		Log:              d.Log,
@@ -62,12 +66,19 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		Queue:            d.Queue,
 		BodyStore:        d.BodyStore,
 		EvictSourceCache: d.EvictSourceCache,
+		SelfHosts:        d.SelfHosts,
 	}
 	cli := apicli.Handlers{
 		Log:           d.Log,
 		Queries:       d.Queries,
 		Redis:         d.Redis,
 		PublicBaseURL: d.PublicBaseURL,
+	}
+	ob := outbound.Handlers{
+		Log:       d.Log,
+		Queries:   d.Queries,
+		Queue:     d.Queue,
+		SelfHosts: d.SelfHosts,
 	}
 
 	parent.Route("/api", func(r chi.Router) {
@@ -167,6 +178,39 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/histogram", pl.EventsHistogram)
 					r.Get("/{id}", pl.GetEvent)
 					r.Post("/{id}/retry", pl.RetryEvent)
+				})
+
+				r.Route("/applications", func(r chi.Router) {
+					r.Get("/", ob.ListApplications)
+					r.Post("/", ob.CreateApplication)
+					r.Get("/{app_id}", ob.GetApplication)
+					r.Patch("/{app_id}", ob.PatchApplication)
+					r.Delete("/{app_id}", ob.DeleteApplication)
+
+					r.Route("/{app_id}/endpoints", func(r chi.Router) {
+						r.Get("/", ob.ListEndpoints)
+						r.Post("/", ob.CreateEndpoint)
+						r.Get("/{id}", ob.GetEndpoint)
+						r.Patch("/{id}", ob.PatchEndpoint)
+						r.Delete("/{id}", ob.DeleteEndpoint)
+						r.Get("/{id}/secret", ob.GetEndpointSecret)
+						r.Get("/{id}/attempts", ob.ListEndpointAttempts)
+					})
+
+					r.Route("/{app_id}/messages", func(r chi.Router) {
+						r.Get("/", ob.ListMessages)
+						r.Post("/", ob.CreateMessage)
+						r.Get("/{id}", ob.GetMessage)
+						r.Get("/{id}/attempts", ob.ListMessageAttempts)
+					})
+				})
+
+				r.Route("/event-types", func(r chi.Router) {
+					r.Get("/", ob.ListEventTypes)
+					r.Post("/", ob.CreateEventType)
+					r.Get("/{name}", ob.GetEventType)
+					r.Patch("/{name}", ob.PatchEventType)
+					r.Delete("/{name}", ob.DeleteEventType)
 				})
 
 				// CLI control-plane lookups + WS tunnel registration.

@@ -43,6 +43,7 @@ type Querier interface {
 	// @queued_stuck_before still yields one duplicate re-enqueue per window;
 	// acceptable under the system's at-least-once contract.
 	ClaimStuckEvents(ctx context.Context, arg ClaimStuckEventsParams) ([]ClaimStuckEventsRow, error)
+	ClaimStuckMessageDeliveries(ctx context.Context) ([]ClaimStuckMessageDeliveriesRow, error)
 	// Per-status event counts for one connection over a recent window, excluding
 	// synthetic test events so health metrics reflect real traffic. Caller passes
 	// the window start; folds the rows into delivered/failed/pending buckets.
@@ -57,9 +58,12 @@ type Querier interface {
 	CountOrganizations(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
+	CreateApplication(ctx context.Context, arg CreateApplicationParams) (Application, error)
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (Attempt, error)
 	CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error)
 	CreateDestination(ctx context.Context, arg CreateDestinationParams) (Destination, error)
+	CreateEndpoint(ctx context.Context, arg CreateEndpointParams) (Endpoint, error)
+	CreateEventType(ctx context.Context, arg CreateEventTypeParams) (EventType, error)
 	// Fan-out insert: one queued event per connection_id, all sharing the same
 	// request_id and org_id (a source belongs to exactly one org). One statement
 	// instead of a roundtrip per destination. RETURNING order is not guaranteed,
@@ -67,13 +71,19 @@ type Querier interface {
 	// index. @is_test is a per-request scalar (a request is wholly test or not).
 	CreateEventsBatch(ctx context.Context, arg CreateEventsBatchParams) ([]Event, error)
 	CreateMagicLinkToken(ctx context.Context, arg CreateMagicLinkTokenParams) (MagicLinkToken, error)
+	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
+	CreateMessageDeliveriesBatch(ctx context.Context, arg CreateMessageDeliveriesBatchParams) ([]CreateMessageDeliveriesBatchRow, error)
+	CreateMessageDeliveryAttempt(ctx context.Context, arg CreateMessageDeliveryAttemptParams) (MessageDeliveryAttempt, error)
 	CreateOrgInvite(ctx context.Context, arg CreateOrgInviteParams) (OrgInvite, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (Organization, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
 	CreateSource(ctx context.Context, arg CreateSourceParams) (Source, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteApplicationForOrg(ctx context.Context, arg DeleteApplicationForOrgParams) (pgtype.UUID, error)
 	DeleteConnectionForOrg(ctx context.Context, arg DeleteConnectionForOrgParams) error
 	DeleteDestinationForOrg(ctx context.Context, arg DeleteDestinationForOrgParams) error
+	DeleteEndpointForApp(ctx context.Context, arg DeleteEndpointForAppParams) (pgtype.UUID, error)
+	DeleteEventTypeForOrg(ctx context.Context, arg DeleteEventTypeForOrgParams) (pgtype.UUID, error)
 	// Reclaim spent + lapsed tokens: expires_at is set at creation, so both used
 	// and never-used tokens become deletable once their expiry is older than
 	// @cutoff. Backed by magic_link_tokens_expires_idx.
@@ -116,9 +126,12 @@ type Querier interface {
 	// WHERE after the first commits used_at and finds no row (single-use enforced).
 	GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error)
 	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
+	GetApplicationForOrg(ctx context.Context, arg GetApplicationForOrgParams) (Application, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
 	GetDestinationForOrg(ctx context.Context, arg GetDestinationForOrgParams) (Destination, error)
+	GetEndpointForApp(ctx context.Context, arg GetEndpointForAppParams) (Endpoint, error)
+	GetEndpointSecret(ctx context.Context, arg GetEndpointSecretParams) (string, error)
 	GetEventByID(ctx context.Context, id pgtype.UUID) (Event, error)
 	// Full event view for the detail page: the event, its connection's
 	// source/destination, the destination endpoint, and the originating request
@@ -129,7 +142,11 @@ type Querier interface {
 	// org_id lives on events now, so this is a direct two-column lookup (PK + org)
 	// instead of a join through connections/sources.
 	GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (Event, error)
+	GetEventTypeForOrg(ctx context.Context, arg GetEventTypeForOrgParams) (EventType, error)
 	GetFirstOrgForUser(ctx context.Context, userID pgtype.UUID) (pgtype.UUID, error)
+	GetMessageByAppEventID(ctx context.Context, arg GetMessageByAppEventIDParams) (Message, error)
+	GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID) (GetMessageDeliveryForSendRow, error)
+	GetMessageForApp(ctx context.Context, arg GetMessageForAppParams) (Message, error)
 	GetOrgMember(ctx context.Context, arg GetOrgMemberParams) (OrgMember, error)
 	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error)
 	GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error)
@@ -146,7 +163,10 @@ type Querier interface {
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
 	ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error)
 	ListAllOrganizations(ctx context.Context) ([]Organization, error)
+	ListApplicationsByOrg(ctx context.Context, arg ListApplicationsByOrgParams) ([]Application, error)
+	ListAttemptsByEndpoint(ctx context.Context, arg ListAttemptsByEndpointParams) ([]MessageDeliveryAttempt, error)
 	ListAttemptsByEvent(ctx context.Context, eventID pgtype.UUID) ([]Attempt, error)
+	ListAttemptsByMessage(ctx context.Context, messageID pgtype.UUID) ([]MessageDeliveryAttempt, error)
 	// LEFT JOIN may yield NULL for u/k columns; COALESCE so sqlc generates
 	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
 	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
@@ -159,6 +179,8 @@ type Querier interface {
 	ListDestinationInfo(ctx context.Context) ([]ListDestinationInfoRow, error)
 	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)
 	ListEnabledConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
+	ListEndpointsByApp(ctx context.Context, arg ListEndpointsByAppParams) ([]Endpoint, error)
+	ListEventTypesByOrg(ctx context.Context, arg ListEventTypesByOrgParams) ([]EventType, error)
 	// Keyset pagination on (created_at DESC, id DESC). Optional connection_id and
 	// status filters use the narg NULL-guard idiom (see audit_logs.sql): a nil
 	// param drops the clause. The handler passes connection_id as a Valid pgtype
@@ -167,6 +189,8 @@ type Querier interface {
 	// unfiltered. events_connection_created_idx serves the connection+order path;
 	// events_org_created_idx the org-only path.
 	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
+	ListMatchingEndpoints(ctx context.Context, arg ListMatchingEndpointsParams) ([]pgtype.UUID, error)
+	ListMessagesByApp(ctx context.Context, arg ListMessagesByAppParams) ([]ListMessagesByAppRow, error)
 	// Explicit column list (no SELECT i.*) — token_hash is a secret-adjacent
 	// value (sha256 of the bearer token) and must never leave the database.
 	// invited_by UUID is omitted; we surface invited_by_email for the UI.
@@ -176,6 +200,11 @@ type Querier interface {
 	ListPendingOrgInvitesByEmail(ctx context.Context, email string) ([]OrgInvite, error)
 	ListSourceInfo(ctx context.Context) ([]ListSourceInfoRow, error)
 	ListSourcesByOrg(ctx context.Context, orgID pgtype.UUID) ([]Source, error)
+	MarkDeliveryDead(ctx context.Context, id pgtype.UUID) error
+	MarkDeliveryDelivered(ctx context.Context, id pgtype.UUID) error
+	MarkDeliveryDisabled(ctx context.Context, id pgtype.UUID) error
+	MarkDeliveryForRetry(ctx context.Context, arg MarkDeliveryForRetryParams) error
+	MarkDeliveryInFlight(ctx context.Context, id pgtype.UUID) error
 	// attempt_count is bumped once per delivery cycle by MarkEventInFlight; the
 	// terminal transitions must NOT increment again (that double-counted attempts
 	// and made recorded attempt_num values skip).
@@ -221,6 +250,9 @@ type Querier interface {
 	// concurrent op, or the target has been removed, the UPDATE matches 0
 	// rows and the handler returns 403/400. No SELECT-then-UPDATE TOCTOU.
 	TransferOrgOwnership(ctx context.Context, arg TransferOrgOwnershipParams) (int64, error)
+	UpdateApplication(ctx context.Context, arg UpdateApplicationParams) (Application, error)
+	UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) (Endpoint, error)
+	UpdateEventType(ctx context.Context, arg UpdateEventTypeParams) (EventType, error)
 	UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error
 	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (Organization, error)
 	UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error)

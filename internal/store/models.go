@@ -22,6 +22,16 @@ type ApiKey struct {
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
+type Application struct {
+	ID        pgtype.UUID        `json:"id"`
+	OrgID     pgtype.UUID        `json:"org_id"`
+	Uid       *string            `json:"uid"`
+	Name      string             `json:"name"`
+	Metadata  []byte             `json:"metadata"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Attempt struct {
 	ID              pgtype.UUID        `json:"id"`
 	EventID         pgtype.UUID        `json:"event_id"`
@@ -89,6 +99,20 @@ type Destination struct {
 	Description    string             `json:"description"`
 }
 
+type Endpoint struct {
+	ID               pgtype.UUID        `json:"id"`
+	AppID            pgtype.UUID        `json:"app_id"`
+	OrgID            pgtype.UUID        `json:"org_id"`
+	Uid              *string            `json:"uid"`
+	Url              string             `json:"url"`
+	Description      string             `json:"description"`
+	Secret           string             `json:"secret"`
+	FilterEventTypes []string           `json:"filter_event_types"`
+	Disabled         bool               `json:"disabled"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Event struct {
 	ID            pgtype.UUID        `json:"id"`
 	RequestID     pgtype.UUID        `json:"request_id"`
@@ -103,6 +127,17 @@ type Event struct {
 	IsTest        bool               `json:"is_test"`
 }
 
+type EventType struct {
+	ID          pgtype.UUID        `json:"id"`
+	OrgID       pgtype.UUID        `json:"org_id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Schema      []byte             `json:"schema"`
+	Archived    bool               `json:"archived"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type MagicLinkToken struct {
 	ID        pgtype.UUID        `json:"id"`
 	Email     string             `json:"email"`
@@ -110,6 +145,42 @@ type MagicLinkToken struct {
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 	UsedAt    pgtype.Timestamptz `json:"used_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Message struct {
+	ID          pgtype.UUID        `json:"id"`
+	AppID       pgtype.UUID        `json:"app_id"`
+	OrgID       pgtype.UUID        `json:"org_id"`
+	EventType   string             `json:"event_type"`
+	Payload     []byte             `json:"payload"`
+	PayloadHash string             `json:"payload_hash"`
+	EventID     *string            `json:"event_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type MessageDelivery struct {
+	ID            pgtype.UUID        `json:"id"`
+	MessageID     pgtype.UUID        `json:"message_id"`
+	EndpointID    pgtype.UUID        `json:"endpoint_id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	Status        string             `json:"status"`
+	AttemptCount  int32              `json:"attempt_count"`
+	NextRetryAt   pgtype.Timestamptz `json:"next_retry_at"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MessageDeliveryAttempt struct {
+	ID              pgtype.UUID        `json:"id"`
+	DeliveryID      pgtype.UUID        `json:"delivery_id"`
+	AttemptNum      int32              `json:"attempt_num"`
+	ResponseStatus  *int32             `json:"response_status"`
+	ResponseHeaders []byte             `json:"response_headers"`
+	ResponseBody    []byte             `json:"response_body"`
+	DurationMs      *int32             `json:"duration_ms"`
+	ErrorMessage    *string            `json:"error_message"`
+	AttemptedAt     pgtype.Timestamptz `json:"attempted_at"`
 }
 
 type OrgInvite struct {

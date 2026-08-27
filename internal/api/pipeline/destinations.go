@@ -54,6 +54,10 @@ func (d Handlers) CreateDestination(w http.ResponseWriter, r *http.Request) {
 			httpx.Err(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
 			return
 		}
+		if deliver.IsSelfHost(*body.URL, d.SelfHosts) {
+			httpx.Err(w, http.StatusBadRequest, "url must not point at dstream itself (loop guard)")
+			return
+		}
 	}
 	authCfg := body.AuthConfig
 	if len(authCfg) == 0 {
@@ -188,6 +192,10 @@ func (d Handlers) PatchDestination(w http.ResponseWriter, r *http.Request) {
 	if effectiveType == "http" {
 		if err := deliver.ValidateDestinationURL(*effectiveURL); err != nil {
 			httpx.Err(w, http.StatusBadRequest, "invalid destination url: "+err.Error())
+			return
+		}
+		if deliver.IsSelfHost(*effectiveURL, d.SelfHosts) {
+			httpx.Err(w, http.StatusBadRequest, "url must not point at dstream itself (loop guard)")
 			return
 		}
 	}

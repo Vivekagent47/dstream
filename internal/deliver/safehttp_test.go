@@ -75,3 +75,22 @@ func TestForwardableHeader(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSelfHost(t *testing.T) {
+	self := []string{"dstream.example.com"}
+	if !IsSelfHost("https://dstream.example.com/e/tok", self) {
+		t.Fatal("own host must be self")
+	}
+	if IsSelfHost("https://customer.test/hook", self) {
+		t.Fatal("external host must not be self")
+	}
+}
+
+func TestIncomingHops(t *testing.T) {
+	if got := incomingHops(map[string][]string{"Dstream-Webhook-Hops": {"2"}}); got != 2 {
+		t.Fatalf("got %d want 2", got)
+	}
+	if got := incomingHops(map[string][]string{}); got != 0 {
+		t.Fatalf("absent must be 0, got %d", got)
+	}
+}

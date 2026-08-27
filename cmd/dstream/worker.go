@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"
@@ -21,6 +23,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/mailer"
 	"github.com/Vivekagent47/dstream/internal/store"
 	"github.com/Vivekagent47/dstream/internal/tracing"
+	"github.com/Vivekagent47/dstream/internal/webhook"
 )
 
 func workerCmd() *cobra.Command {
@@ -77,6 +80,11 @@ func workerCmd() *cobra.Command {
 				return fmt.Errorf("init mailer: %w", err)
 			}
 			emailHandler := mailer.EmailHandler{Sender: sender, Log: log, DevMode: cfg.DevMode}
+			outboundHandler := webhook.Handler{
+				Log:     log,
+				Queries: q,
+				HTTP:    deliver.NewSafeHTTPClient(30*time.Second, cfg.AllowPrivateDestinations),
+			}
 
 			// 5× the delivery timeout, matching the in-flight lease: long enough
 			// that a live delivery never has its lease reclaimed mid-flight, short
@@ -120,6 +128,22 @@ func workerCmd() *cobra.Command {
 								}()
 								if err := emailHandler.Process(ctx, p, raw, dq); err != nil {
 									log.Error("email process", "err", err)
+								}
+								return
+							}
+							if p.Kind == "message" {
+								defer func() {
+									if rec := recover(); rec != nil {
+										log.Error("outbound process panic", "panic", rec)
+										bg := context.Background()
+										_ = dq.DeadLetter(bg, raw)
+										if did, e := messageDeliveryID(p); e == nil {
+											_ = q.MarkDeliveryDead(bg, store.UUID(did))
+										}
+									}
+								}()
+								if err := outboundHandler.Process(ctx, p, raw, dq); err != nil {
+									log.Error("outbound process", "err", err)
 								}
 								return
 							}
@@ -167,6 +191,9 @@ func workerCmd() *cobra.Command {
 			wg.Add(1)
 			go func() { defer wg.Done(); h.RunReaper(ctx) }()
 
+			wg.Add(1)
+			go func() { defer wg.Done(); outboundHandler.RunReaper(ctx, dq) }()
+
 			// Background maintenance: purge expired magic-link tokens + invites.
 			wg.Add(1)
 			go func() { defer wg.Done(); runMaintenance(ctx, q, log) }()
@@ -177,6 +204,18 @@ func workerCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// messageDeliveryID decodes the delivery id embedded in a Kind:"message" task's
+// Data so the panic-recover can dead-letter the delivery row.
+func messageDeliveryID(p dqueue.Payload) (uuid.UUID, error) {
+	var t struct {
+		DeliveryID string `json:"delivery_id"`
+	}
+	if err := json.Unmarshal(p.Data, &t); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Parse(t.DeliveryID)
 }
 
 // tick runs fn every d until ctx is cancelled.

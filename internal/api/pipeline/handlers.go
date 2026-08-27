@@ -24,4 +24,7 @@ type Handlers struct {
 	// enable/disable and allowed-methods edits take effect immediately.
 	// nil-safe: nil means no cache to evict.
 	EvictSourceCache func(token string)
+	// SelfHosts are dstream's own hostnames; a destination pointing at one is
+	// rejected at create/patch (loop guard).
+	SelfHosts []string
 }

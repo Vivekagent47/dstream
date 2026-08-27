@@ -144,6 +144,7 @@ func serverCmd() *cobra.Command {
 				Limiter:        redis_rate.NewLimiter(rdb),
 				RateLimitRPS:   cfg.IngestRateLimitRPS,
 				RateLimitBurst: cfg.IngestRateLimitBurst,
+				MaxWebhookHops: cfg.MaxWebhookHops,
 			}
 			ih.Mount(r)
 
@@ -158,6 +159,7 @@ func serverCmd() *cobra.Command {
 				PublicBaseURL:    cfg.PublicBaseURL,
 				AppBaseURL:       cfg.AppBaseURL,
 				EvictSourceCache: ih.InvalidateSource,
+				SelfHosts:        cfg.SelfHosts,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{

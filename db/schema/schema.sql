@@ -301,3 +301,93 @@ CREATE TABLE cli_sessions (
 );
 CREATE INDEX cli_sessions_source_idx  ON cli_sessions (source_id);
 CREATE INDEX cli_sessions_expires_idx ON cli_sessions (expires_at);
+
+-- =========================================================================
+-- Outbound webhooks (Svix-style)
+-- =========================================================================
+
+-- Outbound webhooks (Svix-style). An org sends "messages" to an application
+-- (an end-customer); dstream fans each out to that app's subscribed endpoints,
+-- signed. Parallel to the inbound source/connection/destination graph.
+
+CREATE TABLE applications (
+  id         UUID PRIMARY KEY DEFAULT uuidv7(),
+  org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  uid        TEXT,                       -- caller-supplied external id (addressable)
+  name       TEXT NOT NULL,
+  metadata   JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX applications_org_idx ON applications (org_id);
+CREATE UNIQUE INDEX applications_org_uid_idx ON applications (org_id, uid) WHERE uid IS NOT NULL;
+
+CREATE TABLE event_types (
+  id          UUID PRIMARY KEY DEFAULT uuidv7(),
+  org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,             -- e.g. invoice.paid
+  description TEXT NOT NULL DEFAULT '',
+  schema      JSONB,                     -- payload json-schema; stored-only in 2a
+  archived    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX event_types_org_name_idx ON event_types (org_id, name);
+
+CREATE TABLE endpoints (
+  id                 UUID PRIMARY KEY DEFAULT uuidv7(),
+  app_id             UUID NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  org_id             UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  uid                TEXT,
+  url                TEXT NOT NULL,
+  description        TEXT NOT NULL DEFAULT '',
+  secret             TEXT NOT NULL,      -- whsec_<base64>; revealable shared secret
+  filter_event_types TEXT[],             -- NULL/empty = receive all types
+  disabled           BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX endpoints_app_idx ON endpoints (app_id);
+CREATE UNIQUE INDEX endpoints_app_uid_idx ON endpoints (app_id, uid) WHERE uid IS NOT NULL;
+
+CREATE TABLE messages (
+  id           UUID PRIMARY KEY DEFAULT uuidv7(),  -- the webhook-id sent to receivers
+  app_id       UUID NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  event_type   TEXT NOT NULL,           -- name (not FK): historical msgs survive type delete
+  payload      BYTEA NOT NULL,          -- serialized delivery body, signed+sent verbatim
+  payload_hash TEXT NOT NULL,           -- sha256 hex of payload
+  event_id     TEXT,                    -- caller idempotency key
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX messages_app_created_idx ON messages (app_id, created_at DESC);
+CREATE UNIQUE INDEX messages_app_event_id_idx ON messages (app_id, event_id) WHERE event_id IS NOT NULL;
+
+CREATE TABLE message_deliveries (
+  id            UUID PRIMARY KEY DEFAULT uuidv7(),
+  message_id    UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  endpoint_id   UUID NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+  org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL DEFAULT 'queued'
+                CHECK (status IN ('queued','in_flight','delivered','failed','dead','disabled')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at TIMESTAMPTZ,
+  last_attempt_at TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX message_deliveries_endpoint_idx ON message_deliveries (endpoint_id, created_at DESC);
+CREATE INDEX message_deliveries_message_idx ON message_deliveries (message_id);
+
+CREATE TABLE message_delivery_attempts (
+  id               UUID PRIMARY KEY DEFAULT uuidv7(),
+  delivery_id      UUID NOT NULL REFERENCES message_deliveries(id) ON DELETE CASCADE,
+  attempt_num      INTEGER NOT NULL,
+  response_status  INTEGER,
+  response_headers JSONB,
+  response_body    BYTEA,
+  duration_ms      INTEGER,
+  error_message    TEXT,
+  attempted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX mda_delivery_attempt_idx ON message_delivery_attempts (delivery_id, attempt_num);

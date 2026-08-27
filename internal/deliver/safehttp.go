@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -73,6 +74,12 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	}
 }
 
+// NewSafeHTTPClient is the exported constructor for the SSRF-guarded delivery
+// client, reused by the outbound (Svix) webhook handler in internal/webhook.
+func NewSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
+	return newSafeHTTPClient(timeout, allowPrivate)
+}
+
 // Ranges netip's IsPrivate() doesn't cover but that route to internal infra:
 // RFC 6598 CGNAT (100.64.0.0/10, common for k8s pod/service meshes and cloud
 // internal networks) and RFC 2544 benchmarking (198.18.0.0/15). Parsed once.
@@ -118,6 +125,35 @@ func ValidateDestinationURL(raw string) error {
 	return nil
 }
 
+// IsSelfHost reports whether raw's host is one of dstream's own hostnames — used
+// to reject self-referential webhook targets (loop guard).
+func IsSelfHost(raw string, selfHosts []string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	for _, s := range selfHosts {
+		if h == s {
+			return true
+		}
+	}
+	return false
+}
+
+// incomingHops reads the Dstream-Webhook-Hops value from a stored request's
+// headers (case-insensitive), 0 if absent/invalid.
+func incomingHops(headers map[string][]string) int {
+	for k, vs := range headers {
+		if strings.EqualFold(k, "Dstream-Webhook-Hops") && len(vs) > 0 {
+			if n, err := strconv.Atoi(vs[0]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
 // sensitiveHeaders are stripped from inbound requests before they are forwarded
 // to a destination: credentials that were meant for dstream (not the
 // destination) plus hop-by-hop headers that must not be proxied. Keys are in
@@ -140,6 +176,9 @@ var sensitiveHeaders = map[string]struct{}{
 	"X-Forwarded-Host":    {},
 	"X-Forwarded-Proto":   {},
 	"X-Real-Ip":           {},
+	// Set explicitly by the delivery worker per hop; never re-forward the
+	// stored inbound value or the hop count would not advance (loop guard).
+	"Dstream-Webhook-Hops": {},
 }
 
 // forwardableHeader reports whether an inbound header key may be forwarded to a

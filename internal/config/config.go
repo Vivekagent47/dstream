@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -36,6 +37,13 @@ type Config struct {
 	// out of stdout instead of wiring SMTP. Must be explicitly opted into
 	// via DSTREAM_DEV_MODE=true.
 	DevMode bool `mapstructure:"dev_mode"`
+
+	// Loop guard. SelfHosts are dstream's own hostnames; a webhook target
+	// (endpoint or destination) pointing at one is rejected. Derived from
+	// PublicBaseURL + AppBaseURL plus explicit DSTREAM_SELF_HOSTS (comma list).
+	SelfHostsRaw   string   `mapstructure:"self_hosts"`
+	MaxWebhookHops int      `mapstructure:"max_webhook_hops"`
+	SelfHosts      []string `mapstructure:"-"` // computed in Load
 
 	DB     DBConfig     `mapstructure:"db"`
 	Redis  RedisConfig  `mapstructure:"redis"`
@@ -100,6 +108,8 @@ func Load() (Config, error) {
 	v.SetDefault("allow_private_destinations", false)
 	v.SetDefault("ingest_rate_limit_rps", 100)
 	v.SetDefault("ingest_rate_limit_burst", 200)
+	v.SetDefault("self_hosts", "")
+	v.SetDefault("max_webhook_hops", 3)
 
 	v.SetDefault("db.url", "postgres://dstream:dstream@localhost:5432/dstream?sslmode=disable")
 	v.SetDefault("db.max_conns", 20)
@@ -138,6 +148,25 @@ func Load() (Config, error) {
 	// URL — default it to the API origin.
 	if c.AppBaseURL == "" {
 		c.AppBaseURL = c.PublicBaseURL
+	}
+	// Loop guard: collect dstream's own hostnames from the base URLs + explicit list.
+	hostSet := map[string]struct{}{}
+	for _, raw := range []string{c.PublicBaseURL, c.AppBaseURL} {
+		if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+			hostSet[strings.ToLower(u.Hostname())] = struct{}{}
+		}
+	}
+	for _, h := range strings.Split(c.SelfHostsRaw, ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			hostSet[h] = struct{}{}
+		}
+	}
+	c.SelfHosts = make([]string, 0, len(hostSet))
+	for h := range hostSet {
+		c.SelfHosts = append(c.SelfHosts, h)
+	}
+	if c.MaxWebhookHops <= 0 {
+		c.MaxWebhookHops = 3
 	}
 	return c, nil
 }
