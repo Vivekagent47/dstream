@@ -13,6 +13,7 @@ Combined positioning: **"the dev IDE for webhooks"**.
 Deploy model: single codebase serves SaaS (multi-tenant) + self-host (Docker Compose / Helm / single-binary). Like PostHog or Convoy.
 
 This planning session produces **two documents**, not code:
+
 - `docs/vision/dstream-platform.md` — long-horizon vision + architecture overview across all 7 sub-projects.
 - `docs/specs/2026-06-15-phase-1-core-inbound-gateway.md` — detailed implementation spec for the first executable slice.
 
@@ -20,14 +21,14 @@ The repo is greenfield; no constraints to respect.
 
 ## Decisions Already Locked (from clarifying Qs)
 
-| Topic            | Choice                                                                 |
-|------------------|------------------------------------------------------------------------|
-| MVP scope        | Inbound + Outbound (full Hookdeck parity, phased)                      |
-| Distribution     | OSS-first, SaaS-able, self-hostable from single codebase               |
-| Backend          | Go                                                                     |
-| Frontend         | Tanstack Start (React + Vinxi SSR)                                     |
-| Queue            | Redis queues via `asynq` (Lists + sorted sets) + Postgres (state of record) |
-| Differentiator   | Dev-first webhook IDE (CLI + visual builder + record/replay)           |
+| Topic          | Choice                                                                      |
+| -------------- | --------------------------------------------------------------------------- |
+| MVP scope      | Inbound + Outbound (full Hookdeck parity, phased)                           |
+| Distribution   | OSS-first, SaaS-able, self-hostable from single codebase                    |
+| Backend        | Go                                                                          |
+| Frontend       | Tanstack Start (React + Vinxi SSR)                                          |
+| Queue          | Redis queues via `asynq` (Lists + sorted sets) + Postgres (state of record) |
+| Differentiator | Dev-first webhook IDE (CLI + visual builder + record/replay)                |
 
 ## Architecture (Modular Monolith)
 
@@ -61,21 +62,22 @@ One Go binary with subcommands. Self-hosters run one container + Postgres + Redi
 
 ## Phased Roadmap
 
-| #  | Phase                              | Why it's in this position                             |
-|----|------------------------------------|-------------------------------------------------------|
-| 1  | Core inbound gateway               | Foundation; everything else reuses queue + delivery   |
-| 2  | Outbound webhooks (subscriptions)  | Reuses delivery worker; adds publish API + signing    |
-| 3  | Transformations + filters          | Needs `transform/` + `filter/` packages built out     |
-| 4  | Record/replay + fixture library    | Moat #1 (test better); needs Phase 1 data             |
-| 5  | Visual workflow builder            | Moat #2; UI-heavy, no infra change                    |
-| 6  | Multi-tenant hardening + RBAC + SSO + billing hooks | Required before SaaS launch      |
-| 7  | Self-host packaging (Helm, single-binary)           | Hardening + distribution           |
+| #   | Phase                                               | Why it's in this position                           |
+| --- | --------------------------------------------------- | --------------------------------------------------- |
+| 1   | Core inbound gateway                                | Foundation; everything else reuses queue + delivery |
+| 2   | Outbound webhooks (subscriptions)                   | Reuses delivery worker; adds publish API + signing  |
+| 3   | Transformations + filters                           | Needs `transform/` + `filter/` packages built out   |
+| 4   | Record/replay + fixture library                     | Moat #1 (test better); needs Phase 1 data           |
+| 5   | Visual workflow builder                             | Moat #2; UI-heavy, no infra change                  |
+| 6   | Multi-tenant hardening + RBAC + SSO + billing hooks | Required before SaaS launch                         |
+| 7   | Self-host packaging (Helm, single-binary)           | Hardening + distribution                            |
 
 ## Documents To Write
 
 ### Document 1: `docs/vision/dstream-platform.md`
 
 Cover at high level (target ~1500 words):
+
 - Problem statement, target user (dev teams shipping webhook integrations)
 - Positioning vs Hookdeck / Convoy / Svix / webhook.site
 - Three differentiator bets (CLI, visual builder, record/replay) with concrete examples
@@ -90,15 +92,18 @@ Cover at high level (target ~1500 words):
 Detailed enough to execute. Target ~2500 words. Sections:
 
 **1. Goals & non-goals**
+
 - Goal: receive webhook → durably store → reliably deliver to one destination → observable in dashboard → forwardable to localhost via CLI.
 - Non-goals (defer): transformations, filters, outbound publish, record/replay, visual builder, billing, SSO.
 
 **2. User stories**
+
 - "As a dev, I create a Source for Stripe, get an ingest URL, point Stripe at it, see events in dashboard."
 - "As a dev, I run `dstream listen --source stripe-prod` and incoming events forward to my localhost:3000/webhook."
 - "As a dev, my destination 500s; dstream retries with exponential backoff; I can manually retry from dashboard."
 
 **3. Data model (Postgres)**
+
 - `organizations`, `projects`, `users`, `api_keys`
 - `sources` (id, project_id, type, ingest_token, signing_config, created_at)
 - `destinations` (id, project_id, type [http|cli], url, auth_config, rate_limit_rps int null, rate_limit_burst int null, max_inflight int null)
@@ -109,6 +114,7 @@ Detailed enough to execute. Target ~2500 words. Sections:
 - `cli_sessions` (id, source_id, token, last_seen_at) — for tunnel
 
 **4. Ingest path**
+
 - `POST /e/{ingest_token}` — accept any method/headers/body up to 5MB.
 - Resolve source by token (cached in Redis, 60s TTL).
 - Compute body hash; store request row + body (start: Postgres LO or `bytea`; later: S3/MinIO via interface).
@@ -118,6 +124,7 @@ Detailed enough to execute. Target ~2500 words. Sections:
 - Respond `200 {request_id, event_ids:[]}` within 50ms p99 (no synchronous delivery).
 
 **5. Delivery worker**
+
 - `asynq.Server` consuming `deliveries` queue, configurable concurrency (default 50).
 - Handler steps per task:
   1. Load event + connection + destination from Postgres.
@@ -136,6 +143,7 @@ Detailed enough to execute. Target ~2500 words. Sections:
 - Manual retry from dashboard re-enqueues with attempt counter reset.
 
 **6. CLI destination (local forward)**
+
 - CLI command: `dstream listen --source <id-or-name> --forward <local-url>`.
 - CLI opens WebSocket to `/api/cli/connect`, authenticates via API key, registers as the destination for any connection of type `cli`.
 - Delivery worker, when destination type is `cli`, instead of HTTP POSTs the event over the WS to the connected CLI session.
@@ -145,6 +153,7 @@ Detailed enough to execute. Target ~2500 words. Sections:
 **7. Dashboard (Tanstack Start)**
 
 Project-scoped pages (per tenant):
+
 - `/login` (email + magic link; postpone SSO).
 - `/orgs/{slug}/projects/{slug}/sources` — list, create, copy ingest URL, view source config.
 - `.../destinations` — list, create HTTP destination.
@@ -152,9 +161,10 @@ Project-scoped pages (per tenant):
 - `.../events` — paginated list, filter by source/status, click into event detail.
 - `.../events/{id}` — request headers/body, all attempts, "Retry now" button.
 
-> **Phase 1 gap (intentional):** retry policy + rate-limit fields on `connections`/`destinations` are configurable via API (PATCH) + DB seed but lack user-facing dashboard forms in Phase 1. Edit-policy UI is deferred — track as Phase 1.5 follow-up or fold into Phase 3 with transformations/filters UI.
+> **Edit-policy UI (done):** retry policy fields edit from `connections/{id}` (strategy, max_retries, base/cap ms, jitter, custom schedule → `PATCH /api/connections/{id}`); rate-limit fields edit from `destinations/{id}` (rps, burst, max_inflight → `PATCH /api/destinations/{id}`).
 
 Root-admin pages (super-admin role only; `/admin/*` routes, gated by `users.is_super_admin`):
+
 - `/admin/queues` — embedded **asynqmon** UI: live queue stats (active, pending, scheduled, retry, archived/dead-letter), per-queue throughput, task inspection, pause/resume queue, drain dead-letter. Sidekiq/BullMQ-equivalent. Mounted as HTTP sub-handler from the `hibiken/asynqmon` package.
 - `/admin/overview` — cross-tenant metrics: total events/min, top sources by volume, top failing destinations, total orgs/projects/users.
 - `/admin/orgs` — list all organizations; click through to read-only inspection of their sources/destinations/events. For support.
@@ -164,6 +174,7 @@ Root-admin pages (super-admin role only; `/admin/*` routes, gated by `users.is_s
 Super-admin bootstrapped via `dstream admin promote <email>` CLI on first run.
 
 **8. API surface (REST, JSON)**
+
 - `POST /api/sources` / `GET /api/sources` / `GET /api/sources/{id}`
 - `POST /api/destinations` / `GET /api/destinations` / `GET /api/destinations/{id}` / `PATCH /api/destinations/{id}` (PATCH accepts `rate_limit_rps`, `rate_limit_burst`, `max_inflight`)
 - `POST /api/connections` / `GET /api/connections` / `GET /api/connections/{id}` / `PATCH /api/connections/{id}` (PATCH accepts retry policy fields)
@@ -174,32 +185,37 @@ Super-admin bootstrapped via `dstream admin promote <email>` CLI on first run.
 - Admin (super-admin only): `GET /api/admin/overview`, `GET /api/admin/orgs`, `GET /api/admin/destinations/hot`, `GET /api/admin/system`. asynqmon mounted at `/admin/queues`.
 
 **9. Auth**
+
 - API keys per project (`Authorization: Bearer dsk_...`).
 - Dashboard sessions via cookie (magic-link auth).
 - Minimum RBAC: project member or not (full RBAC = Phase 6).
 
 **10. Multi-tenant**
+
 - Every row owned by `project_id`. All queries scope by project. Middleware extracts project from API key or session.
 - No org-level cross-project queries in Phase 1.
 
 **11. Observability**
+
 - Structured logs (slog) with `request_id`, `event_id`.
-- Prometheus metrics on `/metrics`: ingest count/latency, queue depth (asynq `Inspector`), delivery success/fail by destination, retry count.
-- Mount `asynqmon` at `/admin/queues` (auth-gated) for ops visibility into queue state.
-- No tracing yet (Phase 2 candidate).
+- Prometheus metrics on `/metrics` (super-admin gated — exposes tenant ids/names): ingest count/latency, delivery success/fail by destination + connection, retry/dead-letter counts, rate-limit + in-flight deferrals, events-in-state gauge, web/auth/CLI-tunnel subsystem metrics. See `docs/superpowers/specs/2026-07-19-observability-metrics-tracing-design.md`. NOTE: `/metrics` is cookie-gated, so a stock Prometheus can't scrape it — Phase-1 metrics are browse-only via a logged-in super-admin; no automated scraper ships in the dev compose.
+- Queue visibility is served by the super-admin console (overview/orgs/queue stats), not an embedded queue UI. (asynq/asynqmon were replaced by the `dqueue` Redis fair queue — commit 61b9c20.)
+- OpenTelemetry tracing (OTLP/HTTP → Jaeger in the dev stack): server HTTP span → queue context propagation → `deliver` span → outbound delivery + DB (otelpgx) spans. Off by default (`DSTREAM_TRACING_ENABLED`). Deferred to Phase 3: ingest child spans, slog `trace_id` correlation.
 
 **12. Operations**
+
 - `docker-compose.yml`: dstream + postgres + redis + minio (bodies) all up with one command.
 - `dstream migrate` runs DB migrations on boot.
 - Env-var config loader (Viper). Documented `.env.example`.
 
 **13. Verification (end-to-end test plan)**
+
 - `docker compose up` brings stack online; dashboard reachable at `localhost:8080`.
 - Smoke: create source via dashboard → curl POST to ingest URL → event appears in dashboard, status `delivered` after worker hits a mock destination.
 - Retry: configure destination returning 500 → see 8 attempts with backoff in attempts table; "Retry now" works.
 - Dedup: send same body twice within 60s → only first creates event.
 - CLI tunnel: `dstream listen --source X --forward http://localhost:3000/hook` → hitting ingest delivers to local server; response captured in attempt.
-- Load: 1k events in 60s sustained, p99 ingest < 100ms, p99 delivery start < 500ms (single-node baseline).
+- Load: 1k events in 60s sustained, p99 ingest < 100ms, p99 delivery start < 500ms (single-node baseline). **Deferred to Phase 3:** harness + measured run not yet done.
 - Self-host: fresh VM, `git clone && docker compose up`, walk through smoke test.
 
 **14. Out of scope for Phase 1 (explicit list)**
@@ -229,8 +245,29 @@ Transforms, filters, outbound webhooks, record/replay, visual builder, billing, 
 ## Verification of This Planning Step
 
 After both docs written:
+
 - Both files exist at their paths and parse as valid Markdown.
 - Vision doc references every phase 1–7 with a one-paragraph scope.
 - Phase 1 spec contains all 14 numbered sections from outline.
 - A reader unfamiliar with Hookdeck can finish the vision doc and explain dstream's three differentiator bets.
 - Phase 1 spec is detailed enough that a competent Go developer can scaffold the repo without further questions on data model, ingest path, or retry policy.
+
+┌─────┬─────────────────────────────────────────────────────────┬────────────────────────────────────────────────┐
+│ # │ Phase │ State │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 1 │ Core inbound gateway │ COMPLETE — core spec shipped; trace/load → Phase 3 │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 2 │ Outbound webhooks — Svix model (apps/endpoints/event-types/signed messages) │ 2a backend DONE (send signed webhook e2e + loop guard); dashboard UI + 2b/2c/2d pending. spec: docs/superpowers/specs/2026-07-24-phase-2a-outbound-webhooks-svix-design.md │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 3 │ Transforms (goja) + filters (JSONPath/CEL) │ no internal/transform, internal/filter │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 4 │ Record/replay + fixtures │ no internal/bookmark │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 5 │ Visual workflow builder │ connections has a graph view, not a builder │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 6 │ Full RBAC + SSO + billing │ identity done; SSO, role RBAC, billing not │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ 7 │ Self-host: Helm + single-binary │ compose done; no deploy/helm, no single-binary │
+├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ — │ Source provider plugins (Stripe/GitHub sig parsing) │ no internal/source; generic only │
+└─────┴─────────────────────────────────────────────────────────┴────────────────────────────────────────────────┘
