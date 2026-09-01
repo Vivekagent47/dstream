@@ -257,7 +257,7 @@ After both docs written:
 ├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
 │ 1 │ Core inbound gateway │ COMPLETE — core spec shipped; trace/load → Phase 3 │
 ├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 2 │ Outbound webhooks — Svix model (apps/endpoints/event-types/signed messages) │ 2a backend DONE (send signed webhook e2e + loop guard); dashboard UI + 2b/2c/2d pending. spec: docs/superpowers/specs/2026-07-24-phase-2a-outbound-webhooks-svix-design.md │
+│ 2 │ Outbound webhooks — Svix model (apps/endpoints/event-types/signed messages) │ 2a+2b backend + dashboard UI DONE (apps/endpoints/event-types/signed messages; rotation/auto-disable/replay/recover/test; loop guard; full web/ dashboard). 2c App Portal + 2d advanced pending. specs: docs/superpowers/specs/{2026-07-24-phase-2a-outbound-webhooks-svix, 2026-08-27-phase-2b-endpoint-lifecycle, 2026-08-31-cycle-b-outbound-dashboard-ui}-design.md │
 ├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
 │ 3 │ Transforms (goja) + filters (JSONPath/CEL) │ no internal/transform, internal/filter │
 ├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
