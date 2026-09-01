@@ -14,7 +14,7 @@ import (
 const createEndpoint = `-- name: CreateEndpoint :one
 INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at
+RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at
 `
 
 type CreateEndpointParams struct {
@@ -50,6 +50,10 @@ func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) 
 		&i.Disabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PrevSecret,
+		&i.PrevSecretExpiresAt,
+		&i.ConsecutiveFailures,
+		&i.DisabledAt,
 	)
 	return i, err
 }
@@ -71,7 +75,7 @@ func (q *Queries) DeleteEndpointForApp(ctx context.Context, arg DeleteEndpointFo
 }
 
 const getEndpointForApp = `-- name: GetEndpointForApp :one
-SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at FROM endpoints WHERE id = $1 AND app_id = $2
+SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at FROM endpoints WHERE id = $1 AND app_id = $2
 `
 
 type GetEndpointForAppParams struct {
@@ -94,6 +98,10 @@ func (q *Queries) GetEndpointForApp(ctx context.Context, arg GetEndpointForAppPa
 		&i.Disabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PrevSecret,
+		&i.PrevSecretExpiresAt,
+		&i.ConsecutiveFailures,
+		&i.DisabledAt,
 	)
 	return i, err
 }
@@ -114,8 +122,28 @@ func (q *Queries) GetEndpointSecret(ctx context.Context, arg GetEndpointSecretPa
 	return secret, err
 }
 
+const incrEndpointFailures = `-- name: IncrEndpointFailures :exec
+UPDATE endpoints
+   SET consecutive_failures = consecutive_failures + 1,
+       disabled    = (consecutive_failures + 1 >= $1::int) OR disabled,
+       disabled_at = CASE WHEN (consecutive_failures + 1 >= $1::int) AND NOT disabled
+                          THEN now() ELSE disabled_at END,
+       updated_at  = now()
+ WHERE id = $2
+`
+
+type IncrEndpointFailuresParams struct {
+	Threshold int32       `json:"threshold"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) IncrEndpointFailures(ctx context.Context, arg IncrEndpointFailuresParams) error {
+	_, err := q.db.Exec(ctx, incrEndpointFailures, arg.Threshold, arg.ID)
+	return err
+}
+
 const listEndpointsByApp = `-- name: ListEndpointsByApp :many
-SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at FROM endpoints WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
+SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at FROM endpoints WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
 `
 
 type ListEndpointsByAppParams struct {
@@ -144,6 +172,10 @@ func (q *Queries) ListEndpointsByApp(ctx context.Context, arg ListEndpointsByApp
 			&i.Disabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PrevSecret,
+			&i.PrevSecretExpiresAt,
+			&i.ConsecutiveFailures,
+			&i.DisabledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -189,17 +221,74 @@ func (q *Queries) ListMatchingEndpoints(ctx context.Context, arg ListMatchingEnd
 	return items, nil
 }
 
+const resetEndpointFailures = `-- name: ResetEndpointFailures :exec
+UPDATE endpoints SET consecutive_failures = 0, updated_at = now()
+ WHERE id = $1 AND consecutive_failures > 0
+`
+
+func (q *Queries) ResetEndpointFailures(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, resetEndpointFailures, id)
+	return err
+}
+
+const rotateEndpointSecret = `-- name: RotateEndpointSecret :one
+UPDATE endpoints
+   SET prev_secret            = secret,
+       prev_secret_expires_at = $1,
+       secret                 = $2,
+       updated_at             = now()
+ WHERE id = $3 AND app_id = $4
+ RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at
+`
+
+type RotateEndpointSecretParams struct {
+	PrevExpiresAt pgtype.Timestamptz `json:"prev_expires_at"`
+	NewSecret     string             `json:"new_secret"`
+	ID            pgtype.UUID        `json:"id"`
+	AppID         pgtype.UUID        `json:"app_id"`
+}
+
+func (q *Queries) RotateEndpointSecret(ctx context.Context, arg RotateEndpointSecretParams) (Endpoint, error) {
+	row := q.db.QueryRow(ctx, rotateEndpointSecret,
+		arg.PrevExpiresAt,
+		arg.NewSecret,
+		arg.ID,
+		arg.AppID,
+	)
+	var i Endpoint
+	err := row.Scan(
+		&i.ID,
+		&i.AppID,
+		&i.OrgID,
+		&i.Uid,
+		&i.Url,
+		&i.Description,
+		&i.Secret,
+		&i.FilterEventTypes,
+		&i.Disabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PrevSecret,
+		&i.PrevSecretExpiresAt,
+		&i.ConsecutiveFailures,
+		&i.DisabledAt,
+	)
+	return i, err
+}
+
 const updateEndpoint = `-- name: UpdateEndpoint :one
 UPDATE endpoints
    SET url         = COALESCE($1, url),
        description = COALESCE($2, description),
        disabled    = COALESCE($3, disabled),
+       consecutive_failures = CASE WHEN $3 = FALSE THEN 0 ELSE consecutive_failures END,
+       disabled_at          = CASE WHEN $3 = FALSE THEN NULL ELSE disabled_at END,
        filter_event_types = CASE WHEN $4::bool
                                  THEN $5::text[]
                                  ELSE filter_event_types END,
        updated_at  = now()
  WHERE id = $6 AND app_id = $7
- RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at
+ RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at
 `
 
 type UpdateEndpointParams struct {
@@ -235,6 +324,10 @@ func (q *Queries) UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) 
 		&i.Disabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PrevSecret,
+		&i.PrevSecretExpiresAt,
+		&i.ConsecutiveFailures,
+		&i.DisabledAt,
 	)
 	return i, err
 }

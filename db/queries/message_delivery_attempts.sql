@@ -8,7 +8,8 @@ RETURNING *;
 SELECT a.* FROM message_delivery_attempts a
   JOIN message_deliveries d ON d.id = a.delivery_id
  WHERE d.message_id = $1
- ORDER BY a.attempted_at DESC;
+ ORDER BY a.attempted_at DESC
+ LIMIT sqlc.arg('lim');
 
 -- name: ListAttemptsByEndpoint :many
 SELECT a.* FROM message_delivery_attempts a

@@ -160,6 +160,7 @@ func serverCmd() *cobra.Command {
 				AppBaseURL:       cfg.AppBaseURL,
 				EvictSourceCache: ih.InvalidateSource,
 				SelfHosts:        cfg.SelfHosts,
+				SecretGrace:      cfg.WebhookSecretGrace,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{

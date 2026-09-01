@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
@@ -27,7 +28,22 @@ type Handler struct {
 	Log     *slog.Logger
 	Queries *store.Queries
 	HTTP    *http.Client
+	Redis   *redis.Client
+	// MaxConsecutiveFailures auto-disables an endpoint after this many
+	// back-to-back dead deliveries. 0 disables the feature.
+	MaxConsecutiveFailures int
+	// PerOrgMaxInflight caps concurrent in-flight deliveries per org across the
+	// whole worker fleet, sharing inbound deliver's inflight:org:<org> budget
+	// (0 = disabled). Set by the worker from config.
+	PerOrgMaxInflight int
 }
+
+const inflightTTL = 150 * time.Second // 5x the delivery timeout, matches deliver's lease
+
+var inflightScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return n`)
 
 func deliveryID(p dqueue.Payload) (uuid.UUID, error) {
 	var t struct {
@@ -37,6 +53,21 @@ func deliveryID(p dqueue.Payload) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	return uuid.Parse(t.DeliveryID)
+}
+
+// signHeader returns the space-separated webhook-signature value: the current
+// secret always, plus the previous secret while it is within its grace window.
+func signHeader(cur string, prev *string, prevExp pgtype.Timestamptz, msgID string, ts int64, payload []byte) (string, error) {
+	sig, err := Sign(cur, msgID, ts, payload)
+	if err != nil {
+		return "", err
+	}
+	if prev != nil && *prev != "" && prevExp.Valid && prevExp.Time.After(time.Now()) {
+		if ps, perr := Sign(*prev, msgID, ts, payload); perr == nil {
+			sig = sig + " " + ps
+		}
+	}
+	return sig, nil
 }
 
 // Process handles one leased Kind:"message" task.
@@ -65,8 +96,30 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		return q.Ack(ctx, raw)
 	}
 
+	// Per-org in-flight gate, shared with inbound deliver via inflight:org:<org>:
+	// an org's total inbound+outbound in-flight is one budget. Over cap → defer
+	// (reschedule + Ack) with no attempt and no retry budget consumed.
+	orgID := store.GoUUID(row.OrgID)
+	if h.PerOrgMaxInflight > 0 && h.Redis != nil {
+		key := fmt.Sprintf("inflight:org:%s", orgID)
+		n, ierr := inflightScript.Run(ctx, h.Redis, []string{key}, int(inflightTTL.Seconds())).Int()
+		if ierr == nil {
+			if n > h.PerOrgMaxInflight {
+				h.Redis.Decr(context.Background(), key)
+				p.EnqueuedAt = time.Now().UnixMilli()
+				if serr := q.Schedule(ctx, p, time.Now().Add(500*time.Millisecond).UnixMilli()); serr != nil {
+					return serr
+				}
+				return q.Ack(ctx, raw)
+			}
+			// release the slot after the send completes (background ctx survives cancel)
+			defer h.Redis.Decr(context.Background(), key)
+		}
+	}
+
 	attemptNum := int(row.AttemptCount) + 1
 	msgID := store.GoUUID(row.MessageID).String()
+	epID := store.GoUUID(row.EndpointID)
 
 	// Structural URL check (dial-time guard is the real boundary). Can never
 	// succeed → terminal, does not consume budget.
@@ -78,7 +131,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 
 	// Sign. A malformed secret can never succeed → terminal.
 	ts := row.MessageCreatedAt.Time.Unix()
-	sig, err := Sign(row.EndpointSecret, msgID, ts, row.Payload)
+	sig, err := signHeader(row.EndpointSecret, row.EndpointSecretPrev, row.EndpointPrevExpiresAt, msgID, ts, row.Payload)
 	if err != nil {
 		h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, 0, "sign: "+err.Error())
 		_ = h.Queries.MarkDeliveryDead(ctx, store.UUID(did))
@@ -92,7 +145,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, row.EndpointUrl, bytes.NewReader(row.Payload))
 	if err != nil {
-		return h.failAttempt(ctx, q, p, raw, did, attemptNum, err.Error())
+		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, err.Error())
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("webhook-id", msgID)
@@ -105,7 +158,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	dur := int(time.Since(start).Milliseconds())
 	if doErr != nil {
 		h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, dur, doErr.Error())
-		return h.failAttempt(ctx, q, p, raw, did, attemptNum, doErr.Error())
+		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, doErr.Error())
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
@@ -115,18 +168,26 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		if err := h.Queries.MarkDeliveryDelivered(ctx, store.UUID(did)); err != nil {
 			return err
 		}
+		if h.MaxConsecutiveFailures > 0 {
+			_ = h.Queries.ResetEndpointFailures(ctx, store.UUID(epID))
+		}
 		return q.Ack(ctx, raw)
 	}
-	return h.failAttempt(ctx, q, p, raw, did, attemptNum, fmt.Sprintf("status %d", resp.StatusCode))
+	return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, fmt.Sprintf("status %d", resp.StatusCode))
 }
 
 // failAttempt schedules the next retry, or dead-letters when the budget is spent.
-func (h Handler) failAttempt(ctx context.Context, q *dqueue.Client, p dqueue.Payload, raw string, did uuid.UUID, attemptNum int, reason string) error {
+func (h Handler) failAttempt(ctx context.Context, q *dqueue.Client, p dqueue.Payload, raw string, did, epID uuid.UUID, attemptNum int, reason string) error {
 	delay, ok := nextDelay(attemptNum)
 	if !ok {
 		h.Log.Warn("outbound: delivery exhausted, dead-lettering", "delivery_id", did, "reason", reason)
 		if err := h.Queries.MarkDeliveryDead(ctx, store.UUID(did)); err != nil {
 			return err
+		}
+		if h.MaxConsecutiveFailures > 0 {
+			_ = h.Queries.IncrEndpointFailures(ctx, store.IncrEndpointFailuresParams{
+				ID: store.UUID(epID), Threshold: int32(h.MaxConsecutiveFailures),
+			})
 		}
 		return q.DeadLetter(ctx, raw)
 	}

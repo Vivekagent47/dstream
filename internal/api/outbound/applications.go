@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"github.com/Vivekagent47/dstream/internal/audit"
@@ -65,8 +66,9 @@ func (d Handlers) ListApplications(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusUnauthorized, "active org required")
 		return
 	}
+	ts, cid := pageCursor(r)
 	rows, err := d.Queries.ListApplicationsByOrg(r.Context(), store.ListApplicationsByOrgParams{
-		OrgID: store.UUID(p.OrgID), Limit: listLimit,
+		OrgID: store.UUID(p.OrgID), CursorTs: pgtype.Timestamptz{Time: ts, Valid: true}, CursorID: store.UUID(cid), Lim: pageSize,
 	})
 	if err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "list applications")
@@ -76,7 +78,12 @@ func (d Handlers) ListApplications(w http.ResponseWriter, r *http.Request) {
 	for _, a := range rows {
 		out = append(out, applicationView(a))
 	}
-	httpx.WriteJSON(w, http.StatusOK, out)
+	var next any = nil
+	if len(rows) == pageSize {
+		last := rows[len(rows)-1]
+		next = encodeCursor(last.CreatedAt.Time, store.GoUUID(last.ID))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": out, "next_cursor": next})
 }
 
 // appForOrg resolves {app_id} and asserts org ownership. Writes the error

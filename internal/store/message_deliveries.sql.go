@@ -85,10 +85,40 @@ func (q *Queries) CreateMessageDeliveriesBatch(ctx context.Context, arg CreateMe
 	return items, nil
 }
 
+const getDeliveryByMessageEndpoint = `-- name: GetDeliveryByMessageEndpoint :one
+SELECT id, message_id, endpoint_id, org_id, status, attempt_count, next_retry_at, last_attempt_at, created_at, updated_at FROM message_deliveries WHERE message_id = $1 AND endpoint_id = $2
+`
+
+type GetDeliveryByMessageEndpointParams struct {
+	MessageID  pgtype.UUID `json:"message_id"`
+	EndpointID pgtype.UUID `json:"endpoint_id"`
+}
+
+func (q *Queries) GetDeliveryByMessageEndpoint(ctx context.Context, arg GetDeliveryByMessageEndpointParams) (MessageDelivery, error) {
+	row := q.db.QueryRow(ctx, getDeliveryByMessageEndpoint, arg.MessageID, arg.EndpointID)
+	var i MessageDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.MessageID,
+		&i.EndpointID,
+		&i.OrgID,
+		&i.Status,
+		&i.AttemptCount,
+		&i.NextRetryAt,
+		&i.LastAttemptAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getMessageDeliveryForSend = `-- name: GetMessageDeliveryForSend :one
 SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_id,
+       d.endpoint_id AS endpoint_id,
        m.id AS message_id, m.event_type, m.payload, m.created_at AS message_created_at,
-       e.url AS endpoint_url, e.secret AS endpoint_secret, e.disabled AS endpoint_disabled
+       e.url AS endpoint_url, e.secret AS endpoint_secret, e.disabled AS endpoint_disabled,
+       e.prev_secret            AS endpoint_secret_prev,
+       e.prev_secret_expires_at AS endpoint_prev_expires_at
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
   JOIN endpoints e ON e.id = d.endpoint_id
@@ -96,17 +126,20 @@ SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_
 `
 
 type GetMessageDeliveryForSendRow struct {
-	DeliveryID       pgtype.UUID        `json:"delivery_id"`
-	DeliveryStatus   string             `json:"delivery_status"`
-	AttemptCount     int32              `json:"attempt_count"`
-	OrgID            pgtype.UUID        `json:"org_id"`
-	MessageID        pgtype.UUID        `json:"message_id"`
-	EventType        string             `json:"event_type"`
-	Payload          []byte             `json:"payload"`
-	MessageCreatedAt pgtype.Timestamptz `json:"message_created_at"`
-	EndpointUrl      string             `json:"endpoint_url"`
-	EndpointSecret   string             `json:"endpoint_secret"`
-	EndpointDisabled bool               `json:"endpoint_disabled"`
+	DeliveryID            pgtype.UUID        `json:"delivery_id"`
+	DeliveryStatus        string             `json:"delivery_status"`
+	AttemptCount          int32              `json:"attempt_count"`
+	OrgID                 pgtype.UUID        `json:"org_id"`
+	EndpointID            pgtype.UUID        `json:"endpoint_id"`
+	MessageID             pgtype.UUID        `json:"message_id"`
+	EventType             string             `json:"event_type"`
+	Payload               []byte             `json:"payload"`
+	MessageCreatedAt      pgtype.Timestamptz `json:"message_created_at"`
+	EndpointUrl           string             `json:"endpoint_url"`
+	EndpointSecret        string             `json:"endpoint_secret"`
+	EndpointDisabled      bool               `json:"endpoint_disabled"`
+	EndpointSecretPrev    *string            `json:"endpoint_secret_prev"`
+	EndpointPrevExpiresAt pgtype.Timestamptz `json:"endpoint_prev_expires_at"`
 }
 
 func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID) (GetMessageDeliveryForSendRow, error) {
@@ -117,6 +150,7 @@ func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID)
 		&i.DeliveryStatus,
 		&i.AttemptCount,
 		&i.OrgID,
+		&i.EndpointID,
 		&i.MessageID,
 		&i.EventType,
 		&i.Payload,
@@ -124,8 +158,90 @@ func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID)
 		&i.EndpointUrl,
 		&i.EndpointSecret,
 		&i.EndpointDisabled,
+		&i.EndpointSecretPrev,
+		&i.EndpointPrevExpiresAt,
 	)
 	return i, err
+}
+
+const listDeadDeliveriesForEndpointSince = `-- name: ListDeadDeliveriesForEndpointSince :many
+SELECT id FROM message_deliveries
+ WHERE endpoint_id = $1 AND status = 'dead' AND created_at >= $2
+ ORDER BY created_at
+ LIMIT $3
+`
+
+type ListDeadDeliveriesForEndpointSinceParams struct {
+	EndpointID pgtype.UUID        `json:"endpoint_id"`
+	Since      pgtype.Timestamptz `json:"since"`
+	Lim        int32              `json:"lim"`
+}
+
+func (q *Queries) ListDeadDeliveriesForEndpointSince(ctx context.Context, arg ListDeadDeliveriesForEndpointSinceParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDeadDeliveriesForEndpointSince, arg.EndpointID, arg.Since, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveriesForMessage = `-- name: ListDeliveriesForMessage :many
+SELECT d.id AS delivery_id, d.endpoint_id, e.url AS endpoint_url,
+       d.status, d.attempt_count, d.next_retry_at, d.last_attempt_at
+  FROM message_deliveries d
+  JOIN endpoints e ON e.id = d.endpoint_id
+ WHERE d.message_id = $1
+ ORDER BY d.created_at, d.id
+`
+
+type ListDeliveriesForMessageRow struct {
+	DeliveryID    pgtype.UUID        `json:"delivery_id"`
+	EndpointID    pgtype.UUID        `json:"endpoint_id"`
+	EndpointUrl   string             `json:"endpoint_url"`
+	Status        string             `json:"status"`
+	AttemptCount  int32              `json:"attempt_count"`
+	NextRetryAt   pgtype.Timestamptz `json:"next_retry_at"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+}
+
+func (q *Queries) ListDeliveriesForMessage(ctx context.Context, messageID pgtype.UUID) ([]ListDeliveriesForMessageRow, error) {
+	rows, err := q.db.Query(ctx, listDeliveriesForMessage, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeliveriesForMessageRow{}
+	for rows.Next() {
+		var i ListDeliveriesForMessageRow
+		if err := rows.Scan(
+			&i.DeliveryID,
+			&i.EndpointID,
+			&i.EndpointUrl,
+			&i.Status,
+			&i.AttemptCount,
+			&i.NextRetryAt,
+			&i.LastAttemptAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markDeliveryDead = `-- name: MarkDeliveryDead :exec
@@ -177,5 +293,16 @@ UPDATE message_deliveries
 
 func (q *Queries) MarkDeliveryInFlight(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markDeliveryInFlight, id)
+	return err
+}
+
+const resetDeliveryForReplay = `-- name: ResetDeliveryForReplay :exec
+UPDATE message_deliveries
+   SET status = 'queued', attempt_count = 0, next_retry_at = NULL, updated_at = now()
+ WHERE id = $1
+`
+
+func (q *Queries) ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, resetDeliveryForReplay, id)
 	return err
 }

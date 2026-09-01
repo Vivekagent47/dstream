@@ -10,10 +10,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
+	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -139,4 +142,70 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		"event_id":          httpx.DerefString(req.EventID),
 		"idempotent_replay": false,
 	})
+}
+
+// ReplayDelivery re-enqueues delivery of one message to one endpoint. It
+// find-or-creates the (message, endpoint) delivery row, resets it to queued,
+// and pushes a message task onto the dqueue. The message id comes from {id}
+// (shared with the sibling message routes to avoid a chi param collision).
+func (d Handlers) ReplayDelivery(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	app, ok := d.appForOrg(w, r, p.OrgID)
+	if !ok {
+		return
+	}
+	msgID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid message id")
+		return
+	}
+	epID, err := uuid.Parse(chi.URLParam(r, "endpoint_id"))
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid endpoint id")
+		return
+	}
+	// ownership: message + endpoint both belong to this app
+	if _, err := d.Queries.GetMessageForApp(r.Context(), store.GetMessageForAppParams{ID: store.UUID(msgID), AppID: app.ID}); err != nil {
+		httpx.Err(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if _, ok := d.endpointForAppID(w, r, store.GoUUID(app.ID), epID); !ok {
+		return
+	}
+	// find-or-create the (msg,ep) delivery
+	del, err := d.Queries.GetDeliveryByMessageEndpoint(r.Context(), store.GetDeliveryByMessageEndpointParams{
+		MessageID: store.UUID(msgID), EndpointID: store.UUID(epID),
+	})
+	var delID pgtype.UUID
+	if errors.Is(err, pgx.ErrNoRows) {
+		created, cerr := d.Queries.CreateMessageDeliveriesBatch(r.Context(), store.CreateMessageDeliveriesBatchParams{
+			MessageID: store.UUID(msgID), OrgID: store.UUID(p.OrgID), EndpointIds: []pgtype.UUID{store.UUID(epID)},
+		})
+		if cerr != nil || len(created) != 1 {
+			httpx.Err(w, http.StatusInternalServerError, "create delivery")
+			return
+		}
+		delID = created[0].ID
+	} else if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "load delivery")
+		return
+	} else {
+		delID = del.ID
+		if err := d.Queries.ResetDeliveryForReplay(r.Context(), delID); err != nil {
+			httpx.Err(w, http.StatusInternalServerError, "reset delivery")
+			return
+		}
+	}
+	data, _ := json.Marshal(map[string]string{"delivery_id": store.GoUUID(delID).String()})
+	if err := d.Queue.Enqueue(r.Context(), dqueue.Payload{Kind: "message", OrgID: p.OrgID, EnqueuedAt: time.Now().UnixMilli(), Data: data}); err != nil {
+		d.Log.Error("enqueue replay", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "enqueue")
+		return
+	}
+	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{Action: "message.replay", TargetType: "message_delivery", TargetID: audit.PtrUUID(store.GoUUID(delID)), Metadata: map[string]any{}})
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"delivery_id": store.GoUUID(delID).String()})
 }

@@ -40,6 +40,9 @@ func GenerateSecret() (string, error) {
 	return secretPrefix + base64.StdEncoding.EncodeToString(b), nil
 }
 
+// ValidSecret reports whether s is a usable signing secret (decodable key).
+func ValidSecret(s string) bool { _, err := decodeSecret(s); return err == nil }
+
 // decodeSecret parses whsec_<base64> into raw HMAC key bytes. A secret without
 // the prefix is treated as raw base64 (forward-compat with imported keys).
 func decodeSecret(secret string) ([]byte, error) {

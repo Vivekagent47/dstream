@@ -102,12 +102,18 @@ func (q *Queries) GetMessageForApp(ctx context.Context, arg GetMessageForAppPara
 
 const listMessagesByApp = `-- name: ListMessagesByApp :many
 SELECT id, app_id, org_id, event_type, payload_hash, event_id, created_at
-  FROM messages WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
+  FROM messages
+ WHERE app_id = $1
+   AND (created_at, id) < ($2::timestamptz, $3::uuid)
+ ORDER BY created_at DESC, id DESC
+ LIMIT $4
 `
 
 type ListMessagesByAppParams struct {
-	AppID pgtype.UUID `json:"app_id"`
-	Limit int32       `json:"limit"`
+	AppID    pgtype.UUID        `json:"app_id"`
+	CursorTs pgtype.Timestamptz `json:"cursor_ts"`
+	CursorID pgtype.UUID        `json:"cursor_id"`
+	Lim      int32              `json:"lim"`
 }
 
 type ListMessagesByAppRow struct {
@@ -121,7 +127,12 @@ type ListMessagesByAppRow struct {
 }
 
 func (q *Queries) ListMessagesByApp(ctx context.Context, arg ListMessagesByAppParams) ([]ListMessagesByAppRow, error) {
-	rows, err := q.db.Query(ctx, listMessagesByApp, arg.AppID, arg.Limit)
+	rows, err := q.db.Query(ctx, listMessagesByApp,
+		arg.AppID,
+		arg.CursorTs,
+		arg.CursorID,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

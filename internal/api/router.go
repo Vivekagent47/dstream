@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -44,6 +45,9 @@ type Deps struct {
 	// SelfHosts are dstream's own hostnames; a webhook endpoint/destination
 	// pointing at one is rejected at create/patch (loop guard).
 	SelfHosts []string
+	// SecretGrace is how long a rotated endpoint's previous signing secret
+	// stays valid after a rotate.
+	SecretGrace time.Duration
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
@@ -75,10 +79,11 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		PublicBaseURL: d.PublicBaseURL,
 	}
 	ob := outbound.Handlers{
-		Log:       d.Log,
-		Queries:   d.Queries,
-		Queue:     d.Queue,
-		SelfHosts: d.SelfHosts,
+		Log:         d.Log,
+		Queries:     d.Queries,
+		Queue:       d.Queue,
+		SelfHosts:   d.SelfHosts,
+		SecretGrace: d.SecretGrace,
 	}
 
 	parent.Route("/api", func(r chi.Router) {
@@ -194,6 +199,9 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 						r.Patch("/{id}", ob.PatchEndpoint)
 						r.Delete("/{id}", ob.DeleteEndpoint)
 						r.Get("/{id}/secret", ob.GetEndpointSecret)
+						r.Post("/{id}/rotate-secret", ob.RotateEndpointSecret)
+						r.Post("/{id}/recover", ob.RecoverEndpoint)
+						r.Post("/{id}/test", ob.TestEndpoint)
 						r.Get("/{id}/attempts", ob.ListEndpointAttempts)
 					})
 
@@ -202,6 +210,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 						r.Post("/", ob.CreateMessage)
 						r.Get("/{id}", ob.GetMessage)
 						r.Get("/{id}/attempts", ob.ListMessageAttempts)
+						r.Get("/{id}/deliveries", ob.ListMessageDeliveries)
+						r.Post("/{id}/endpoints/{endpoint_id}/replay", ob.ReplayDelivery)
 					})
 				})
 

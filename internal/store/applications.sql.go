@@ -85,16 +85,27 @@ func (q *Queries) GetApplicationForOrg(ctx context.Context, arg GetApplicationFo
 }
 
 const listApplicationsByOrg = `-- name: ListApplicationsByOrg :many
-SELECT id, org_id, uid, name, metadata, created_at, updated_at FROM applications WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2
+SELECT id, org_id, uid, name, metadata, created_at, updated_at FROM applications
+ WHERE org_id = $1
+   AND (created_at, id) < ($2::timestamptz, $3::uuid)
+ ORDER BY created_at DESC, id DESC
+ LIMIT $4
 `
 
 type ListApplicationsByOrgParams struct {
-	OrgID pgtype.UUID `json:"org_id"`
-	Limit int32       `json:"limit"`
+	OrgID    pgtype.UUID        `json:"org_id"`
+	CursorTs pgtype.Timestamptz `json:"cursor_ts"`
+	CursorID pgtype.UUID        `json:"cursor_id"`
+	Lim      int32              `json:"lim"`
 }
 
 func (q *Queries) ListApplicationsByOrg(ctx context.Context, arg ListApplicationsByOrgParams) ([]Application, error) {
-	rows, err := q.db.Query(ctx, listApplicationsByOrg, arg.OrgID, arg.Limit)
+	rows, err := q.db.Query(ctx, listApplicationsByOrg,
+		arg.OrgID,
+		arg.CursorTs,
+		arg.CursorID,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

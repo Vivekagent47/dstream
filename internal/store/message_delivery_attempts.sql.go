@@ -100,10 +100,16 @@ SELECT a.id, a.delivery_id, a.attempt_num, a.response_status, a.response_headers
   JOIN message_deliveries d ON d.id = a.delivery_id
  WHERE d.message_id = $1
  ORDER BY a.attempted_at DESC
+ LIMIT $2
 `
 
-func (q *Queries) ListAttemptsByMessage(ctx context.Context, messageID pgtype.UUID) ([]MessageDeliveryAttempt, error) {
-	rows, err := q.db.Query(ctx, listAttemptsByMessage, messageID)
+type ListAttemptsByMessageParams struct {
+	MessageID pgtype.UUID `json:"message_id"`
+	Lim       int32       `json:"lim"`
+}
+
+func (q *Queries) ListAttemptsByMessage(ctx context.Context, arg ListAttemptsByMessageParams) ([]MessageDeliveryAttempt, error) {
+	rows, err := q.db.Query(ctx, listAttemptsByMessage, arg.MessageID, arg.Lim)
 	if err != nil {
 		return nil, err
 	}

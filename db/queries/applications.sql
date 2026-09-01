@@ -4,7 +4,11 @@ VALUES ($1, $2, $3, $4)
 RETURNING *;
 
 -- name: ListApplicationsByOrg :many
-SELECT * FROM applications WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2;
+SELECT * FROM applications
+ WHERE org_id = $1
+   AND (created_at, id) < (sqlc.arg('cursor_ts')::timestamptz, sqlc.arg('cursor_id')::uuid)
+ ORDER BY created_at DESC, id DESC
+ LIMIT sqlc.arg('lim');
 
 -- name: GetApplicationForOrg :one
 SELECT * FROM applications WHERE id = $1 AND org_id = $2;

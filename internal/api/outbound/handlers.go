@@ -3,6 +3,7 @@ package outbound
 import (
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -27,6 +28,8 @@ type Handlers struct {
 	// SelfHosts are dstream's own hostnames; an endpoint pointing at one is
 	// rejected at create/patch (loop guard).
 	SelfHosts []string
+	// SecretGrace is how long a rotated endpoint's previous secret stays valid.
+	SecretGrace time.Duration
 }
 
 func applicationView(a store.Application) map[string]any {

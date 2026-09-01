@@ -344,6 +344,10 @@ CREATE TABLE endpoints (
   secret             TEXT NOT NULL,      -- whsec_<base64>; revealable shared secret
   filter_event_types TEXT[],             -- NULL/empty = receive all types
   disabled           BOOLEAN NOT NULL DEFAULT FALSE,
+  prev_secret            TEXT,            -- previous secret kept live during rotation grace window
+  prev_secret_expires_at TIMESTAMPTZ,    -- when prev_secret stops being accepted; NULL = no rotation pending
+  consecutive_failures   INTEGER NOT NULL DEFAULT 0,  -- run of failed deliveries; triggers auto-disable at threshold
+  disabled_at            TIMESTAMPTZ,     -- when auto-disable fired; NULL = never auto-disabled
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -369,7 +373,7 @@ CREATE TABLE message_deliveries (
   endpoint_id   UUID NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
   org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   status        TEXT NOT NULL DEFAULT 'queued'
-                CHECK (status IN ('queued','in_flight','delivered','failed','dead','disabled')),
+                CHECK (status IN ('queued','in_flight','delivered','dead','disabled')),
   attempt_count INTEGER NOT NULL DEFAULT 0,
   next_retry_at TIMESTAMPTZ,
   last_attempt_at TIMESTAMPTZ,

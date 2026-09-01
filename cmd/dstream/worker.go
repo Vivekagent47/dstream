@@ -81,9 +81,12 @@ func workerCmd() *cobra.Command {
 			}
 			emailHandler := mailer.EmailHandler{Sender: sender, Log: log, DevMode: cfg.DevMode}
 			outboundHandler := webhook.Handler{
-				Log:     log,
-				Queries: q,
-				HTTP:    deliver.NewSafeHTTPClient(30*time.Second, cfg.AllowPrivateDestinations),
+				Log:                    log,
+				Queries:                q,
+				HTTP:                   deliver.NewSafeHTTPClient(30*time.Second, cfg.AllowPrivateDestinations),
+				Redis:                  rdb,
+				MaxConsecutiveFailures: cfg.EndpointMaxConsecutiveFailures,
+				PerOrgMaxInflight:      cfg.Worker.PerOrgMaxInflight,
 			}
 
 			// 5× the delivery timeout, matching the in-flight lease: long enough

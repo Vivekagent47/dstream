@@ -45,6 +45,15 @@ type Config struct {
 	MaxWebhookHops int      `mapstructure:"max_webhook_hops"`
 	SelfHosts      []string `mapstructure:"-"` // computed in Load
 
+	// WebhookSecretGrace is how long a rotated endpoint's previous signing
+	// secret stays valid after a rotate, so receivers can cut over without a
+	// missed delivery.
+	WebhookSecretGrace time.Duration `mapstructure:"webhook_secret_grace"`
+
+	// EndpointMaxConsecutiveFailures auto-disables an endpoint once this many
+	// deliveries dead-letter back-to-back; a successful delivery resets the run.
+	EndpointMaxConsecutiveFailures int `mapstructure:"endpoint_max_consecutive_failures"`
+
 	DB     DBConfig     `mapstructure:"db"`
 	Redis  RedisConfig  `mapstructure:"redis"`
 	Worker WorkerConfig `mapstructure:"worker"`
@@ -110,6 +119,8 @@ func Load() (Config, error) {
 	v.SetDefault("ingest_rate_limit_burst", 200)
 	v.SetDefault("self_hosts", "")
 	v.SetDefault("max_webhook_hops", 3)
+	v.SetDefault("webhook_secret_grace", "24h")
+	v.SetDefault("endpoint_max_consecutive_failures", 5)
 
 	v.SetDefault("db.url", "postgres://dstream:dstream@localhost:5432/dstream?sslmode=disable")
 	v.SetDefault("db.max_conns", 20)
@@ -167,6 +178,9 @@ func Load() (Config, error) {
 	}
 	if c.MaxWebhookHops <= 0 {
 		c.MaxWebhookHops = 3
+	}
+	if c.EndpointMaxConsecutiveFailures <= 0 {
+		c.EndpointMaxConsecutiveFailures = 5
 	}
 	return c, nil
 }

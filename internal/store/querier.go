@@ -129,6 +129,7 @@ type Querier interface {
 	GetApplicationForOrg(ctx context.Context, arg GetApplicationForOrgParams) (Application, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
+	GetDeliveryByMessageEndpoint(ctx context.Context, arg GetDeliveryByMessageEndpointParams) (MessageDelivery, error)
 	GetDestinationForOrg(ctx context.Context, arg GetDestinationForOrgParams) (Destination, error)
 	GetEndpointForApp(ctx context.Context, arg GetEndpointForAppParams) (Endpoint, error)
 	GetEndpointSecret(ctx context.Context, arg GetEndpointSecretParams) (string, error)
@@ -159,6 +160,7 @@ type Querier interface {
 	// last 24h, worst first. total/failed let the handler compute a failure rate.
 	// Only destinations that actually failed are returned (HAVING).
 	HotDestinations(ctx context.Context) ([]HotDestinationsRow, error)
+	IncrEndpointFailures(ctx context.Context, arg IncrEndpointFailuresParams) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
 	ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error)
@@ -166,7 +168,7 @@ type Querier interface {
 	ListApplicationsByOrg(ctx context.Context, arg ListApplicationsByOrgParams) ([]Application, error)
 	ListAttemptsByEndpoint(ctx context.Context, arg ListAttemptsByEndpointParams) ([]MessageDeliveryAttempt, error)
 	ListAttemptsByEvent(ctx context.Context, eventID pgtype.UUID) ([]Attempt, error)
-	ListAttemptsByMessage(ctx context.Context, messageID pgtype.UUID) ([]MessageDeliveryAttempt, error)
+	ListAttemptsByMessage(ctx context.Context, arg ListAttemptsByMessageParams) ([]MessageDeliveryAttempt, error)
 	// LEFT JOIN may yield NULL for u/k columns; COALESCE so sqlc generates
 	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
 	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
@@ -176,6 +178,8 @@ type Querier interface {
 	// filters/sorts them client-side, so 1000 never truncates a real org. Add
 	// keyset paging here + on the page if that assumption ever breaks (audit N8).
 	ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Connection, error)
+	ListDeadDeliveriesForEndpointSince(ctx context.Context, arg ListDeadDeliveriesForEndpointSinceParams) ([]pgtype.UUID, error)
+	ListDeliveriesForMessage(ctx context.Context, messageID pgtype.UUID) ([]ListDeliveriesForMessageRow, error)
 	ListDestinationInfo(ctx context.Context) ([]ListDestinationInfoRow, error)
 	ListDestinationsByOrg(ctx context.Context, orgID pgtype.UUID) ([]Destination, error)
 	ListEnabledConnectionsBySource(ctx context.Context, sourceID pgtype.UUID) ([]Connection, error)
@@ -225,6 +229,8 @@ type Querier interface {
 	// COALESCE pattern so unspecified fields keep current values.
 	PatchDestinationForOrg(ctx context.Context, arg PatchDestinationForOrgParams) (Destination, error)
 	PromoteUserToSuperAdmin(ctx context.Context, email string) error
+	ResetDeliveryForReplay(ctx context.Context, id pgtype.UUID) error
+	ResetEndpointFailures(ctx context.Context, id pgtype.UUID) error
 	// Do NOT reset attempt_count: zeroing it made the next attempt reuse
 	// attempt_num=1, colliding with the original attempt on UNIQUE(event_id,
 	// attempt_num) and silently dropping the retry's attempt row. Keep it monotonic;
@@ -232,6 +238,7 @@ type Querier interface {
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
+	RotateEndpointSecret(ctx context.Context, arg RotateEndpointSecretParams) (Endpoint, error)
 	// Gap-filled ingest-request volume over time for ONE source (single series, no
 	// status dimension). Same gap-fill contract as the delivery histogram.
 	SourceRequestHistogram(ctx context.Context, arg SourceRequestHistogramParams) ([]SourceRequestHistogramRow, error)

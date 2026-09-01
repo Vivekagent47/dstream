@@ -100,17 +100,21 @@ type Destination struct {
 }
 
 type Endpoint struct {
-	ID               pgtype.UUID        `json:"id"`
-	AppID            pgtype.UUID        `json:"app_id"`
-	OrgID            pgtype.UUID        `json:"org_id"`
-	Uid              *string            `json:"uid"`
-	Url              string             `json:"url"`
-	Description      string             `json:"description"`
-	Secret           string             `json:"secret"`
-	FilterEventTypes []string           `json:"filter_event_types"`
-	Disabled         bool               `json:"disabled"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                  pgtype.UUID        `json:"id"`
+	AppID               pgtype.UUID        `json:"app_id"`
+	OrgID               pgtype.UUID        `json:"org_id"`
+	Uid                 *string            `json:"uid"`
+	Url                 string             `json:"url"`
+	Description         string             `json:"description"`
+	Secret              string             `json:"secret"`
+	FilterEventTypes    []string           `json:"filter_event_types"`
+	Disabled            bool               `json:"disabled"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	PrevSecret          *string            `json:"prev_secret"`
+	PrevSecretExpiresAt pgtype.Timestamptz `json:"prev_secret_expires_at"`
+	ConsecutiveFailures int32              `json:"consecutive_failures"`
+	DisabledAt          pgtype.Timestamptz `json:"disabled_at"`
 }
 
 type Event struct {
