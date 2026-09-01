@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
+  AppWindow,
   Building2,
   ChevronsUpDown,
   Inbox,
@@ -13,6 +14,7 @@ import {
   Mail,
   ScrollText,
   Send,
+  Tag,
   Users,
 } from 'lucide-react'
 
@@ -46,6 +48,8 @@ const PLATFORM = [
   { label: 'Sources', to: '/sources', icon: Inbox, prefix: true },
   { label: 'Destinations', to: '/destinations', icon: Send, prefix: true },
   { label: 'Events', to: '/events', icon: Activity, prefix: true },
+  { label: 'Applications', to: '/applications', icon: AppWindow, prefix: true },
+  { label: 'Event Types', to: '/event-types', icon: Tag, prefix: true },
 ] as const
 
 const SETTINGS = [

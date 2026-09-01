@@ -13,9 +13,11 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
+import { Route as EventTypesIndexRouteImport } from './routes/event-types/index'
 import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
 import { Route as ConsoleIndexRouteImport } from './routes/console/index'
 import { Route as ConnectionsIndexRouteImport } from './routes/connections/index'
+import { Route as ApplicationsIndexRouteImport } from './routes/applications/index'
 import { Route as SourcesIdRouteImport } from './routes/sources/$id'
 import { Route as SettingsOrgRouteImport } from './routes/settings/org'
 import { Route as SettingsMembersRouteImport } from './routes/settings/members'
@@ -28,6 +30,9 @@ import { Route as EventsIdRouteImport } from './routes/events/$id'
 import { Route as DestinationsIdRouteImport } from './routes/destinations/$id'
 import { Route as ConnectionsIdRouteImport } from './routes/connections/$id'
 import { Route as AuthVerifyRouteImport } from './routes/auth/verify'
+import { Route as ApplicationsIdRouteImport } from './routes/applications/$id'
+import { Route as ApplicationsIdMessagesMessageIdRouteImport } from './routes/applications/$id_/messages/$messageId'
+import { Route as ApplicationsIdEndpointsEndpointIdRouteImport } from './routes/applications/$id_/endpoints/$endpointId'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -49,6 +54,11 @@ const EventsIndexRoute = EventsIndexRouteImport.update({
   path: '/events/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EventTypesIndexRoute = EventTypesIndexRouteImport.update({
+  id: '/event-types/',
+  path: '/event-types/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DestinationsIndexRoute = DestinationsIndexRouteImport.update({
   id: '/destinations/',
   path: '/destinations/',
@@ -62,6 +72,11 @@ const ConsoleIndexRoute = ConsoleIndexRouteImport.update({
 const ConnectionsIndexRoute = ConnectionsIndexRouteImport.update({
   id: '/connections/',
   path: '/connections/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApplicationsIndexRoute = ApplicationsIndexRouteImport.update({
+  id: '/applications/',
+  path: '/applications/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SourcesIdRoute = SourcesIdRouteImport.update({
@@ -124,10 +139,28 @@ const AuthVerifyRoute = AuthVerifyRouteImport.update({
   path: '/auth/verify',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApplicationsIdRoute = ApplicationsIdRouteImport.update({
+  id: '/applications/$id',
+  path: '/applications/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApplicationsIdMessagesMessageIdRoute =
+  ApplicationsIdMessagesMessageIdRouteImport.update({
+    id: '/applications/$id_/messages/$messageId',
+    path: '/applications/$id/messages/$messageId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApplicationsIdEndpointsEndpointIdRoute =
+  ApplicationsIdEndpointsEndpointIdRouteImport.update({
+    id: '/applications/$id_/endpoints/$endpointId',
+    path: '/applications/$id/endpoints/$endpointId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/applications/$id': typeof ApplicationsIdRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/destinations/$id': typeof DestinationsIdRoute
@@ -140,15 +173,20 @@ export interface FileRoutesByFullPath {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/applications/': typeof ApplicationsIndexRoute
   '/connections/': typeof ConnectionsIndexRoute
   '/console/': typeof ConsoleIndexRoute
   '/destinations/': typeof DestinationsIndexRoute
+  '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
   '/sources/': typeof SourcesIndexRoute
+  '/applications/$id/endpoints/$endpointId': typeof ApplicationsIdEndpointsEndpointIdRoute
+  '/applications/$id/messages/$messageId': typeof ApplicationsIdMessagesMessageIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/applications/$id': typeof ApplicationsIdRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/destinations/$id': typeof DestinationsIdRoute
@@ -161,16 +199,21 @@ export interface FileRoutesByTo {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/applications': typeof ApplicationsIndexRoute
   '/connections': typeof ConnectionsIndexRoute
   '/console': typeof ConsoleIndexRoute
   '/destinations': typeof DestinationsIndexRoute
+  '/event-types': typeof EventTypesIndexRoute
   '/events': typeof EventsIndexRoute
   '/sources': typeof SourcesIndexRoute
+  '/applications/$id/endpoints/$endpointId': typeof ApplicationsIdEndpointsEndpointIdRoute
+  '/applications/$id/messages/$messageId': typeof ApplicationsIdMessagesMessageIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/applications/$id': typeof ApplicationsIdRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/destinations/$id': typeof DestinationsIdRoute
@@ -183,17 +226,22 @@ export interface FileRoutesById {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/sources/$id': typeof SourcesIdRoute
+  '/applications/': typeof ApplicationsIndexRoute
   '/connections/': typeof ConnectionsIndexRoute
   '/console/': typeof ConsoleIndexRoute
   '/destinations/': typeof DestinationsIndexRoute
+  '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
   '/sources/': typeof SourcesIndexRoute
+  '/applications/$id_/endpoints/$endpointId': typeof ApplicationsIdEndpointsEndpointIdRoute
+  '/applications/$id_/messages/$messageId': typeof ApplicationsIdMessagesMessageIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/login'
+    | '/applications/$id'
     | '/auth/verify'
     | '/connections/$id'
     | '/destinations/$id'
@@ -206,15 +254,20 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/applications/'
     | '/connections/'
     | '/console/'
     | '/destinations/'
+    | '/event-types/'
     | '/events/'
     | '/sources/'
+    | '/applications/$id/endpoints/$endpointId'
+    | '/applications/$id/messages/$messageId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/login'
+    | '/applications/$id'
     | '/auth/verify'
     | '/connections/$id'
     | '/destinations/$id'
@@ -227,15 +280,20 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/applications'
     | '/connections'
     | '/console'
     | '/destinations'
+    | '/event-types'
     | '/events'
     | '/sources'
+    | '/applications/$id/endpoints/$endpointId'
+    | '/applications/$id/messages/$messageId'
   id:
     | '__root__'
     | '/'
     | '/login'
+    | '/applications/$id'
     | '/auth/verify'
     | '/connections/$id'
     | '/destinations/$id'
@@ -248,16 +306,21 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/sources/$id'
+    | '/applications/'
     | '/connections/'
     | '/console/'
     | '/destinations/'
+    | '/event-types/'
     | '/events/'
     | '/sources/'
+    | '/applications/$id_/endpoints/$endpointId'
+    | '/applications/$id_/messages/$messageId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  ApplicationsIdRoute: typeof ApplicationsIdRoute
   AuthVerifyRoute: typeof AuthVerifyRoute
   ConnectionsIdRoute: typeof ConnectionsIdRoute
   DestinationsIdRoute: typeof DestinationsIdRoute
@@ -270,11 +333,15 @@ export interface RootRouteChildren {
   SettingsMembersRoute: typeof SettingsMembersRoute
   SettingsOrgRoute: typeof SettingsOrgRoute
   SourcesIdRoute: typeof SourcesIdRoute
+  ApplicationsIndexRoute: typeof ApplicationsIndexRoute
   ConnectionsIndexRoute: typeof ConnectionsIndexRoute
   ConsoleIndexRoute: typeof ConsoleIndexRoute
   DestinationsIndexRoute: typeof DestinationsIndexRoute
+  EventTypesIndexRoute: typeof EventTypesIndexRoute
   EventsIndexRoute: typeof EventsIndexRoute
   SourcesIndexRoute: typeof SourcesIndexRoute
+  ApplicationsIdEndpointsEndpointIdRoute: typeof ApplicationsIdEndpointsEndpointIdRoute
+  ApplicationsIdMessagesMessageIdRoute: typeof ApplicationsIdMessagesMessageIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -307,6 +374,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EventsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/event-types/': {
+      id: '/event-types/'
+      path: '/event-types'
+      fullPath: '/event-types/'
+      preLoaderRoute: typeof EventTypesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/destinations/': {
       id: '/destinations/'
       path: '/destinations'
@@ -326,6 +400,13 @@ declare module '@tanstack/react-router' {
       path: '/connections'
       fullPath: '/connections/'
       preLoaderRoute: typeof ConnectionsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/applications/': {
+      id: '/applications/'
+      path: '/applications'
+      fullPath: '/applications/'
+      preLoaderRoute: typeof ApplicationsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sources/$id': {
@@ -412,12 +493,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthVerifyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/applications/$id': {
+      id: '/applications/$id'
+      path: '/applications/$id'
+      fullPath: '/applications/$id'
+      preLoaderRoute: typeof ApplicationsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/applications/$id_/messages/$messageId': {
+      id: '/applications/$id_/messages/$messageId'
+      path: '/applications/$id/messages/$messageId'
+      fullPath: '/applications/$id/messages/$messageId'
+      preLoaderRoute: typeof ApplicationsIdMessagesMessageIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/applications/$id_/endpoints/$endpointId': {
+      id: '/applications/$id_/endpoints/$endpointId'
+      path: '/applications/$id/endpoints/$endpointId'
+      fullPath: '/applications/$id/endpoints/$endpointId'
+      preLoaderRoute: typeof ApplicationsIdEndpointsEndpointIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  ApplicationsIdRoute: ApplicationsIdRoute,
   AuthVerifyRoute: AuthVerifyRoute,
   ConnectionsIdRoute: ConnectionsIdRoute,
   DestinationsIdRoute: DestinationsIdRoute,
@@ -430,11 +533,16 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsMembersRoute: SettingsMembersRoute,
   SettingsOrgRoute: SettingsOrgRoute,
   SourcesIdRoute: SourcesIdRoute,
+  ApplicationsIndexRoute: ApplicationsIndexRoute,
   ConnectionsIndexRoute: ConnectionsIndexRoute,
   ConsoleIndexRoute: ConsoleIndexRoute,
   DestinationsIndexRoute: DestinationsIndexRoute,
+  EventTypesIndexRoute: EventTypesIndexRoute,
   EventsIndexRoute: EventsIndexRoute,
   SourcesIndexRoute: SourcesIndexRoute,
+  ApplicationsIdEndpointsEndpointIdRoute:
+    ApplicationsIdEndpointsEndpointIdRoute,
+  ApplicationsIdMessagesMessageIdRoute: ApplicationsIdMessagesMessageIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

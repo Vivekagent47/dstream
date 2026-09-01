@@ -285,6 +285,85 @@ export interface AdminSystem {
   queue_deliveries_name: string
 }
 
+// Outbound webhooks (applications / event types / endpoints / messages).
+// Cookie-scoped /api paths; the org is resolved from the session.
+export interface Page<T> {
+  data: T[]
+  next_cursor: string | null
+}
+export interface Application {
+  id: string
+  org_id: string
+  uid?: string | null
+  name: string
+  metadata: unknown
+  created_at: string
+  updated_at: string
+}
+export interface EventType {
+  id: string
+  org_id: string
+  name: string
+  description: string
+  schema?: unknown | null
+  archived: boolean
+  created_at: string
+  updated_at: string
+}
+export interface Endpoint {
+  id: string
+  app_id: string
+  org_id: string
+  uid?: string | null
+  url: string
+  description: string
+  filter_event_types?: string[] | null
+  disabled: boolean
+  disabled_at?: string | null
+  consecutive_failures: number
+  created_at: string
+  updated_at: string
+}
+export interface EndpointWithSecret extends Endpoint {
+  secret: string
+}
+export interface Message {
+  id: string
+  app_id: string
+  org_id: string
+  event_type: string
+  payload_hash: string
+  event_id?: string | null
+  created_at: string
+}
+export interface MessageDetail extends Message {
+  payload: unknown
+}
+export interface MessageDelivery {
+  delivery_id: string
+  endpoint_id: string
+  endpoint_url: string
+  status: string
+  attempt_count: number
+  next_retry_at?: string | null
+  last_attempt_at?: string | null
+}
+export interface MessageDeliveryAttempt {
+  id: string
+  delivery_id: string
+  attempt_num: number
+  response_status?: number | null
+  response_headers?: unknown | null
+  response_body?: string | null
+  duration_ms?: number | null
+  error_message?: string | null
+  attempted_at: string
+}
+export interface RecoverResult {
+  recovered: number
+  truncated: boolean
+}
+
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
 
@@ -421,6 +500,106 @@ export const api = {
     http.get<DestinationMetrics>(`/api/destinations/${id}/metrics`, { params }).then((r) => r.data),
   sourceMetrics: (id: string, params?: { bucket?: string; after?: string }) =>
     http.get<SourceMetrics>(`/api/sources/${id}/metrics`, { params }).then((r) => r.data),
+
+  // Applications (cursor-paginated)
+  listApplications: (cursor?: string) =>
+    http
+      .get<Page<Application>>('/api/applications', { params: cursor ? { cursor } : {} })
+      .then((r) => r.data),
+  getApplication: (id: string) =>
+    http.get<Application>(`/api/applications/${id}`).then((r) => r.data),
+  createApplication: (input: { name: string; uid?: string; metadata?: unknown }) =>
+    http.post<Application>('/api/applications', input).then((r) => r.data),
+  updateApplication: (id: string, input: { name?: string; uid?: string; metadata?: unknown }) =>
+    http.patch<Application>(`/api/applications/${id}`, input).then((r) => r.data),
+  deleteApplication: (id: string) =>
+    http.delete(`/api/applications/${id}`).then(() => undefined),
+
+  // Event types (bare array)
+  listEventTypes: () => http.get<EventType[]>('/api/event-types').then((r) => r.data),
+  createEventType: (input: { name: string; description?: string; schema?: unknown }) =>
+    http.post<EventType>('/api/event-types', input).then((r) => r.data),
+  getEventType: (name: string) =>
+    http.get<EventType>(`/api/event-types/${encodeURIComponent(name)}`).then((r) => r.data),
+  updateEventType: (
+    name: string,
+    input: { description?: string; schema?: unknown; archived?: boolean },
+  ) =>
+    http
+      .patch<EventType>(`/api/event-types/${encodeURIComponent(name)}`, input)
+      .then((r) => r.data),
+  deleteEventType: (name: string) =>
+    http.delete(`/api/event-types/${encodeURIComponent(name)}`).then(() => undefined),
+
+  // Endpoints (app-scoped, bare array)
+  listEndpoints: (appId: string) =>
+    http.get<Endpoint[]>(`/api/applications/${appId}/endpoints`).then((r) => r.data),
+  createEndpoint: (
+    appId: string,
+    input: { url: string; uid?: string; description?: string; filter_event_types?: string[] },
+  ) =>
+    http.post<EndpointWithSecret>(`/api/applications/${appId}/endpoints`, input).then((r) => r.data),
+  getEndpoint: (appId: string, id: string) =>
+    http.get<Endpoint>(`/api/applications/${appId}/endpoints/${id}`).then((r) => r.data),
+  updateEndpoint: (
+    appId: string,
+    id: string,
+    input: { url?: string; description?: string; filter_event_types?: string[]; disabled?: boolean },
+  ) => http.patch<Endpoint>(`/api/applications/${appId}/endpoints/${id}`, input).then((r) => r.data),
+  deleteEndpoint: (appId: string, id: string) =>
+    http.delete(`/api/applications/${appId}/endpoints/${id}`).then(() => undefined),
+  getEndpointSecret: (appId: string, id: string) =>
+    http
+      .get<{ secret: string }>(`/api/applications/${appId}/endpoints/${id}/secret`)
+      .then((r) => r.data),
+  rotateEndpointSecret: (appId: string, id: string, input?: { secret?: string }) =>
+    http
+      .post<EndpointWithSecret>(
+        `/api/applications/${appId}/endpoints/${id}/rotate-secret`,
+        input ?? {},
+      )
+      .then((r) => r.data),
+  testEndpoint: (appId: string, id: string, input: { event_type: string; payload?: unknown }) =>
+    http.post(`/api/applications/${appId}/endpoints/${id}/test`, input).then((r) => r.data),
+  recoverEndpoint: (appId: string, id: string, input: { since: string }) =>
+    http
+      .post<RecoverResult>(`/api/applications/${appId}/endpoints/${id}/recover`, input)
+      .then((r) => r.data),
+  listEndpointAttempts: (appId: string, id: string) =>
+    http
+      .get<MessageDeliveryAttempt[]>(`/api/applications/${appId}/endpoints/${id}/attempts`)
+      .then((r) => r.data),
+
+  // Messages (app-scoped; list cursor-paginated)
+  sendMessage: (appId: string, input: { event_type: string; payload: unknown; event_id?: string }) =>
+    http
+      .post<{ message_id: string; event_id?: string; idempotent_replay: boolean }>(
+        `/api/applications/${appId}/messages`,
+        input,
+      )
+      .then((r) => r.data),
+  listMessages: (appId: string, cursor?: string) =>
+    http
+      .get<Page<Message>>(`/api/applications/${appId}/messages`, {
+        params: cursor ? { cursor } : {},
+      })
+      .then((r) => r.data),
+  getMessage: (appId: string, id: string) =>
+    http.get<MessageDetail>(`/api/applications/${appId}/messages/${id}`).then((r) => r.data),
+  listMessageDeliveries: (appId: string, id: string) =>
+    http
+      .get<MessageDelivery[]>(`/api/applications/${appId}/messages/${id}/deliveries`)
+      .then((r) => r.data),
+  listMessageAttempts: (appId: string, id: string) =>
+    http
+      .get<MessageDeliveryAttempt[]>(`/api/applications/${appId}/messages/${id}/attempts`)
+      .then((r) => r.data),
+  replayDelivery: (appId: string, msgId: string, endpointId: string) =>
+    http
+      .post<{ delivery_id: string }>(
+        `/api/applications/${appId}/messages/${msgId}/endpoints/${endpointId}/replay`,
+      )
+      .then((r) => r.data),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
@@ -466,4 +645,17 @@ export const qk = {
     ['destinations', id, 'metrics', params ?? {}] as const,
   sourceMetrics: (id: string, params?: { bucket?: string; after?: string }) =>
     ['sources', id, 'metrics', params ?? {}] as const,
+  applications: () => ['applications'] as const,
+  application: (id: string) => ['applications', id] as const,
+  eventTypes: () => ['event-types'] as const,
+  endpoints: (appId: string) => ['applications', appId, 'endpoints'] as const,
+  endpoint: (appId: string, id: string) => ['applications', appId, 'endpoints', id] as const,
+  endpointAttempts: (appId: string, id: string) =>
+    ['applications', appId, 'endpoints', id, 'attempts'] as const,
+  messages: (appId: string) => ['applications', appId, 'messages'] as const,
+  message: (appId: string, id: string) => ['applications', appId, 'messages', id] as const,
+  messageDeliveries: (appId: string, id: string) =>
+    ['applications', appId, 'messages', id, 'deliveries'] as const,
+  messageAttempts: (appId: string, id: string) =>
+    ['applications', appId, 'messages', id, 'attempts'] as const,
 }
