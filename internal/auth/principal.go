@@ -41,6 +41,7 @@ type Source string
 const (
 	SourceSession Source = "session"
 	SourceAPIKey  Source = "api_key"
+	SourcePortal  Source = "portal"
 )
 
 // Principal is the authenticated identity for a request. Exactly one of
