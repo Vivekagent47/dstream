@@ -55,11 +55,15 @@ func parseAPIKey(raw string) (prefix, secret string, ok bool) {
 		return "", "", false
 	}
 	rest := strings.TrimPrefix(raw, apiKeyMark)
-	parts := strings.SplitN(rest, "_", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	// The prefix is a fixed-length base64url token whose alphabet includes
+	// '_', so we cannot split on '_'. Slice by the known prefix length; the
+	// separator must be the '_' immediately after it.
+	if len(rest) < APIKeyPrefixLen+2 || rest[APIKeyPrefixLen] != '_' {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	prefix = rest[:APIKeyPrefixLen]
+	secret = rest[APIKeyPrefixLen+1:]
+	return prefix, secret, true
 }
 
 // ExtractAPIKey reads "Authorization: Bearer dsk_<prefix>_<secret>" from the
