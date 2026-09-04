@@ -67,12 +67,10 @@ func IssueOrgInvite(
 // the invite's role, and marks the invite accepted. Returns the loaded
 // invite row so the caller can use the org_id / role for cookie + UI hand-off.
 //
-// Already-a-member is treated as success: instead of stranding the invite,
-// we upgrade the user's existing role IF the invite grants more privilege
-// than they currently have. A re-issued admin invite for a `member` upgrades
-// them to `admin`; a re-issued `member` invite for an existing `admin` does
-// NOT demote. Never lateral-moves between owner and admin via this path
-// (ownership changes go through the transfer flow).
+// Already-a-member is treated as success (idempotent): we mark the invite
+// accepted but do NOT change the user's existing role — a re-issued
+// higher-role invite does not silently escalate privilege. Role changes go
+// through member management.
 func ConsumeOrgInvite(
 	ctx context.Context, pool TxBeginner, q *store.Queries,
 	token string, userID uuid.UUID,
@@ -97,20 +95,18 @@ func ConsumeOrgInvite(
 		}
 		return store.GetActiveOrgInviteByTokenHashRow{}, err
 	}
-	if err := qtx.AddOrgMember(ctx, store.AddOrgMemberParams{
-		OrgID:  row.OrgID,
-		UserID: store.UUID(userID),
-		Role:   row.Role,
+	// Add the member. Already-a-member (unique violation) is fine — invite
+	// acceptance is idempotent and does NOT change an existing member's role
+	// (see package doc). Isolate the INSERT in a savepoint so the violation
+	// doesn't poison the outer tx.
+	if _, err := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+		return q.WithTx(sp).AddOrgMember(ctx, store.AddOrgMemberParams{
+			OrgID:  row.OrgID,
+			UserID: store.UUID(userID),
+			Role:   row.Role,
+		})
 	}); err != nil {
-		if !isUniqueViolation(err) {
-			return store.GetActiveOrgInviteByTokenHashRow{}, err
-		}
-		// Already a member. Upgrade existing role if the invite grants
-		// more privilege. We do NOT downgrade — a re-issued lower-role
-		// invite must not strip privilege the user already holds.
-		if err := upgradeMemberRole(ctx, qtx, row.OrgID, store.UUID(userID), Role(row.Role)); err != nil {
-			return store.GetActiveOrgInviteByTokenHashRow{}, err
-		}
+		return store.GetActiveOrgInviteByTokenHashRow{}, err
 	}
 	if err := qtx.MarkOrgInviteAccepted(ctx, row.ID); err != nil {
 		return store.GetActiveOrgInviteByTokenHashRow{}, err
@@ -119,33 +115,4 @@ func ConsumeOrgInvite(
 		return store.GetActiveOrgInviteByTokenHashRow{}, err
 	}
 	return row, nil
-}
-
-// upgradeMemberRole bumps an existing member to `target` IFF target is
-// strictly higher than the existing role. We refuse to set "owner" through
-// this path — ownership transitions must go through the dedicated transfer
-// flow with its last-owner guard.
-func upgradeMemberRole(
-	ctx context.Context, q *store.Queries,
-	orgID, userID pgtype.UUID, target Role,
-) error {
-	if target == RoleOwner {
-		return nil
-	}
-	existing, err := q.GetOrgMember(ctx, store.GetOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-	})
-	if err != nil {
-		return err
-	}
-	current := Role(existing.Role)
-	if !current.LessThan(target) {
-		return nil
-	}
-	return q.UpdateOrgMemberRole(ctx, store.UpdateOrgMemberRoleParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   string(target),
-	})
 }

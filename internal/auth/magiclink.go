@@ -57,8 +57,8 @@ func IssueMagicLink(ctx context.Context, q *store.Queries, email string, ttl tim
 //
 //  1. Load + validate the magic-link row.
 //  2. Get-or-create the user (race-tolerant via unique-violation handling).
-//  3. Apply any pending org_invites for the user's email — upgrade role
-//     when the invite grants more privilege than current membership.
+//  3. Apply any pending org_invites for the user's email — add the user as
+//     a member; if already a member, preserve their existing role.
 //  4. If the user is still not a member of any org, create a personal
 //     workspace and add them as owner.
 //  5. Mark the magic-link token used.
@@ -97,11 +97,16 @@ func ConsumeMagicLink(ctx context.Context, pool TxBeginner, q *store.Queries, to
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return store.User{}, uuid.Nil, err
 		}
-		u, err = qtx.CreateUser(ctx, store.CreateUserParams{Email: row.Email})
-		if err != nil {
-			if !isUniqueViolation(err) {
-				return store.User{}, uuid.Nil, err
-			}
+		violated, sErr := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+			var e error
+			u, e = q.WithTx(sp).CreateUser(ctx, store.CreateUserParams{Email: row.Email})
+			return e
+		})
+		if sErr != nil {
+			return store.User{}, uuid.Nil, sErr
+		}
+		if violated {
+			// Concurrent create with the same email — fetch the existing row.
 			u, err = qtx.GetUserByEmail(ctx, row.Email)
 			if err != nil {
 				return store.User{}, uuid.Nil, err
@@ -110,25 +115,24 @@ func ConsumeMagicLink(ctx context.Context, pool TxBeginner, q *store.Queries, to
 	}
 
 	// Apply pending invites. Best-effort per invite: if adding a member
-	// fails on unique violation (already a member), upgrade role rather
-	// than 500ing. Other errors abort the whole tx.
+	// fails on unique violation (already a member), preserve the existing
+	// role rather than 500ing — invite acceptance is idempotent and does not
+	// silently change an established member's role. Other errors abort the tx.
 	invites, err := qtx.ListPendingOrgInvitesByEmail(ctx, u.Email)
 	if err != nil {
 		return store.User{}, uuid.Nil, err
 	}
 	for _, inv := range invites {
-		if err := qtx.AddOrgMember(ctx, store.AddOrgMemberParams{
-			OrgID:  inv.OrgID,
-			UserID: u.ID,
-			Role:   inv.Role,
+		if _, err := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+			return q.WithTx(sp).AddOrgMember(ctx, store.AddOrgMemberParams{
+				OrgID:  inv.OrgID,
+				UserID: u.ID,
+				Role:   inv.Role,
+			})
 		}); err != nil {
-			if !isUniqueViolation(err) {
-				return store.User{}, uuid.Nil, err
-			}
-			if err := upgradeMemberRole(ctx, qtx, inv.OrgID, u.ID, Role(inv.Role)); err != nil {
-				return store.User{}, uuid.Nil, err
-			}
+			return store.User{}, uuid.Nil, err
 		}
+		// Already a member: preserve existing role (idempotent accept).
 		if err := qtx.MarkOrgInviteAccepted(ctx, inv.ID); err != nil {
 			return store.User{}, uuid.Nil, err
 		}
@@ -209,6 +213,29 @@ func slugifyEmail(email string) string {
 		copy(suffix[:], h[:6])
 	}
 	return string(b) + "-" + hex.EncodeToString(suffix[:])
+}
+
+// inSavepoint runs fn inside a nested transaction (a SAVEPOINT). A failed
+// statement aborts the whole Postgres tx, so callers that want to catch a
+// unique violation and keep using the outer tx must isolate the statement
+// here. On a unique violation, the savepoint is rolled back (leaving the
+// outer tx usable) and (true, nil) is returned. Any other error rolls back
+// and is returned. On success the savepoint is released.
+func inSavepoint(ctx context.Context, tx pgx.Tx, fn func(pgx.Tx) error) (violated bool, err error) {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	if e := fn(sp); e != nil {
+		if rb := sp.Rollback(ctx); rb != nil {
+			return false, rb
+		}
+		if isUniqueViolation(e) {
+			return true, nil
+		}
+		return false, e
+	}
+	return false, sp.Commit(ctx)
 }
 
 // isUniqueViolation detects Postgres unique_violation (SQLSTATE 23505).
