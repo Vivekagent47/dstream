@@ -86,6 +86,16 @@ func newTestRouter(q *store.Queries) (*chi.Mux, *auth.SessionSigner) {
 	return r, s
 }
 
+// newTestRouterPool is newTestRouter plus a wired Pool, for handlers that open
+// a transaction (e.g. AcceptInvite -> ConsumeOrgInvite).
+func newTestRouterPool(pool *pgxpool.Pool, q *store.Queries) (*chi.Mux, *auth.SessionSigner) {
+	r := chi.NewRouter()
+	s := &auth.SessionSigner{Secret: []byte("test-secret-do-not-use-in-prod")}
+	d := Deps{Queries: q, Signer: s, Pool: pool}
+	Mount(r, d)
+	return r, s
+}
+
 // requestWithSession builds an *http.Request with a valid session cookie for
 // (userID, orgID).
 func requestWithSession(t *testing.T, s *auth.SessionSigner, method, path string, userID, orgID uuid.UUID) *http.Request {

@@ -103,6 +103,9 @@ func TestLog_SessionPrincipal_WritesUserAndEmailSnapshot(t *testing.T) {
 		Source: auth.SourceSession,
 		UserID: uid,
 		OrgID:  oid,
+		// audit.Log snapshots the email from the principal (Authenticate
+		// captures it in prod); provide it here as that flow would.
+		UserEmail: email,
 	})
 	tid := uuid.New()
 	Log(ctx, q, slog.Default(), Entry{

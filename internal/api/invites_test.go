@@ -302,7 +302,7 @@ func TestAcceptInvite_SignedInMatchingEmail_AddsMember(t *testing.T) {
 		t.Fatalf("issue invite: %v", err)
 	}
 
-	router, signer := newTestRouter(q)
+	router, signer := newTestRouterPool(pool, q)
 	req := requestWithSession(t, signer, http.MethodPost,
 		"/api/invites/"+tok+"/accept", store.GoUUID(u.ID), store.GoUUID(personalOrg.ID))
 	rec := httptest.NewRecorder()
@@ -344,7 +344,7 @@ func TestAcceptInvite_SignedInWrongEmail_403(t *testing.T) {
 	}
 
 	// Signed-in caller is a *different* user (the inviter, not the invitee).
-	router, signer := newTestRouter(q)
+	router, signer := newTestRouterPool(pool, q)
 	req := requestWithSession(t, signer, http.MethodPost,
 		"/api/invites/"+tok+"/accept", inviter, oid)
 	rec := httptest.NewRecorder()
@@ -366,7 +366,7 @@ func TestAcceptInvite_SignedOut_RequiresLogin(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
-	router, _ := newTestRouter(q)
+	router, _ := newTestRouterPool(pool, q)
 	req := httptest.NewRequest(http.MethodPost, "/api/invites/"+tok+"/accept", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -386,7 +386,7 @@ func TestAcceptInvite_Unknown_404(t *testing.T) {
 	pool := testPool(t)
 	q := store.New(pool)
 
-	router, _ := newTestRouter(q)
+	router, _ := newTestRouterPool(pool, q)
 	req := httptest.NewRequest(http.MethodPost, "/api/invites/no-such-token/accept", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)

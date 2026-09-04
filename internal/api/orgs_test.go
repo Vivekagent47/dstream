@@ -306,7 +306,7 @@ func TestDeleteOrg_OwnerOnly(t *testing.T) {
 
 // --- POST /api/orgs/{org_id}/transfer ---
 
-func TestTransferOwnership_NonMember_400(t *testing.T) {
+func TestTransferOwnership_NonMember_403(t *testing.T) {
 	pool := testPool(t)
 	q := store.New(pool)
 	owner, oid := seedUserAndOrg(t, q)
@@ -318,8 +318,10 @@ func TestTransferOwnership_NonMember_400(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	// The handler deliberately returns a generic 403 for both "target isn't a
+	// member" and "caller isn't owner", to avoid leaking which guard tripped.
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
