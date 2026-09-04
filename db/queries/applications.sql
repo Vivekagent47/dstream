@@ -24,3 +24,7 @@ UPDATE applications
 
 -- name: DeleteApplicationForOrg :one
 DELETE FROM applications WHERE id = $1 AND org_id = $2 RETURNING id;
+
+-- name: BumpApplicationPortalEpoch :exec
+UPDATE applications SET portal_epoch = portal_epoch + 1, updated_at = now()
+WHERE id = $1 AND org_id = $2;

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
+	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
@@ -30,6 +31,9 @@ type Handlers struct {
 	SelfHosts []string
 	// SecretGrace is how long a rotated endpoint's previous secret stays valid.
 	SecretGrace time.Duration
+	// Portal signs App Portal tokens; AppBaseURL builds the portal link.
+	Portal     *auth.PortalSigner
+	AppBaseURL string
 }
 
 func applicationView(a store.Application) map[string]any {

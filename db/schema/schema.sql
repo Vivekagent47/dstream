@@ -316,6 +316,9 @@ CREATE TABLE applications (
   uid        TEXT,                       -- caller-supplied external id (addressable)
   name       TEXT NOT NULL,
   metadata   JSONB NOT NULL DEFAULT '{}',
+  -- Bumped to revoke every outstanding App Portal link for this app
+  -- (kill-switch). Embedded in the signed portal token; a mismatch = 401.
+  portal_epoch BIGINT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

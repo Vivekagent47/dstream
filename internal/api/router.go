@@ -48,6 +48,8 @@ type Deps struct {
 	// SecretGrace is how long a rotated endpoint's previous signing secret
 	// stays valid after a rotate.
 	SecretGrace time.Duration
+	// Portal signs App Portal tokens for the mint/revoke endpoints.
+	Portal *auth.PortalSigner
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
@@ -84,6 +86,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		Queue:       d.Queue,
 		SelfHosts:   d.SelfHosts,
 		SecretGrace: d.SecretGrace,
+		Portal:      d.Portal,
+		AppBaseURL:  d.AppBaseURL,
 	}
 
 	parent.Route("/api", func(r chi.Router) {
@@ -191,6 +195,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/{app_id}", ob.GetApplication)
 					r.Patch("/{app_id}", ob.PatchApplication)
 					r.Delete("/{app_id}", ob.DeleteApplication)
+					r.Post("/{app_id}/portal-access", ob.CreatePortalAccess)
+					r.Post("/{app_id}/portal-access/revoke", ob.RevokePortalAccess)
 
 					r.Route("/{app_id}/endpoints", func(r chi.Router) {
 						r.Get("/", ob.ListEndpoints)
@@ -227,6 +233,39 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 				r.Get("/cli/sources", cli.ListSources)
 				r.Get("/cli/connect", cli.Connect)
 			})
+		})
+
+		// App Portal surface. Authed ONLY by a Bearer portal token
+		// (RequirePortal); no session, no CSRF, no org gate. The token pins
+		// the app_id, injected into the route context, so these reuse the
+		// outbound handlers verbatim scoped to one application. Only the
+		// routes below exist here — publish + app/event-type CRUD are absent.
+		// NOTE: portal route paths MUST NOT contain an {app_id} segment — the
+		// app_id is injected from the token; a path segment would let chi's
+		// last-wins URLParam override the token's app. Keep paths app_id-free.
+		r.Route("/portal", func(r chi.Router) {
+			r.Use(auth.RequirePortal(d.Queries, d.Portal))
+			r.Get("/app", ob.GetApplication)
+			r.Route("/endpoints", func(r chi.Router) {
+				r.Get("/", ob.ListEndpoints)
+				r.Post("/", ob.CreateEndpoint)
+				r.Get("/{id}", ob.GetEndpoint)
+				r.Patch("/{id}", ob.PatchEndpoint)
+				r.Delete("/{id}", ob.DeleteEndpoint)
+				r.Get("/{id}/secret", ob.GetEndpointSecret)
+				r.Post("/{id}/rotate-secret", ob.RotateEndpointSecret)
+				r.Post("/{id}/recover", ob.RecoverEndpoint)
+				r.Post("/{id}/test", ob.TestEndpoint)
+				r.Get("/{id}/attempts", ob.ListEndpointAttempts)
+			})
+			r.Route("/messages", func(r chi.Router) {
+				r.Get("/", ob.ListMessages)
+				r.Get("/{id}", ob.GetMessage)
+				r.Get("/{id}/attempts", ob.ListMessageAttempts)
+				r.Get("/{id}/deliveries", ob.ListMessageDeliveries)
+				r.Post("/{id}/endpoints/{endpoint_id}/replay", ob.ReplayDelivery)
+			})
+			r.Get("/event-types", ob.ListEventTypes)
 		})
 	})
 }

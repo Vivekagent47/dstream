@@ -17,6 +17,7 @@ type Querier interface {
 	// Cross-tenant top sources by event volume since @since (source reached via the
 	// originating request), for the super-admin overview.
 	AdminTopSources(ctx context.Context, since pgtype.Timestamptz) ([]AdminTopSourcesRow, error)
+	BumpApplicationPortalEpoch(ctx context.Context, arg BumpApplicationPortalEpochParams) error
 	// Invalidate all of a user's outstanding signed session cookies by advancing
 	// their epoch. Used by logout (logout-all) and future disable/security flows.
 	BumpUserSessionEpoch(ctx context.Context, id pgtype.UUID) error

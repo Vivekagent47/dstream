@@ -50,6 +50,9 @@ type Config struct {
 	// missed delivery.
 	WebhookSecretGrace time.Duration `mapstructure:"webhook_secret_grace"`
 
+	// PortalTokenTTL is how long a minted App Portal link stays valid.
+	PortalTokenTTL time.Duration `mapstructure:"portal_token_ttl"`
+
 	// EndpointMaxConsecutiveFailures auto-disables an endpoint once this many
 	// deliveries dead-letter back-to-back; a successful delivery resets the run.
 	EndpointMaxConsecutiveFailures int `mapstructure:"endpoint_max_consecutive_failures"`
@@ -109,6 +112,7 @@ func Load() (Config, error) {
 	v.SetDefault("app_base_url", "")
 	v.SetDefault("session_secret", "")
 	v.SetDefault("magic_link_ttl", "15m")
+	v.SetDefault("portal_token_ttl", "168h")
 	v.SetDefault("trusted_proxies", []string{})
 	// Secure by default: session/CSRF cookies get the Secure attribute unless
 	// explicitly opted out for local HTTP dev (DSTREAM_COOKIE_SECURE=false).

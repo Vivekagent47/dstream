@@ -11,10 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bumpApplicationPortalEpoch = `-- name: BumpApplicationPortalEpoch :exec
+UPDATE applications SET portal_epoch = portal_epoch + 1, updated_at = now()
+WHERE id = $1 AND org_id = $2
+`
+
+type BumpApplicationPortalEpochParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+func (q *Queries) BumpApplicationPortalEpoch(ctx context.Context, arg BumpApplicationPortalEpochParams) error {
+	_, err := q.db.Exec(ctx, bumpApplicationPortalEpoch, arg.ID, arg.OrgID)
+	return err
+}
+
 const createApplication = `-- name: CreateApplication :one
 INSERT INTO applications (org_id, uid, name, metadata)
 VALUES ($1, $2, $3, $4)
-RETURNING id, org_id, uid, name, metadata, created_at, updated_at
+RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch
 `
 
 type CreateApplicationParams struct {
@@ -40,6 +55,7 @@ func (q *Queries) CreateApplication(ctx context.Context, arg CreateApplicationPa
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PortalEpoch,
 	)
 	return i, err
 }
@@ -61,7 +77,7 @@ func (q *Queries) DeleteApplicationForOrg(ctx context.Context, arg DeleteApplica
 }
 
 const getApplicationForOrg = `-- name: GetApplicationForOrg :one
-SELECT id, org_id, uid, name, metadata, created_at, updated_at FROM applications WHERE id = $1 AND org_id = $2
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch FROM applications WHERE id = $1 AND org_id = $2
 `
 
 type GetApplicationForOrgParams struct {
@@ -80,12 +96,13 @@ func (q *Queries) GetApplicationForOrg(ctx context.Context, arg GetApplicationFo
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PortalEpoch,
 	)
 	return i, err
 }
 
 const listApplicationsByOrg = `-- name: ListApplicationsByOrg :many
-SELECT id, org_id, uid, name, metadata, created_at, updated_at FROM applications
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch FROM applications
  WHERE org_id = $1
    AND (created_at, id) < ($2::timestamptz, $3::uuid)
  ORDER BY created_at DESC, id DESC
@@ -121,6 +138,7 @@ func (q *Queries) ListApplicationsByOrg(ctx context.Context, arg ListApplication
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PortalEpoch,
 		); err != nil {
 			return nil, err
 		}
@@ -139,7 +157,7 @@ UPDATE applications
        metadata = COALESCE($3::jsonb, metadata),
        updated_at = now()
  WHERE id = $4 AND org_id = $5
- RETURNING id, org_id, uid, name, metadata, created_at, updated_at
+ RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch
 `
 
 type UpdateApplicationParams struct {
@@ -167,6 +185,7 @@ func (q *Queries) UpdateApplication(ctx context.Context, arg UpdateApplicationPa
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PortalEpoch,
 	)
 	return i, err
 }

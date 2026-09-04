@@ -1,4 +1,4 @@
-h1:lPydJ69sN+/DLkENVneP3UDn8I2ssRJ9Xu8CgXJMDlA=
+h1:VMtrNc3+aJdFbmSYTdq6Td92CZ911nsbVaDY6oLA2tg=
 00000000000000_extensions.sql h1:hbbiUsP7yRuJwyp7q1wb/fOVkdzYbFY2w+F8UtF8OVE=
 20260616155338_init.sql h1:iQJwQHDsULVs1PYLToRZ1OuX61DKc7cYW9c4hAhGMIQ=
 20260621000000_audit_org_id_nullable.sql h1:YAeVbvWPn2+RBWdZI4fbrQrev8ZZ3zS5jghcig8rrmw=
@@ -17,3 +17,4 @@ h1:lPydJ69sN+/DLkENVneP3UDn8I2ssRJ9Xu8CgXJMDlA=
 20260721190621_events_created_at_idx.sql h1:5toF356agQCF0tgU+LGy4DQ+g7lRcVlTQdyBL8vFey8=
 20260724155607_outbound_core.sql h1:MDRygdySvMxOXXo0Khu9GQyGcKX1ujZ58H1rziGFhZk=
 20260827162016_outbound_lifecycle.sql h1:SPHj03VkfBlRoKqv4bMCh+LsvEDkrTsJexImDiY2ta8=
+20260902131837_app_portal.sql h1:cHVwbA8Z9v0dLgY4iNbuG2Hc7guQwnjNb8rSt1Dnw44=

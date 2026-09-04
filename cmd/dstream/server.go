@@ -108,6 +108,10 @@ func serverCmd() *cobra.Command {
 				Secret: []byte(cfg.SessionSecret),
 				Secure: cfg.CookieSecure,
 			}
+			portalSigner := &auth.PortalSigner{
+				Secret: []byte(cfg.SessionSecret),
+				TTL:    cfg.PortalTokenTTL,
+			}
 			bodyStore := ingest.NewPostgresBodyStore(q)
 
 			realIP, err := mw.TrustedRealIP(cfg.TrustedProxies)
@@ -161,6 +165,7 @@ func serverCmd() *cobra.Command {
 				EvictSourceCache: ih.InvalidateSource,
 				SelfHosts:        cfg.SelfHosts,
 				SecretGrace:      cfg.WebhookSecretGrace,
+				Portal:           portalSigner,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{
