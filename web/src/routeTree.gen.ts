@@ -10,8 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PortalRouteRouteImport } from './routes/portal/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
+import { Route as PortalIndexRouteImport } from './routes/portal/index'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventTypesIndexRouteImport } from './routes/event-types/index'
 import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
@@ -31,12 +33,19 @@ import { Route as DestinationsIdRouteImport } from './routes/destinations/$id'
 import { Route as ConnectionsIdRouteImport } from './routes/connections/$id'
 import { Route as AuthVerifyRouteImport } from './routes/auth/verify'
 import { Route as ApplicationsIdRouteImport } from './routes/applications/$id'
+import { Route as PortalMessagesIndexRouteImport } from './routes/portal/messages/index'
+import { Route as PortalMessagesMessageIdRouteImport } from './routes/portal/messages/$messageId'
 import { Route as ApplicationsIdMessagesMessageIdRouteImport } from './routes/applications/$id_/messages/$messageId'
 import { Route as ApplicationsIdEndpointsEndpointIdRouteImport } from './routes/applications/$id_/endpoints/$endpointId'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PortalRouteRoute = PortalRouteRouteImport.update({
+  id: '/portal',
+  path: '/portal',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -48,6 +57,11 @@ const SourcesIndexRoute = SourcesIndexRouteImport.update({
   id: '/sources/',
   path: '/sources/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const PortalIndexRoute = PortalIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => PortalRouteRoute,
 } as any)
 const EventsIndexRoute = EventsIndexRouteImport.update({
   id: '/events/',
@@ -144,6 +158,16 @@ const ApplicationsIdRoute = ApplicationsIdRouteImport.update({
   path: '/applications/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PortalMessagesIndexRoute = PortalMessagesIndexRouteImport.update({
+  id: '/messages/',
+  path: '/messages/',
+  getParentRoute: () => PortalRouteRoute,
+} as any)
+const PortalMessagesMessageIdRoute = PortalMessagesMessageIdRouteImport.update({
+  id: '/messages/$messageId',
+  path: '/messages/$messageId',
+  getParentRoute: () => PortalRouteRoute,
+} as any)
 const ApplicationsIdMessagesMessageIdRoute =
   ApplicationsIdMessagesMessageIdRouteImport.update({
     id: '/applications/$id_/messages/$messageId',
@@ -159,6 +183,7 @@ const ApplicationsIdEndpointsEndpointIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/portal': typeof PortalRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/applications/$id': typeof ApplicationsIdRoute
   '/auth/verify': typeof AuthVerifyRoute
@@ -179,7 +204,10 @@ export interface FileRoutesByFullPath {
   '/destinations/': typeof DestinationsIndexRoute
   '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
+  '/portal/': typeof PortalIndexRoute
   '/sources/': typeof SourcesIndexRoute
+  '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
+  '/portal/messages/': typeof PortalMessagesIndexRoute
   '/applications/$id/endpoints/$endpointId': typeof ApplicationsIdEndpointsEndpointIdRoute
   '/applications/$id/messages/$messageId': typeof ApplicationsIdMessagesMessageIdRoute
 }
@@ -205,13 +233,17 @@ export interface FileRoutesByTo {
   '/destinations': typeof DestinationsIndexRoute
   '/event-types': typeof EventTypesIndexRoute
   '/events': typeof EventsIndexRoute
+  '/portal': typeof PortalIndexRoute
   '/sources': typeof SourcesIndexRoute
+  '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
+  '/portal/messages': typeof PortalMessagesIndexRoute
   '/applications/$id/endpoints/$endpointId': typeof ApplicationsIdEndpointsEndpointIdRoute
   '/applications/$id/messages/$messageId': typeof ApplicationsIdMessagesMessageIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/portal': typeof PortalRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/applications/$id': typeof ApplicationsIdRoute
   '/auth/verify': typeof AuthVerifyRoute
@@ -232,7 +264,10 @@ export interface FileRoutesById {
   '/destinations/': typeof DestinationsIndexRoute
   '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
+  '/portal/': typeof PortalIndexRoute
   '/sources/': typeof SourcesIndexRoute
+  '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
+  '/portal/messages/': typeof PortalMessagesIndexRoute
   '/applications/$id_/endpoints/$endpointId': typeof ApplicationsIdEndpointsEndpointIdRoute
   '/applications/$id_/messages/$messageId': typeof ApplicationsIdMessagesMessageIdRoute
 }
@@ -240,6 +275,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/portal'
     | '/login'
     | '/applications/$id'
     | '/auth/verify'
@@ -260,7 +296,10 @@ export interface FileRouteTypes {
     | '/destinations/'
     | '/event-types/'
     | '/events/'
+    | '/portal/'
     | '/sources/'
+    | '/portal/messages/$messageId'
+    | '/portal/messages/'
     | '/applications/$id/endpoints/$endpointId'
     | '/applications/$id/messages/$messageId'
   fileRoutesByTo: FileRoutesByTo
@@ -286,12 +325,16 @@ export interface FileRouteTypes {
     | '/destinations'
     | '/event-types'
     | '/events'
+    | '/portal'
     | '/sources'
+    | '/portal/messages/$messageId'
+    | '/portal/messages'
     | '/applications/$id/endpoints/$endpointId'
     | '/applications/$id/messages/$messageId'
   id:
     | '__root__'
     | '/'
+    | '/portal'
     | '/login'
     | '/applications/$id'
     | '/auth/verify'
@@ -312,13 +355,17 @@ export interface FileRouteTypes {
     | '/destinations/'
     | '/event-types/'
     | '/events/'
+    | '/portal/'
     | '/sources/'
+    | '/portal/messages/$messageId'
+    | '/portal/messages/'
     | '/applications/$id_/endpoints/$endpointId'
     | '/applications/$id_/messages/$messageId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  PortalRouteRoute: typeof PortalRouteRouteWithChildren
   LoginRoute: typeof LoginRoute
   ApplicationsIdRoute: typeof ApplicationsIdRoute
   AuthVerifyRoute: typeof AuthVerifyRoute
@@ -353,6 +400,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/portal': {
+      id: '/portal'
+      path: '/portal'
+      fullPath: '/portal'
+      preLoaderRoute: typeof PortalRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -366,6 +420,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/sources/'
       preLoaderRoute: typeof SourcesIndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/portal/': {
+      id: '/portal/'
+      path: '/'
+      fullPath: '/portal/'
+      preLoaderRoute: typeof PortalIndexRouteImport
+      parentRoute: typeof PortalRouteRoute
     }
     '/events/': {
       id: '/events/'
@@ -500,6 +561,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApplicationsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/portal/messages/': {
+      id: '/portal/messages/'
+      path: '/messages'
+      fullPath: '/portal/messages/'
+      preLoaderRoute: typeof PortalMessagesIndexRouteImport
+      parentRoute: typeof PortalRouteRoute
+    }
+    '/portal/messages/$messageId': {
+      id: '/portal/messages/$messageId'
+      path: '/messages/$messageId'
+      fullPath: '/portal/messages/$messageId'
+      preLoaderRoute: typeof PortalMessagesMessageIdRouteImport
+      parentRoute: typeof PortalRouteRoute
+    }
     '/applications/$id_/messages/$messageId': {
       id: '/applications/$id_/messages/$messageId'
       path: '/applications/$id/messages/$messageId'
@@ -517,8 +592,25 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface PortalRouteRouteChildren {
+  PortalIndexRoute: typeof PortalIndexRoute
+  PortalMessagesMessageIdRoute: typeof PortalMessagesMessageIdRoute
+  PortalMessagesIndexRoute: typeof PortalMessagesIndexRoute
+}
+
+const PortalRouteRouteChildren: PortalRouteRouteChildren = {
+  PortalIndexRoute: PortalIndexRoute,
+  PortalMessagesMessageIdRoute: PortalMessagesMessageIdRoute,
+  PortalMessagesIndexRoute: PortalMessagesIndexRoute,
+}
+
+const PortalRouteRouteWithChildren = PortalRouteRoute._addFileChildren(
+  PortalRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  PortalRouteRoute: PortalRouteRouteWithChildren,
   LoginRoute: LoginRoute,
   ApplicationsIdRoute: ApplicationsIdRoute,
   AuthVerifyRoute: AuthVerifyRoute,

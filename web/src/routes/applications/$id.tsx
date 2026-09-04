@@ -166,29 +166,73 @@ function OverviewTab({ app }: { app: Application }) {
     queryKey: qk.endpoints(app.id),
     queryFn: () => api.listEndpoints(app.id),
   })
+
+  const copyLink = useMutation({
+    mutationFn: () => api.createPortalAccess(app.id),
+    onSuccess: (r) => {
+      navigator.clipboard
+        .writeText(r.url)
+        .then(() =>
+          toast.success('Portal link copied — expires ' + new Date(r.expires_at).toLocaleString()),
+        )
+        .catch(() => toast.message('Portal link', { description: r.url }))
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  const revoke = useMutation({
+    mutationFn: () => api.revokePortalAccess(app.id),
+    onSuccess: () => toast.success('All portal links revoked'),
+    onError: (e) => toast.error((e as Error).message),
+  })
+
   return (
-    <div className="max-w-2xl space-y-3">
-      <h2 className="text-base font-semibold">Application details</h2>
+    <div className="max-w-2xl space-y-8">
       <div className="space-y-3">
-        <DetailRow label="Application ID">
-          <CopyValue value={app.id} what="Application ID" mono />
-        </DetailRow>
-        <DetailRow label="UID">
-          {app.uid ? <span className="font-mono text-xs">{app.uid}</span> : '—'}
-        </DetailRow>
-        <DetailRow label="Name">{app.name}</DetailRow>
-        <DetailRow label="Endpoints">{endpoints?.length ?? '—'}</DetailRow>
-        <DetailRow label="Metadata">
-          {app.metadata != null ? (
-            <pre className="overflow-x-auto rounded border border-border bg-muted px-3 py-2 font-mono text-xs">
-              {fmtMetadata(app.metadata)}
-            </pre>
-          ) : (
-            '—'
-          )}
-        </DetailRow>
-        <DetailRow label="Created at">{new Date(app.created_at).toLocaleString()}</DetailRow>
+        <h2 className="text-base font-semibold">Application details</h2>
+        <div className="space-y-3">
+          <DetailRow label="Application ID">
+            <CopyValue value={app.id} what="Application ID" mono />
+          </DetailRow>
+          <DetailRow label="UID">
+            {app.uid ? <span className="font-mono text-xs">{app.uid}</span> : '—'}
+          </DetailRow>
+          <DetailRow label="Name">{app.name}</DetailRow>
+          <DetailRow label="Endpoints">{endpoints?.length ?? '—'}</DetailRow>
+          <DetailRow label="Metadata">
+            {app.metadata != null ? (
+              <pre className="overflow-x-auto rounded border border-border bg-muted px-3 py-2 font-mono text-xs">
+                {fmtMetadata(app.metadata)}
+              </pre>
+            ) : (
+              '—'
+            )}
+          </DetailRow>
+          <DetailRow label="Created at">{new Date(app.created_at).toLocaleString()}</DetailRow>
+        </div>
       </div>
+
+      <section className="space-y-2 border-t border-border pt-6">
+        <h2 className="text-base font-semibold">App Portal</h2>
+        <p className="text-sm text-muted-foreground">
+          Share a scoped link so this application&rsquo;s owner can manage their own endpoints.
+        </p>
+        <div className="flex items-center gap-2 pt-1">
+          <Button size="sm" disabled={copyLink.isPending} onClick={() => copyLink.mutate()}>
+            {copyLink.isPending ? 'Generating…' : 'Copy portal link'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={revoke.isPending}
+            onClick={() => {
+              if (window.confirm('Revoke all portal links for this application?')) revoke.mutate()
+            }}
+          >
+            {revoke.isPending ? 'Revoking…' : 'Revoke all links'}
+          </Button>
+        </div>
+      </section>
     </div>
   )
 }

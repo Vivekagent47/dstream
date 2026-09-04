@@ -363,6 +363,11 @@ export interface RecoverResult {
   recovered: number
   truncated: boolean
 }
+export interface PortalAccess {
+  url: string
+  token: string
+  expires_at: string
+}
 
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
@@ -600,6 +605,15 @@ export const api = {
         `/api/applications/${appId}/messages/${msgId}/endpoints/${endpointId}/replay`,
       )
       .then((r) => r.data),
+
+  // App Portal — mint a scoped, expiring link the application owner uses to
+  // manage their own endpoints; revoke invalidates all outstanding links.
+  createPortalAccess: (appId: string) =>
+    http
+      .post<PortalAccess>(`/api/applications/${appId}/portal-access`)
+      .then((r) => r.data),
+  revokePortalAccess: (appId: string) =>
+    http.post(`/api/applications/${appId}/portal-access/revoke`).then(() => undefined),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites

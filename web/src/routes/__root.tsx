@@ -107,7 +107,8 @@ function Shell({ children }: { children: React.ReactNode }) {
     pathname === '/login' ||
     pathname === '/auth/verify' ||
     pathname === '/orgs/new' ||
-    pathname.startsWith('/invites/')
+    pathname.startsWith('/invites/') ||
+    pathname.startsWith('/portal')
 
   if (isChromeless) {
     return <>{children}</>
