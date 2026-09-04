@@ -30,6 +30,11 @@ func buildEmailTask(name, to string, vars map[string]any, orgID uuid.UUID) (dque
 // orgID is uuid.Nil for pre-login mail (magic links); the queue treats nil-org
 // as a single fair-ring entry.
 func Enqueue(ctx context.Context, q *dqueue.Client, name, to string, vars map[string]any, orgID uuid.UUID) error {
+	// No queue wired (dev/test): fail open — skip dispatch rather than panic.
+	// Prod always wires the queue, so mail still goes out there.
+	if q == nil {
+		return nil
+	}
 	p, err := buildEmailTask(name, to, vars, orgID)
 	if err != nil {
 		return err

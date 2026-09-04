@@ -282,14 +282,16 @@ func (d Handlers) PeekInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Per-IP rate limit on this unauthenticated endpoint. Failures here
-	// shouldn't 503 the legit user — if Redis is down we fail OPEN
+	// shouldn't 503 the legit user — if Redis is absent/down we fail OPEN
 	// (allow the peek), matching the existing dev-friendly philosophy.
-	limiter := redis_rate.NewLimiter(d.Redis)
-	res, lerr := limiter.Allow(r.Context(), "invite:peek:ip:"+clientIP(r), peekInvitePerIP)
-	if lerr == nil && res.Allowed == 0 {
-		w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
-		httpx.Err(w, http.StatusTooManyRequests, "too many requests")
-		return
+	if d.Redis != nil {
+		limiter := redis_rate.NewLimiter(d.Redis)
+		res, lerr := limiter.Allow(r.Context(), "invite:peek:ip:"+clientIP(r), peekInvitePerIP)
+		if lerr == nil && res.Allowed == 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
+			httpx.Err(w, http.StatusTooManyRequests, "too many requests")
+			return
+		}
 	}
 	h := sha256.Sum256([]byte(token))
 	row, err := d.Queries.GetActiveOrgInviteByTokenHash(r.Context(), h[:])
@@ -397,25 +399,30 @@ func (d Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	// the invite's email + caller's IP. Without this, anyone holding ANY
 	// valid invite token can mail-bomb the invitee by POSTing accept in a
 	// loop, bypassing the limiter that the public request endpoint enforces.
-	ip := clientIP(r)
-	limiter := redis_rate.NewLimiter(d.Redis)
-	for _, k := range []struct {
-		key   string
-		limit redis_rate.Limit
-	}{
-		{"magic_link:email:" + inv.Email, magicLinkPerEmail},
-		{"magic_link:ip:" + ip, magicLinkPerIP},
-	} {
-		res, lerr := limiter.Allow(r.Context(), k.key, k.limit)
-		if lerr != nil {
-			d.Log.Error("accept invite rate limit", "err", lerr)
-			httpx.Err(w, http.StatusServiceUnavailable, "rate limiter unavailable")
-			return
-		}
-		if res.Allowed == 0 {
-			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
-			httpx.Err(w, http.StatusTooManyRequests, "too many requests")
-			return
+	// Same nil-Redis fail-open guard as PeekInvite: when Redis is absent (dev/
+	// test) skip the budget rather than panic. In prod Redis is always wired,
+	// so the mail-bomb protection stays in force.
+	if d.Redis != nil {
+		ip := clientIP(r)
+		limiter := redis_rate.NewLimiter(d.Redis)
+		for _, k := range []struct {
+			key   string
+			limit redis_rate.Limit
+		}{
+			{"magic_link:email:" + inv.Email, magicLinkPerEmail},
+			{"magic_link:ip:" + ip, magicLinkPerIP},
+		} {
+			res, lerr := limiter.Allow(r.Context(), k.key, k.limit)
+			if lerr != nil {
+				d.Log.Error("accept invite rate limit", "err", lerr)
+				httpx.Err(w, http.StatusServiceUnavailable, "rate limiter unavailable")
+				return
+			}
+			if res.Allowed == 0 {
+				w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
+				httpx.Err(w, http.StatusTooManyRequests, "too many requests")
+				return
+			}
 		}
 	}
 
@@ -426,6 +433,7 @@ func (d Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mlLink := strings.TrimRight(d.AppBaseURL, "/") + "/auth/verify?token=" + url.QueryEscape(mlTok)
+	// mailer.Enqueue fails open on a nil queue (dev/test), so no guard here.
 	if err := mailer.Enqueue(r.Context(), d.Queue, "magic_link", inv.Email, map[string]any{"Link": mlLink}, uuid.Nil); err != nil {
 		d.Log.Error("invites: enqueue accept-invite magic link email", "err", err, "email", inv.Email)
 	}
