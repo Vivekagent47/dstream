@@ -60,6 +60,7 @@ export function SendMessageDialog({
   const [eventType, setEventType] = useState('')
   const [payload, setPayload] = useState('')
   const [eventId, setEventId] = useState('')
+  const [channels, setChannels] = useState('') // comma-separated
 
   const active = (eventTypes ?? []).filter((et) => !et.archived)
 
@@ -69,6 +70,9 @@ export function SendMessageDialog({
         event_type: eventType,
         payload: parsedPayload,
         ...(eventId.trim() ? { event_id: eventId.trim() } : {}),
+        ...(channels.trim()
+          ? { channels: channels.split(',').map((c) => c.trim()).filter(Boolean) }
+          : {}),
       }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: qk.messages(appId) })
@@ -81,6 +85,7 @@ export function SendMessageDialog({
       setEventType('')
       setPayload('')
       setEventId('')
+      setChannels('')
     },
     onError: (e) => toast.error((e as Error).message),
   })
@@ -140,6 +145,18 @@ export function SendMessageDialog({
               value={eventId}
               onChange={(e) => setEventId(e.target.value)}
               placeholder="evt_123 — dedupes replays"
+            />
+          </div>
+          <div>
+            <Label htmlFor="send-channels" className="mb-2 block">
+              Channels <span className="text-muted-foreground">(optional, comma-separated)</span>
+            </Label>
+            <Input
+              id="send-channels"
+              className="w-full font-mono"
+              value={channels}
+              onChange={(e) => setChannels(e.target.value)}
+              placeholder="tenant-a, us-west"
             />
           </div>
           <DialogFooter>

@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { MoreHorizontal, Plus } from 'lucide-react'
+import { MoreHorizontal, Plus, Trash2 } from 'lucide-react'
 
 import type { Endpoint } from '#/lib/api'
 import { portalApi, portalQk } from '#/lib/portal-api'
@@ -107,6 +107,7 @@ function PortalEndpoints() {
             <TableRow>
               <TableHead className="pl-6">URL</TableHead>
               <TableHead>Filter</TableHead>
+              <TableHead>Delivery</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Failures</TableHead>
               <TableHead className="pr-6 text-right">Actions</TableHead>
@@ -120,6 +121,17 @@ function PortalEndpoints() {
                   <TableCell className="pl-6 font-mono text-xs">{e.url}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {e.filter_event_types?.join(', ') || 'all'}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                      <span>{e.channels?.length ? e.channels.join(', ') : 'all channels'}</span>
+                      {e.rate_limit != null && e.rate_limit > 0 && (
+                        <Badge variant="secondary">{e.rate_limit}/s</Badge>
+                      )}
+                      {Object.keys(e.headers ?? {}).length > 0 && (
+                        <Badge variant="secondary">{Object.keys(e.headers).length} headers</Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Badge variant={s.variant}>{s.label}</Badge>
@@ -169,7 +181,7 @@ function PortalEndpoints() {
             })}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
                   No endpoints yet — add one to start delivering messages.
                 </TableCell>
               </TableRow>
@@ -234,6 +246,111 @@ function EventTypeCheckboxes({
   )
 }
 
+type HeaderRow = { k: string; v: string }
+
+// Rate limit / channels / custom-header controls — identical UI in the add and
+// edit dialogs, so factored out like EventTypeCheckboxes. State lives in the
+// parent; this only renders inputs.
+function DeliveryControlFields({
+  rateLimit,
+  setRateLimit,
+  channels,
+  setChannels,
+  headers,
+  setHeaders,
+}: {
+  rateLimit: string
+  setRateLimit: (v: string) => void
+  channels: string
+  setChannels: (v: string) => void
+  headers: HeaderRow[]
+  setHeaders: React.Dispatch<React.SetStateAction<HeaderRow[]>>
+}) {
+  return (
+    <>
+      <div>
+        <Label htmlFor="ep-rate-limit" className="mb-2 block">
+          Rate limit <span className="text-muted-foreground">(per sec — 0 = unlimited)</span>
+        </Label>
+        <Input
+          id="ep-rate-limit"
+          type="number"
+          min={0}
+          className="w-full font-mono"
+          value={rateLimit}
+          onChange={(e) => setRateLimit(e.target.value)}
+          placeholder="0"
+        />
+      </div>
+      <div>
+        <Label htmlFor="ep-channels" className="mb-2 block">
+          Channels <span className="text-muted-foreground">(comma-separated — none = all)</span>
+        </Label>
+        <Input
+          id="ep-channels"
+          className="w-full font-mono"
+          value={channels}
+          onChange={(e) => setChannels(e.target.value)}
+          placeholder="tenant-a, us-west"
+        />
+      </div>
+      <div>
+        <Label className="mb-2 block">
+          Custom headers <span className="text-muted-foreground">(none = default headers)</span>
+        </Label>
+        <div className="space-y-2">
+          {headers.map((h, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                className="w-full font-mono"
+                value={h.k}
+                onChange={(e) =>
+                  setHeaders((prev) => prev.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)))
+                }
+                placeholder="X-Custom-Header"
+              />
+              <Input
+                className="w-full font-mono"
+                value={h.v}
+                onChange={(e) =>
+                  setHeaders((prev) => prev.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)))
+                }
+                placeholder="value"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setHeaders((prev) => [...prev, { k: '', v: '' }])}
+          >
+            <Plus className="h-4 w-4" /> Add header
+          </Button>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// Comma-separated string → trimmed, non-empty list.
+function splitChannels(s: string): string[] {
+  return s.split(',').map((c) => c.trim()).filter(Boolean)
+}
+
+// Header rows → object, dropping blank keys.
+function headersToObj(rows: HeaderRow[]): Record<string, string> {
+  return Object.fromEntries(rows.filter((h) => h.k.trim()).map((h) => [h.k.trim(), h.v]))
+}
+
 function AddEndpointDialog({
   open,
   onOpenChange,
@@ -248,15 +365,24 @@ function AddEndpointDialog({
   const [uid, setUid] = useState('')
   const [description, setDescription] = useState('')
   const [filters, setFilters] = useState<Set<string>>(new Set())
+  const [rateLimit, setRateLimit] = useState('')
+  const [channels, setChannels] = useState('') // comma-separated
+  const [headers, setHeaders] = useState<HeaderRow[]>([])
 
   const create = useMutation({
-    mutationFn: () =>
-      portalApi.createEndpoint({
+    mutationFn: () => {
+      const channelsArr = splitChannels(channels)
+      const headersObj = headersToObj(headers)
+      return portalApi.createEndpoint({
         url,
         ...(uid.trim() ? { uid: uid.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(filters.size > 0 ? { filter_event_types: [...filters] } : {}),
-      }),
+        ...(rateLimit.trim() ? { rate_limit: Number(rateLimit) } : {}),
+        ...(channelsArr.length ? { channels: channelsArr } : {}),
+        ...(Object.keys(headersObj).length ? { headers: headersObj } : {}),
+      })
+    },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: portalQk.endpoints })
       onOpenChange(false)
@@ -264,6 +390,9 @@ function AddEndpointDialog({
       setUid('')
       setDescription('')
       setFilters(new Set())
+      setRateLimit('')
+      setChannels('')
+      setHeaders([])
       onCreated(result.secret)
     },
     onError: (e) => toast.error((e as Error).message),
@@ -340,6 +469,14 @@ function AddEndpointDialog({
             </Label>
             <EventTypeCheckboxes filters={filters} onToggle={toggle} />
           </div>
+          <DeliveryControlFields
+            rateLimit={rateLimit}
+            setRateLimit={setRateLimit}
+            channels={channels}
+            setChannels={setChannels}
+            headers={headers}
+            setHeaders={setHeaders}
+          />
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
@@ -362,11 +499,26 @@ function sameFilters(a: Set<string>, b: string[] | null | undefined): boolean {
   return true
 }
 
+// Key-order-insensitive so a save + backend round-trip doesn't leave the form
+// stuck "dirty" just because header keys came back in a different order.
+function sameHeaders(a: Record<string, string>, b: Record<string, string> | null | undefined): boolean {
+  const bb = b ?? {}
+  const ak = Object.keys(a).sort()
+  const bk = Object.keys(bb).sort()
+  if (ak.length !== bk.length) return false
+  return ak.every((k, i) => bk[i] === k && a[k] === bb[k])
+}
+
 function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onClose: () => void }) {
   const qc = useQueryClient()
   const [url, setUrl] = useState(ep.url)
   const [description, setDescription] = useState(ep.description)
   const [filters, setFilters] = useState<Set<string>>(new Set(ep.filter_event_types ?? []))
+  const [rateLimit, setRateLimit] = useState(ep.rate_limit ? String(ep.rate_limit) : '')
+  const [channels, setChannels] = useState(ep.channels?.join(', ') ?? '')
+  const [headers, setHeaders] = useState<HeaderRow[]>(
+    Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })),
+  )
 
   // Reseed if the dialog is reused for a different endpoint.
   const seededId = useRef<string | null>(null)
@@ -376,7 +528,17 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
     setUrl(ep.url)
     setDescription(ep.description)
     setFilters(new Set(ep.filter_event_types ?? []))
+    setRateLimit(ep.rate_limit ? String(ep.rate_limit) : '')
+    setChannels(ep.channels?.join(', ') ?? '')
+    setHeaders(Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })))
   }, [ep])
+
+  // Always-include (not conditional-spread like the create dialog): PATCH omit
+  // = "no change", so clearing needs an explicit empty value. rate_limit 0 =
+  // unlimited, channels [] = all, headers {} = none.
+  const rateLimitNum = rateLimit.trim() ? Number(rateLimit) : 0
+  const channelsArr = splitChannels(channels)
+  const headersObj = headersToObj(headers)
 
   const save = useMutation({
     mutationFn: () =>
@@ -384,6 +546,9 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
         url,
         description,
         filter_event_types: [...filters],
+        rate_limit: rateLimitNum,
+        channels: channelsArr,
+        headers: headersObj,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: portalQk.endpoints })
@@ -405,7 +570,10 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
   const dirty =
     url !== ep.url ||
     description !== ep.description ||
-    !sameFilters(filters, ep.filter_event_types)
+    !sameFilters(filters, ep.filter_event_types) ||
+    rateLimitNum !== (ep.rate_limit ?? 0) ||
+    !sameFilters(new Set(channelsArr), ep.channels) ||
+    !sameHeaders(headersObj, ep.headers)
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -446,6 +614,14 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
             </Label>
             <EventTypeCheckboxes filters={filters} onToggle={toggleFilter} />
           </div>
+          <DeliveryControlFields
+            rateLimit={rateLimit}
+            setRateLimit={setRateLimit}
+            channels={channels}
+            setChannels={setChannels}
+            headers={headers}
+            setHeaders={setHeaders}
+          />
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>

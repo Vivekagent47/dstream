@@ -68,12 +68,23 @@ export const portalApi = {
     uid?: string
     description?: string
     filter_event_types?: string[]
+    headers?: Record<string, string>
+    rate_limit?: number
+    channels?: string[]
   }) => http.post<EndpointWithSecret>('/api/portal/endpoints', input).then((r) => r.data),
   getEndpoint: (id: string) =>
     http.get<Endpoint>(`/api/portal/endpoints/${id}`).then((r) => r.data),
   updateEndpoint: (
     id: string,
-    input: { url?: string; description?: string; filter_event_types?: string[]; disabled?: boolean },
+    input: {
+      url?: string
+      description?: string
+      filter_event_types?: string[]
+      disabled?: boolean
+      headers?: Record<string, string>
+      rate_limit?: number
+      channels?: string[]
+    },
   ) => http.patch<Endpoint>(`/api/portal/endpoints/${id}`, input).then((r) => r.data),
   deleteEndpoint: (id: string) =>
     http.delete(`/api/portal/endpoints/${id}`).then(() => undefined),

@@ -264,6 +264,7 @@ function EndpointsTab({ appId }: { appId: string }) {
             <TableRow>
               <TableHead className="pl-6">URL</TableHead>
               <TableHead>Filter</TableHead>
+              <TableHead>Delivery</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="pr-6">Failures</TableHead>
             </TableRow>
@@ -286,6 +287,19 @@ function EndpointsTab({ appId }: { appId: string }) {
                     {e.filter_event_types?.join(', ') || 'all'}
                   </TableCell>
                   <TableCell>
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                      <span>{e.channels?.length ? e.channels.join(', ') : 'all channels'}</span>
+                      {e.rate_limit != null && e.rate_limit > 0 && (
+                        <Badge variant="secondary">{e.rate_limit}/s</Badge>
+                      )}
+                      {Object.keys(e.headers ?? {}).length > 0 && (
+                        <Badge variant="secondary">
+                          {Object.keys(e.headers).length} headers
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
                     <Badge variant={s.variant}>{s.label}</Badge>
                   </TableCell>
                   <TableCell className="pr-6">{e.consecutive_failures}</TableCell>
@@ -294,7 +308,7 @@ function EndpointsTab({ appId }: { appId: string }) {
             })}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
                   No endpoints yet — add one to start delivering messages.
                 </TableCell>
               </TableRow>
@@ -331,6 +345,9 @@ function AddEndpointDialog({
   const [uid, setUid] = useState('')
   const [description, setDescription] = useState('')
   const [filters, setFilters] = useState<Set<string>>(new Set())
+  const [rateLimit, setRateLimit] = useState('')
+  const [channels, setChannels] = useState('') // comma-separated
+  const [headers, setHeaders] = useState<{ k: string; v: string }[]>([])
 
   const active = (eventTypes ?? []).filter((et) => !et.archived)
 
@@ -341,6 +358,17 @@ function AddEndpointDialog({
         ...(uid.trim() ? { uid: uid.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(filters.size > 0 ? { filter_event_types: [...filters] } : {}),
+        ...(rateLimit.trim() ? { rate_limit: Number(rateLimit) } : {}),
+        ...(channels.trim()
+          ? { channels: channels.split(',').map((c) => c.trim()).filter(Boolean) }
+          : {}),
+        ...(headers.filter((h) => h.k.trim()).length
+          ? {
+              headers: Object.fromEntries(
+                headers.filter((h) => h.k.trim()).map((h) => [h.k.trim(), h.v]),
+              ),
+            }
+          : {}),
       }),
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: qk.endpoints(appId) })
@@ -349,6 +377,9 @@ function AddEndpointDialog({
       setUid('')
       setDescription('')
       setFilters(new Set())
+      setRateLimit('')
+      setChannels('')
+      setHeaders([])
       onCreated(result.secret)
     },
     onError: (e) => toast.error((e as Error).message),
@@ -440,6 +471,79 @@ function AddEndpointDialog({
                 ))}
               </div>
             )}
+          </div>
+          <div>
+            <Label htmlFor="ep-rate-limit" className="mb-2 block">
+              Rate limit <span className="text-muted-foreground">(optional, per sec — 0 = unlimited)</span>
+            </Label>
+            <Input
+              id="ep-rate-limit"
+              type="number"
+              min={0}
+              className="w-full font-mono"
+              value={rateLimit}
+              onChange={(e) => setRateLimit(e.target.value)}
+              placeholder="0"
+            />
+          </div>
+          <div>
+            <Label htmlFor="ep-channels" className="mb-2 block">
+              Channels <span className="text-muted-foreground">(optional, comma-separated)</span>
+            </Label>
+            <Input
+              id="ep-channels"
+              className="w-full font-mono"
+              value={channels}
+              onChange={(e) => setChannels(e.target.value)}
+              placeholder="tenant-a, us-west"
+            />
+          </div>
+          <div>
+            <Label className="mb-2 block">
+              Custom headers <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <div className="space-y-2">
+              {headers.map((h, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input
+                    className="w-full font-mono"
+                    value={h.k}
+                    onChange={(e) =>
+                      setHeaders((prev) =>
+                        prev.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)),
+                      )
+                    }
+                    placeholder="X-Custom-Header"
+                  />
+                  <Input
+                    className="w-full font-mono"
+                    value={h.v}
+                    onChange={(e) =>
+                      setHeaders((prev) =>
+                        prev.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)),
+                      )
+                    }
+                    placeholder="value"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setHeaders((prev) => [...prev, { k: '', v: '' }])}
+              >
+                <Plus className="h-4 w-4" /> Add header
+              </Button>
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>

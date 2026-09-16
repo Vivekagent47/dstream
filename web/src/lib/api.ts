@@ -318,6 +318,9 @@ export interface Endpoint {
   url: string
   description: string
   filter_event_types?: string[] | null
+  headers: Record<string, string>
+  rate_limit: number | null
+  channels: string[] | null
   disabled: boolean
   disabled_at?: string | null
   consecutive_failures: number
@@ -541,7 +544,15 @@ export const api = {
     http.get<Endpoint[]>(`/api/applications/${appId}/endpoints`).then((r) => r.data),
   createEndpoint: (
     appId: string,
-    input: { url: string; uid?: string; description?: string; filter_event_types?: string[] },
+    input: {
+      url: string
+      uid?: string
+      description?: string
+      filter_event_types?: string[]
+      headers?: Record<string, string>
+      rate_limit?: number
+      channels?: string[]
+    },
   ) =>
     http.post<EndpointWithSecret>(`/api/applications/${appId}/endpoints`, input).then((r) => r.data),
   getEndpoint: (appId: string, id: string) =>
@@ -549,7 +560,15 @@ export const api = {
   updateEndpoint: (
     appId: string,
     id: string,
-    input: { url?: string; description?: string; filter_event_types?: string[]; disabled?: boolean },
+    input: {
+      url?: string
+      description?: string
+      filter_event_types?: string[]
+      disabled?: boolean
+      headers?: Record<string, string>
+      rate_limit?: number
+      channels?: string[]
+    },
   ) => http.patch<Endpoint>(`/api/applications/${appId}/endpoints/${id}`, input).then((r) => r.data),
   deleteEndpoint: (appId: string, id: string) =>
     http.delete(`/api/applications/${appId}/endpoints/${id}`).then(() => undefined),
@@ -576,7 +595,10 @@ export const api = {
       .then((r) => r.data),
 
   // Messages (app-scoped; list cursor-paginated)
-  sendMessage: (appId: string, input: { event_type: string; payload: unknown; event_id?: string }) =>
+  sendMessage: (
+    appId: string,
+    input: { event_type: string; payload: unknown; event_id?: string; channels?: string[] },
+  ) =>
     http
       .post<{ message_id: string; event_id?: string; idempotent_replay: boolean }>(
         `/api/applications/${appId}/messages`,

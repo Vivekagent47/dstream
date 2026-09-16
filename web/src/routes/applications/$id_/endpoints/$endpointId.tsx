@@ -7,7 +7,7 @@ import {
 } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Trash2 } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 
 import {
   api,
@@ -198,6 +198,25 @@ function OverviewTab({ ep, appId }: { ep: Endpoint; appId: string }) {
           </DetailRow>
           <DetailRow label="Filter event types">
             {ep.filter_event_types?.join(', ') || 'all'}
+          </DetailRow>
+          <DetailRow label="Channels">
+            {ep.channels?.length ? ep.channels.join(', ') : 'all'}
+          </DetailRow>
+          <DetailRow label="Rate limit">
+            {ep.rate_limit == null || ep.rate_limit === 0 ? 'unlimited' : `${ep.rate_limit}/s`}
+          </DetailRow>
+          <DetailRow label="Custom headers">
+            {Object.keys(ep.headers ?? {}).length === 0 ? (
+              '—'
+            ) : (
+              <div className="space-y-0.5 font-mono text-xs">
+                {Object.entries(ep.headers).map(([k, v]) => (
+                  <div key={k}>
+                    {k}: {v}
+                  </div>
+                ))}
+              </div>
+            )}
           </DetailRow>
           <DetailRow label="Status">
             <span className="inline-flex items-center gap-2">
@@ -569,6 +588,16 @@ function sameFilters(a: Set<string>, b: string[] | null | undefined): boolean {
   return true
 }
 
+// Key-order-insensitive so a save + backend round-trip doesn't leave the form
+// stuck "dirty" just because header keys came back in a different order.
+function sameHeaders(a: Record<string, string>, b: Record<string, string> | null | undefined): boolean {
+  const bb = b ?? {}
+  const ak = Object.keys(a).sort()
+  const bk = Object.keys(bb).sort()
+  if (ak.length !== bk.length) return false
+  return ak.every((k, i) => bk[i] === k && a[k] === bb[k])
+}
+
 function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -578,6 +607,11 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
   const [description, setDescription] = useState(ep.description)
   const [filters, setFilters] = useState<Set<string>>(new Set(ep.filter_event_types ?? []))
   const [disabled, setDisabled] = useState(ep.disabled)
+  const [rateLimit, setRateLimit] = useState(ep.rate_limit ? String(ep.rate_limit) : '')
+  const [channels, setChannels] = useState(ep.channels?.join(', ') ?? '')
+  const [headers, setHeaders] = useState<{ k: string; v: string }[]>(
+    Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })),
+  )
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const active = (eventTypes ?? []).filter((et) => !et.archived)
@@ -593,7 +627,19 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
     setDescription(ep.description)
     setFilters(new Set(ep.filter_event_types ?? []))
     setDisabled(ep.disabled)
+    setRateLimit(ep.rate_limit ? String(ep.rate_limit) : '')
+    setChannels(ep.channels?.join(', ') ?? '')
+    setHeaders(Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })))
   }, [ep])
+
+  // Always-include (not conditional-spread like the create dialog): PATCH omit
+  // = "no change", so clearing needs an explicit empty value. rate_limit 0 =
+  // unlimited, channels [] = all, headers {} = none.
+  const rateLimitNum = rateLimit.trim() ? Number(rateLimit) : 0
+  const channelsArr = channels.split(',').map((c) => c.trim()).filter(Boolean)
+  const headersObj = Object.fromEntries(
+    headers.filter((h) => h.k.trim()).map((h) => [h.k.trim(), h.v]),
+  )
 
   const save = useMutation({
     mutationFn: () =>
@@ -602,6 +648,9 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
         description,
         filter_event_types: [...filters],
         disabled,
+        rate_limit: rateLimitNum,
+        channels: channelsArr,
+        headers: headersObj,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.endpoint(appId, ep.id) })
@@ -637,7 +686,10 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
     url !== ep.url ||
     description !== ep.description ||
     disabled !== ep.disabled ||
-    !sameFilters(filters, ep.filter_event_types)
+    !sameFilters(filters, ep.filter_event_types) ||
+    rateLimitNum !== (ep.rate_limit ?? 0) ||
+    !sameFilters(new Set(channelsArr), ep.channels) ||
+    !sameHeaders(headersObj, ep.headers)
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -689,6 +741,79 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
               ))}
             </div>
           )}
+        </div>
+        <div>
+          <Label htmlFor="ep-rate-limit" className="mb-2 block">
+            Rate limit <span className="text-muted-foreground">(per sec — 0 = unlimited)</span>
+          </Label>
+          <Input
+            id="ep-rate-limit"
+            type="number"
+            min={0}
+            className="w-full font-mono"
+            value={rateLimit}
+            onChange={(e) => setRateLimit(e.target.value)}
+            placeholder="0"
+          />
+        </div>
+        <div>
+          <Label htmlFor="ep-channels" className="mb-2 block">
+            Channels <span className="text-muted-foreground">(comma-separated — none = all)</span>
+          </Label>
+          <Input
+            id="ep-channels"
+            className="w-full font-mono"
+            value={channels}
+            onChange={(e) => setChannels(e.target.value)}
+            placeholder="tenant-a, us-west"
+          />
+        </div>
+        <div>
+          <Label className="mb-2 block">
+            Custom headers <span className="text-muted-foreground">(none = default headers)</span>
+          </Label>
+          <div className="space-y-2">
+            {headers.map((h, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Input
+                  className="w-full font-mono"
+                  value={h.k}
+                  onChange={(e) =>
+                    setHeaders((prev) =>
+                      prev.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)),
+                    )
+                  }
+                  placeholder="X-Custom-Header"
+                />
+                <Input
+                  className="w-full font-mono"
+                  value={h.v}
+                  onChange={(e) =>
+                    setHeaders((prev) =>
+                      prev.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)),
+                    )
+                  }
+                  placeholder="value"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setHeaders((prev) => [...prev, { k: '', v: '' }])}
+            >
+              <Plus className="h-4 w-4" /> Add header
+            </Button>
+          </div>
         </div>
         <label className="flex items-center gap-2 text-sm">
           <input
