@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
@@ -91,7 +92,7 @@ func seedDeliveryFull(t *testing.T, q *store.Queries, url string, secret string)
 		t.Fatalf("app: %v", err)
 	}
 	ep, err := q.CreateEndpoint(ctx, store.CreateEndpointParams{
-		AppID: app.ID, OrgID: o.ID, Url: url, Secret: secret,
+		AppID: app.ID, OrgID: o.ID, Url: url, Secret: secret, Headers: []byte("{}"),
 	})
 	if err != nil {
 		t.Fatalf("endpoint: %v", err)
@@ -133,7 +134,7 @@ func seedDeliveryWithPrev(t *testing.T, q *store.Queries, url, secret, prevSecre
 	}
 	// Create with the OLD secret, then rotate: prev_secret←prevSecret, secret←secret.
 	ep, err := q.CreateEndpoint(ctx, store.CreateEndpointParams{
-		AppID: app.ID, OrgID: o.ID, Url: url, Secret: prevSecret,
+		AppID: app.ID, OrgID: o.ID, Url: url, Secret: prevSecret, Headers: []byte("{}"),
 	})
 	if err != nil {
 		t.Fatalf("endpoint: %v", err)
@@ -214,6 +215,46 @@ func TestDeliverSignedOKAcks(t *testing.T) {
 	// Acked (processing drained) + delivery marked delivered.
 	if n, _ := rdb.ZCard(ctx, prefix+":processing").Result(); n != 0 {
 		t.Fatalf("want acked, %d in processing", n)
+	}
+}
+
+func TestDeliverAppliesCustomHeadersReservedWin(t *testing.T) {
+	q := testPool(t)
+	dq, _, _ := testQueue(t)
+	ctx := context.Background()
+
+	var captured http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	secret, _ := GenerateSecret()
+	delID, msgID, orgID, epID, appID := seedDeliveryFull(t, q, srv.URL, secret)
+	// Stash a custom header AND a rogue webhook-id (write-path blocks the latter,
+	// this is defense-in-depth: the send must still prefer the real reserved value).
+	if _, err := q.UpdateEndpoint(ctx, store.UpdateEndpointParams{
+		ID: store.UUID(epID), AppID: store.UUID(appID),
+		SetHeaders: true, Headers: []byte(`{"X-Consumer-Auth":"Bearer t","webhook-id":"rogue"}`),
+	}); err != nil {
+		t.Fatalf("set headers: %v", err)
+	}
+	enqueueDelivery(t, dq, delID, orgID)
+
+	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true)}
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+	if got := captured.Get("X-Consumer-Auth"); got != "Bearer t" {
+		t.Errorf("custom header: got %q", got)
+	}
+	if got := captured.Get("webhook-id"); got != msgID.String() {
+		t.Errorf("reserved header overwritten: got %q want %q", got, msgID)
 	}
 }
 
@@ -441,6 +482,98 @@ func TestDeliverSingleSignAfterGraceExpiry(t *testing.T) {
 		t.Fatalf("post-expiry header must not carry expired prev sig: %q", gotSig)
 	}
 	_ = prefix
+}
+
+func TestOutboundRateLimitDefers(t *testing.T) {
+	q := testPool(t)
+	dq, rdb, prefix := testQueue(t)
+	ctx := context.Background()
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	secret, _ := GenerateSecret()
+	del1, _, orgID, epID, appID := seedDeliveryFull(t, q, srv.URL, secret)
+
+	// rate_limit = 1/s on the endpoint.
+	if _, err := q.UpdateEndpoint(ctx, store.UpdateEndpointParams{
+		ID: store.UUID(epID), AppID: store.UUID(appID), RateLimit: int32Ptr(1),
+	}); err != nil {
+		t.Fatalf("set rate_limit: %v", err)
+	}
+	// second delivery to the SAME endpoint, within the same second.
+	del2 := seedExtraDelivery(t, q, orgID, appID, epID)
+
+	h := Handler{
+		Log: discardLog(), Queries: q,
+		HTTP:    deliver.NewSafeHTTPClient(10*time.Second, true),
+		Redis:   rdb,
+		Limiter: redis_rate.NewLimiter(rdb),
+	}
+	// First: allowed → sends.
+	enqueueDelivery(t, dq, del1, orgID)
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick del1")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("first delivery should send, got %d hits", hits)
+	}
+
+	// Second: over-limit within the second → deferred (no send, no attempt).
+	enqueueDelivery(t, dq, del2, orgID)
+	raw, p, ok, _ = dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick del2")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("rate-limited delivery must NOT hit the endpoint, got %d hits", hits)
+	}
+	if n, _ := rdb.ZCard(ctx, prefix+":scheduled").Result(); n != 1 {
+		t.Fatalf("deferred delivery should be rescheduled, scheduled=%d", n)
+	}
+	if n, _ := rdb.ZCard(ctx, prefix+":processing").Result(); n != 0 {
+		t.Fatalf("deferred delivery should be acked, processing=%d", n)
+	}
+	// Defer consumes no attempt: del2 attempt_count still 0.
+	row, err := q.GetMessageDeliveryForSend(ctx, store.UUID(del2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.AttemptCount != 0 {
+		t.Fatalf("deferred delivery must not consume an attempt, attempt_count=%d", row.AttemptCount)
+	}
+}
+
+func int32Ptr(v int32) *int32 { return &v }
+
+// seedExtraDelivery creates a fresh message + one delivery to an existing
+// endpoint (same org/app), for tests that need two deliveries to one endpoint.
+func seedExtraDelivery(t *testing.T, q *store.Queries, orgID, appID, epID uuid.UUID) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	msg, err := q.CreateMessage(ctx, store.CreateMessageParams{
+		AppID: store.UUID(appID), OrgID: store.UUID(orgID), EventType: "invoice.paid",
+		Payload: []byte(`{"x":2}`), PayloadHash: "h2",
+	})
+	if err != nil {
+		t.Fatalf("message: %v", err)
+	}
+	dels, err := q.CreateMessageDeliveriesBatch(ctx, store.CreateMessageDeliveriesBatchParams{
+		MessageID: msg.ID, OrgID: store.UUID(orgID), EndpointIds: []pgtype.UUID{store.UUID(epID)},
+	})
+	if err != nil || len(dels) != 1 {
+		t.Fatalf("deliveries: %v (%d)", err, len(dels))
+	}
+	return store.GoUUID(dels[0].ID)
 }
 
 func TestOutboundInflightDefers(t *testing.T) {

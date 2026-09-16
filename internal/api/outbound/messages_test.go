@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -88,5 +89,70 @@ func TestSendMessageFansOutWithFilter(t *testing.T) {
 	}
 	if got := drainMessageTasks(t, dq); got != 0 {
 		t.Fatalf("replay must not re-fan-out, got %d tasks", got)
+	}
+}
+
+// TestSendMessageFansOutWithChannels proves channel-overlap matching and the
+// untagged→unfiltered-only semantics (a nil MsgChannels excludes channel-filtered
+// endpoints but keeps unfiltered ones).
+func TestSendMessageFansOutWithChannels(t *testing.T) {
+	q := store.New(testPool(t))
+	rdb := testRedis(t)
+	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
+	uid, oid := seedOrg(t, q)
+	r := newRouter(q, dq, sign(t), msgRoutes)
+
+	post := func(path string, body any) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, sessionReq(t, sign(t), http.MethodPost, path, uid, oid, body))
+		return rec
+	}
+
+	post("/api/event-types", map[string]any{"name": "invoice.paid"})
+	var app map[string]any
+	_ = json.Unmarshal(post("/api/applications", map[string]any{"name": "A"}).Body.Bytes(), &app)
+	appID := app["id"].(string)
+	base := "/api/applications/" + appID
+
+	// A: no channels (matches all). B: ["acme"]. C: ["other"].
+	post(base+"/endpoints", map[string]any{"url": "https://ex.test/a"})
+	post(base+"/endpoints", map[string]any{"url": "https://ex.test/b", "channels": []string{"acme"}})
+	post(base+"/endpoints", map[string]any{"url": "https://ex.test/c", "channels": []string{"other"}})
+
+	deliveredURLs := func(msgID string) map[string]bool {
+		rows, err := q.ListDeliveriesForMessage(context.Background(), store.UUID(uuid.MustParse(msgID)))
+		if err != nil {
+			t.Fatalf("list deliveries: %v", err)
+		}
+		out := map[string]bool{}
+		for _, dl := range rows {
+			out[dl.EndpointUrl] = true
+		}
+		return out
+	}
+	msgID := func(rec *httptest.ResponseRecorder) string {
+		var m map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &m)
+		return m["message_id"].(string)
+	}
+
+	// Tagged with ["acme"] → A (unfiltered) + B (overlap); C excluded.
+	rec := post(base+"/messages", map[string]any{"event_type": "invoice.paid", "payload": map[string]any{"x": 1}, "channels": []string{"acme"}})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send acme: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := deliveredURLs(msgID(rec))
+	if len(got) != 2 || !got["https://ex.test/a"] || !got["https://ex.test/b"] {
+		t.Fatalf("acme fan-out: want {a,b}, got %v", got)
+	}
+
+	// Untagged → only A; channel-filtered B and C excluded.
+	rec = post(base+"/messages", map[string]any{"event_type": "invoice.paid", "payload": map[string]any{"x": 2}})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send untagged: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got = deliveredURLs(msgID(rec))
+	if len(got) != 1 || !got["https://ex.test/a"] {
+		t.Fatalf("untagged fan-out: want {a}, got %v", got)
 	}
 }

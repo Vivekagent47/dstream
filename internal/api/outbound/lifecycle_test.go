@@ -137,7 +137,7 @@ func TestRecoverReenqueuesDeadSince(t *testing.T) {
 
 	app, _ := q.CreateApplication(ctx, store.CreateApplicationParams{OrgID: store.UUID(oid), Name: "A", Metadata: []byte(`{}`)})
 	sec, _ := webhook.GenerateSecret()
-	ep, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/a", Secret: sec})
+	ep, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/a", Secret: sec, Headers: []byte("{}")})
 	// 2 dead + 1 delivered for this endpoint
 	for i := 0; i < 3; i++ {
 		msg, _ := q.CreateMessage(ctx, store.CreateMessageParams{AppID: app.ID, OrgID: store.UUID(oid), EventType: "x", Payload: []byte(`{}`), PayloadHash: "h"})
@@ -185,7 +185,7 @@ func TestTestSendTargetsOnlyThatEndpoint(t *testing.T) {
 	app, _ := q.CreateApplication(ctx, store.CreateApplicationParams{OrgID: store.UUID(oid), Name: "A", Metadata: []byte(`{}`)})
 	sec, _ := webhook.GenerateSecret()
 	// endpoint whose filter EXCLUDES "ping" — test-send must still target it
-	ep, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/a", Secret: sec, FilterEventTypes: []string{"other.type"}})
+	ep, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/a", Secret: sec, FilterEventTypes: []string{"other.type"}, Headers: []byte("{}")})
 
 	path := "/api/applications/" + store.GoUUID(app.ID).String() + "/endpoints/" + store.GoUUID(ep.ID).String() + "/test"
 	rec := httptest.NewRecorder()
@@ -276,7 +276,7 @@ func TestReplayReenqueuesDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	ep, err := q.CreateEndpoint(ctx, store.CreateEndpointParams{
-		AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/a", Secret: secret,
+		AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/a", Secret: secret, Headers: []byte("{}"),
 	})
 	if err != nil {
 		t.Fatal(err)

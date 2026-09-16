@@ -93,6 +93,7 @@ func (d Handlers) ListMessages(w http.ResponseWriter, r *http.Request) {
 			"event_type":   m.EventType,
 			"payload_hash": m.PayloadHash,
 			"event_id":     httpx.DerefString(m.EventID),
+			"channels":     m.Channels,
 			"created_at":   m.CreatedAt.Time,
 		})
 	}
@@ -133,6 +134,7 @@ func (d Handlers) GetMessage(w http.ResponseWriter, r *http.Request) {
 		"payload":      json.RawMessage(m.Payload),
 		"payload_hash": m.PayloadHash,
 		"event_id":     httpx.DerefString(m.EventID),
+		"channels":     m.Channels,
 		"created_at":   m.CreatedAt.Time,
 	})
 }

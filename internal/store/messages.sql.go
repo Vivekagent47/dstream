@@ -12,10 +12,10 @@ import (
 )
 
 const createMessage = `-- name: CreateMessage :one
-INSERT INTO messages (app_id, org_id, event_type, payload, payload_hash, event_id)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO messages (app_id, org_id, event_type, payload, payload_hash, event_id, channels)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (app_id, event_id) WHERE event_id IS NOT NULL DO NOTHING
-RETURNING id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at
+RETURNING id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at, channels
 `
 
 type CreateMessageParams struct {
@@ -25,6 +25,7 @@ type CreateMessageParams struct {
 	Payload     []byte      `json:"payload"`
 	PayloadHash string      `json:"payload_hash"`
 	EventID     *string     `json:"event_id"`
+	Channels    []string    `json:"channels"`
 }
 
 func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
@@ -35,6 +36,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		arg.Payload,
 		arg.PayloadHash,
 		arg.EventID,
+		arg.Channels,
 	)
 	var i Message
 	err := row.Scan(
@@ -46,12 +48,13 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.PayloadHash,
 		&i.EventID,
 		&i.CreatedAt,
+		&i.Channels,
 	)
 	return i, err
 }
 
 const getMessageByAppEventID = `-- name: GetMessageByAppEventID :one
-SELECT id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at FROM messages WHERE app_id = $1 AND event_id = $2
+SELECT id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at, channels FROM messages WHERE app_id = $1 AND event_id = $2
 `
 
 type GetMessageByAppEventIDParams struct {
@@ -71,12 +74,13 @@ func (q *Queries) GetMessageByAppEventID(ctx context.Context, arg GetMessageByAp
 		&i.PayloadHash,
 		&i.EventID,
 		&i.CreatedAt,
+		&i.Channels,
 	)
 	return i, err
 }
 
 const getMessageForApp = `-- name: GetMessageForApp :one
-SELECT id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at FROM messages WHERE id = $1 AND app_id = $2
+SELECT id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at, channels FROM messages WHERE id = $1 AND app_id = $2
 `
 
 type GetMessageForAppParams struct {
@@ -96,12 +100,13 @@ func (q *Queries) GetMessageForApp(ctx context.Context, arg GetMessageForAppPara
 		&i.PayloadHash,
 		&i.EventID,
 		&i.CreatedAt,
+		&i.Channels,
 	)
 	return i, err
 }
 
 const listMessagesByApp = `-- name: ListMessagesByApp :many
-SELECT id, app_id, org_id, event_type, payload_hash, event_id, created_at
+SELECT id, app_id, org_id, event_type, payload_hash, event_id, created_at, channels
   FROM messages
  WHERE app_id = $1
    AND (created_at, id) < ($2::timestamptz, $3::uuid)
@@ -124,6 +129,7 @@ type ListMessagesByAppRow struct {
 	PayloadHash string             `json:"payload_hash"`
 	EventID     *string            `json:"event_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Channels    []string           `json:"channels"`
 }
 
 func (q *Queries) ListMessagesByApp(ctx context.Context, arg ListMessagesByAppParams) ([]ListMessagesByAppRow, error) {
@@ -148,6 +154,7 @@ func (q *Queries) ListMessagesByApp(ctx context.Context, arg ListMessagesByAppPa
 			&i.PayloadHash,
 			&i.EventID,
 			&i.CreatedAt,
+			&i.Channels,
 		); err != nil {
 			return nil, err
 		}

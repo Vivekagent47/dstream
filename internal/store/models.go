@@ -116,6 +116,9 @@ type Endpoint struct {
 	PrevSecretExpiresAt pgtype.Timestamptz `json:"prev_secret_expires_at"`
 	ConsecutiveFailures int32              `json:"consecutive_failures"`
 	DisabledAt          pgtype.Timestamptz `json:"disabled_at"`
+	Headers             []byte             `json:"headers"`
+	RateLimit           *int32             `json:"rate_limit"`
+	Channels            []string           `json:"channels"`
 }
 
 type Event struct {
@@ -161,6 +164,7 @@ type Message struct {
 	PayloadHash string             `json:"payload_hash"`
 	EventID     *string            `json:"event_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Channels    []string           `json:"channels"`
 }
 
 type MessageDelivery struct {

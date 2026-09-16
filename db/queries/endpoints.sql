@@ -1,6 +1,6 @@
 -- name: CreateEndpoint :one
-INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types, headers, rate_limit, channels)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: ListEndpointsByApp :many
@@ -22,6 +22,11 @@ UPDATE endpoints
        filter_event_types = CASE WHEN sqlc.arg('set_filter')::bool
                                  THEN sqlc.narg('filter_event_types')::text[]
                                  ELSE filter_event_types END,
+       headers    = CASE WHEN sqlc.arg('set_headers')::bool
+                         THEN sqlc.narg('headers')::jsonb ELSE headers END,
+       rate_limit = COALESCE(sqlc.narg('rate_limit'), rate_limit),
+       channels   = CASE WHEN sqlc.arg('set_channels')::bool
+                         THEN sqlc.narg('channels')::text[] ELSE channels END,
        updated_at  = now()
  WHERE id = sqlc.arg('id') AND app_id = sqlc.arg('app_id')
  RETURNING *;
@@ -57,4 +62,7 @@ SELECT id FROM endpoints
    AND disabled = FALSE
    AND (filter_event_types IS NULL
         OR cardinality(filter_event_types) = 0
-        OR sqlc.arg('event_type')::text = ANY(filter_event_types));
+        OR sqlc.arg('event_type')::text = ANY(filter_event_types))
+   AND (channels IS NULL
+        OR cardinality(channels) = 0
+        OR channels && sqlc.arg('msg_channels')::text[]);

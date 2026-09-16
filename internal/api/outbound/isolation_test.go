@@ -36,7 +36,7 @@ func TestCrossOrgReadsAre404(t *testing.T) {
 	_, aOrg := seedOrg(t, q)
 	appA, _ := q.CreateApplication(ctx, store.CreateApplicationParams{OrgID: store.UUID(aOrg), Name: "A", Metadata: []byte(`{}`)})
 	sec, _ := webhook.GenerateSecret()
-	epA, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: appA.ID, OrgID: store.UUID(aOrg), Url: "https://ex.test/a", Secret: sec})
+	epA, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: appA.ID, OrgID: store.UUID(aOrg), Url: "https://ex.test/a", Secret: sec, Headers: []byte("{}")})
 	msgA, _ := q.CreateMessage(ctx, store.CreateMessageParams{AppID: appA.ID, OrgID: store.UUID(aOrg), EventType: "x", Payload: []byte(`{}`), PayloadHash: "h"})
 
 	// org B's session (different user+org)

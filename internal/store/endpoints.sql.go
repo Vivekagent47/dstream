@@ -12,9 +12,9 @@ import (
 )
 
 const createEndpoint = `-- name: CreateEndpoint :one
-INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at
+INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types, headers, rate_limit, channels)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels
 `
 
 type CreateEndpointParams struct {
@@ -25,6 +25,9 @@ type CreateEndpointParams struct {
 	Description      string      `json:"description"`
 	Secret           string      `json:"secret"`
 	FilterEventTypes []string    `json:"filter_event_types"`
+	Headers          []byte      `json:"headers"`
+	RateLimit        *int32      `json:"rate_limit"`
+	Channels         []string    `json:"channels"`
 }
 
 func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) (Endpoint, error) {
@@ -36,6 +39,9 @@ func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) 
 		arg.Description,
 		arg.Secret,
 		arg.FilterEventTypes,
+		arg.Headers,
+		arg.RateLimit,
+		arg.Channels,
 	)
 	var i Endpoint
 	err := row.Scan(
@@ -54,6 +60,9 @@ func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) 
 		&i.PrevSecretExpiresAt,
 		&i.ConsecutiveFailures,
 		&i.DisabledAt,
+		&i.Headers,
+		&i.RateLimit,
+		&i.Channels,
 	)
 	return i, err
 }
@@ -75,7 +84,7 @@ func (q *Queries) DeleteEndpointForApp(ctx context.Context, arg DeleteEndpointFo
 }
 
 const getEndpointForApp = `-- name: GetEndpointForApp :one
-SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at FROM endpoints WHERE id = $1 AND app_id = $2
+SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels FROM endpoints WHERE id = $1 AND app_id = $2
 `
 
 type GetEndpointForAppParams struct {
@@ -102,6 +111,9 @@ func (q *Queries) GetEndpointForApp(ctx context.Context, arg GetEndpointForAppPa
 		&i.PrevSecretExpiresAt,
 		&i.ConsecutiveFailures,
 		&i.DisabledAt,
+		&i.Headers,
+		&i.RateLimit,
+		&i.Channels,
 	)
 	return i, err
 }
@@ -143,7 +155,7 @@ func (q *Queries) IncrEndpointFailures(ctx context.Context, arg IncrEndpointFail
 }
 
 const listEndpointsByApp = `-- name: ListEndpointsByApp :many
-SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at FROM endpoints WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
+SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels FROM endpoints WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
 `
 
 type ListEndpointsByAppParams struct {
@@ -176,6 +188,9 @@ func (q *Queries) ListEndpointsByApp(ctx context.Context, arg ListEndpointsByApp
 			&i.PrevSecretExpiresAt,
 			&i.ConsecutiveFailures,
 			&i.DisabledAt,
+			&i.Headers,
+			&i.RateLimit,
+			&i.Channels,
 		); err != nil {
 			return nil, err
 		}
@@ -194,15 +209,19 @@ SELECT id FROM endpoints
    AND (filter_event_types IS NULL
         OR cardinality(filter_event_types) = 0
         OR $2::text = ANY(filter_event_types))
+   AND (channels IS NULL
+        OR cardinality(channels) = 0
+        OR channels && $3::text[])
 `
 
 type ListMatchingEndpointsParams struct {
-	AppID     pgtype.UUID `json:"app_id"`
-	EventType string      `json:"event_type"`
+	AppID       pgtype.UUID `json:"app_id"`
+	EventType   string      `json:"event_type"`
+	MsgChannels []string    `json:"msg_channels"`
 }
 
 func (q *Queries) ListMatchingEndpoints(ctx context.Context, arg ListMatchingEndpointsParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listMatchingEndpoints, arg.AppID, arg.EventType)
+	rows, err := q.db.Query(ctx, listMatchingEndpoints, arg.AppID, arg.EventType, arg.MsgChannels)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +257,7 @@ UPDATE endpoints
        secret                 = $2,
        updated_at             = now()
  WHERE id = $3 AND app_id = $4
- RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at
+ RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels
 `
 
 type RotateEndpointSecretParams struct {
@@ -272,6 +291,9 @@ func (q *Queries) RotateEndpointSecret(ctx context.Context, arg RotateEndpointSe
 		&i.PrevSecretExpiresAt,
 		&i.ConsecutiveFailures,
 		&i.DisabledAt,
+		&i.Headers,
+		&i.RateLimit,
+		&i.Channels,
 	)
 	return i, err
 }
@@ -286,9 +308,14 @@ UPDATE endpoints
        filter_event_types = CASE WHEN $4::bool
                                  THEN $5::text[]
                                  ELSE filter_event_types END,
+       headers    = CASE WHEN $6::bool
+                         THEN $7::jsonb ELSE headers END,
+       rate_limit = COALESCE($8, rate_limit),
+       channels   = CASE WHEN $9::bool
+                         THEN $10::text[] ELSE channels END,
        updated_at  = now()
- WHERE id = $6 AND app_id = $7
- RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at
+ WHERE id = $11 AND app_id = $12
+ RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels
 `
 
 type UpdateEndpointParams struct {
@@ -297,6 +324,11 @@ type UpdateEndpointParams struct {
 	Disabled         *bool       `json:"disabled"`
 	SetFilter        bool        `json:"set_filter"`
 	FilterEventTypes []string    `json:"filter_event_types"`
+	SetHeaders       bool        `json:"set_headers"`
+	Headers          []byte      `json:"headers"`
+	RateLimit        *int32      `json:"rate_limit"`
+	SetChannels      bool        `json:"set_channels"`
+	Channels         []string    `json:"channels"`
 	ID               pgtype.UUID `json:"id"`
 	AppID            pgtype.UUID `json:"app_id"`
 }
@@ -308,6 +340,11 @@ func (q *Queries) UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) 
 		arg.Disabled,
 		arg.SetFilter,
 		arg.FilterEventTypes,
+		arg.SetHeaders,
+		arg.Headers,
+		arg.RateLimit,
+		arg.SetChannels,
+		arg.Channels,
 		arg.ID,
 		arg.AppID,
 	)
@@ -328,6 +365,9 @@ func (q *Queries) UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) 
 		&i.PrevSecretExpiresAt,
 		&i.ConsecutiveFailures,
 		&i.DisabledAt,
+		&i.Headers,
+		&i.RateLimit,
+		&i.Channels,
 	)
 	return i, err
 }

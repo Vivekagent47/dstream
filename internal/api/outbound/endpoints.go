@@ -32,10 +32,48 @@ func endpointView(e store.Endpoint) map[string]any {
 		"url":                e.Url,
 		"description":        e.Description,
 		"filter_event_types": e.FilterEventTypes,
+		"headers":            headersMap(e.Headers),
+		"rate_limit":         derefInt32(e.RateLimit),
+		"channels":           e.Channels,
 		"disabled":           e.Disabled,
 		"created_at":         e.CreatedAt.Time,
 		"updated_at":         e.UpdatedAt.Time,
 	}
+}
+
+// maxRateLimit bounds rate_limit well under int32 max so int32PtrFromInt can't
+// wrap negative (which would silently disable the send gate → unlimited).
+const maxRateLimit = 1000000
+
+// derefInt32 returns the int value, or nil when the column is NULL.
+func derefInt32(p *int32) any {
+	if p == nil {
+		return nil
+	}
+	return int(*p)
+}
+
+// int32PtrFromInt narrows an optional request int into the store's *int32
+// (nil = leave unchanged via COALESCE).
+func int32PtrFromInt(p *int) *int32 {
+	if p == nil {
+		return nil
+	}
+	v := int32(*p)
+	return &v
+}
+
+// headersMap decodes stored JSONB headers for API views, tolerating empty or
+// malformed data by returning an empty (never nil) map.
+func headersMap(raw []byte) map[string]string {
+	if len(raw) == 0 {
+		return map[string]string{}
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return map[string]string{}
+	}
+	return m
 }
 
 // endpointCreateView is the only view that includes the secret (shown once).
@@ -46,10 +84,13 @@ func endpointCreateView(e store.Endpoint) map[string]any {
 }
 
 type createEndpointReq struct {
-	UID              *string  `json:"uid,omitempty"`
-	URL              string   `json:"url"`
-	Description      string   `json:"description"`
-	FilterEventTypes []string `json:"filter_event_types,omitempty"`
+	UID              *string           `json:"uid,omitempty"`
+	URL              string            `json:"url"`
+	Description      string            `json:"description"`
+	FilterEventTypes []string          `json:"filter_event_types,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
+	RateLimit        *int              `json:"rate_limit,omitempty"`
+	Channels         []string          `json:"channels,omitempty"`
 }
 
 func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +121,22 @@ func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusInternalServerError, "secret gen")
 		return
 	}
+	if body.Headers == nil {
+		body.Headers = map[string]string{}
+	}
+	if err := validateEndpointHeaders(body.Headers); err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.RateLimit != nil && (*body.RateLimit < 0 || *body.RateLimit > maxRateLimit) {
+		httpx.Err(w, http.StatusBadRequest, "rate_limit must be between 0 and 1000000")
+		return
+	}
+	if err := validateChannels(body.Channels); err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	hdrs, _ := json.Marshal(body.Headers)
 	row, err := d.Queries.CreateEndpoint(r.Context(), store.CreateEndpointParams{
 		AppID:            app.ID,
 		OrgID:            store.UUID(p.OrgID),
@@ -88,6 +145,9 @@ func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		Description:      body.Description,
 		Secret:           secret,
 		FilterEventTypes: body.FilterEventTypes,
+		Headers:          hdrs,
+		RateLimit:        int32PtrFromInt(body.RateLimit),
+		Channels:         body.Channels,
 	})
 	if err != nil {
 		d.Log.Error("create endpoint", "err", err)
@@ -97,7 +157,7 @@ func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
 		Action: "endpoint.create", TargetType: "endpoint",
 		TargetID: audit.PtrUUID(store.GoUUID(row.ID)),
-		Metadata: map[string]any{"app_id": store.GoUUID(app.ID).String(), "url": row.Url},
+		Metadata: map[string]any{"app_id": store.GoUUID(app.ID).String(), "url": row.Url, "headers": len(body.Headers) > 0},
 	})
 	httpx.WriteJSON(w, http.StatusCreated, endpointCreateView(row))
 }
@@ -265,10 +325,13 @@ func (d Handlers) RotateEndpointSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchEndpointReq struct {
-	URL              *string   `json:"url,omitempty"`
-	Description      *string   `json:"description,omitempty"`
-	Disabled         *bool     `json:"disabled,omitempty"`
-	FilterEventTypes *[]string `json:"filter_event_types,omitempty"`
+	URL              *string            `json:"url,omitempty"`
+	Description      *string            `json:"description,omitempty"`
+	Disabled         *bool              `json:"disabled,omitempty"`
+	FilterEventTypes *[]string          `json:"filter_event_types,omitempty"`
+	Headers          *map[string]string `json:"headers,omitempty"`
+	RateLimit        *int               `json:"rate_limit,omitempty"`
+	Channels         *[]string          `json:"channels,omitempty"`
 }
 
 func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -306,10 +369,35 @@ func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
 	if setFilter {
 		filter = *body.FilterEventTypes
 	}
+	var hdrs []byte
+	setHeaders := body.Headers != nil
+	if setHeaders {
+		if err := validateEndpointHeaders(*body.Headers); err != nil {
+			httpx.Err(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		hdrs, _ = json.Marshal(*body.Headers)
+	}
+	if body.RateLimit != nil && (*body.RateLimit < 0 || *body.RateLimit > maxRateLimit) {
+		httpx.Err(w, http.StatusBadRequest, "rate_limit must be between 0 and 1000000")
+		return
+	}
+	var chans []string
+	setChannels := body.Channels != nil
+	if setChannels {
+		if err := validateChannels(*body.Channels); err != nil {
+			httpx.Err(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		chans = *body.Channels
+	}
 	row, err := d.Queries.UpdateEndpoint(r.Context(), store.UpdateEndpointParams{
 		ID: store.UUID(id), AppID: app.ID,
 		Url: body.URL, Description: body.Description, Disabled: body.Disabled,
 		SetFilter: setFilter, FilterEventTypes: filter,
+		SetHeaders: setHeaders, Headers: hdrs,
+		RateLimit:   int32PtrFromInt(body.RateLimit),
+		SetChannels: setChannels, Channels: chans,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -323,7 +411,7 @@ func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
 	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
 		Action: "endpoint.update", TargetType: "endpoint",
 		TargetID: audit.PtrUUID(id),
-		Metadata: map[string]any{"url": row.Url, "disabled": row.Disabled},
+		Metadata: map[string]any{"url": row.Url, "disabled": row.Disabled, "headers": setHeaders},
 	})
 	httpx.WriteJSON(w, http.StatusOK, endpointView(row))
 }
@@ -425,6 +513,10 @@ func (d Handlers) TestEndpoint(w http.ResponseWriter, r *http.Request) {
 	if len(raw) == 0 || !json.Valid(raw) {
 		raw = json.RawMessage(`{}`)
 	}
+	if err := validatePayloadAgainstSchema(et.Schema, raw); err != nil {
+		httpx.Err(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	var buf bytes.Buffer
 	if err := json.Compact(&buf, raw); err != nil {
 		httpx.Err(w, http.StatusBadRequest, "invalid payload json")
@@ -435,6 +527,7 @@ func (d Handlers) TestEndpoint(w http.ResponseWriter, r *http.Request) {
 	msg, err := d.Queries.CreateMessage(r.Context(), store.CreateMessageParams{
 		AppID: app.ID, OrgID: store.UUID(p.OrgID), EventType: body.EventType,
 		Payload: payload, PayloadHash: hex.EncodeToString(sum[:]), EventID: nil,
+		Channels: nil,
 	})
 	if err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "create message")

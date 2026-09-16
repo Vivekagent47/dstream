@@ -346,6 +346,9 @@ CREATE TABLE endpoints (
   description        TEXT NOT NULL DEFAULT '',
   secret             TEXT NOT NULL,      -- whsec_<base64>; revealable shared secret
   filter_event_types TEXT[],             -- NULL/empty = receive all types
+  headers            JSONB NOT NULL DEFAULT '{}',   -- static headers sent on every delivery
+  rate_limit         INTEGER,                        -- deliveries/sec; NULL/0 = unlimited
+  channels           TEXT[],                         -- subscribed channels; NULL/empty = all
   disabled           BOOLEAN NOT NULL DEFAULT FALSE,
   prev_secret            TEXT,            -- previous secret kept live during rotation grace window
   prev_secret_expires_at TIMESTAMPTZ,    -- when prev_secret stops being accepted; NULL = no rotation pending
@@ -365,6 +368,7 @@ CREATE TABLE messages (
   payload      BYTEA NOT NULL,          -- serialized delivery body, signed+sent verbatim
   payload_hash TEXT NOT NULL,           -- sha256 hex of payload
   event_id     TEXT,                    -- caller idempotency key
+  channels     TEXT[],                    -- message channel tags; NULL/empty = untagged
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX messages_app_created_idx ON messages (app_id, created_at DESC);

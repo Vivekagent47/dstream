@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -36,6 +37,8 @@ type Handler struct {
 	// whole worker fleet, sharing inbound deliver's inflight:org:<org> budget
 	// (0 = disabled). Set by the worker from config.
 	PerOrgMaxInflight int
+	// Limiter enforces the per-endpoint rate_limit (nil disables the gate).
+	Limiter *redis_rate.Limiter
 }
 
 const inflightTTL = 150 * time.Second // 5x the delivery timeout, matches deliver's lease
@@ -106,11 +109,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		if ierr == nil {
 			if n > h.PerOrgMaxInflight {
 				h.Redis.Decr(context.Background(), key)
-				p.EnqueuedAt = time.Now().UnixMilli()
-				if serr := q.Schedule(ctx, p, time.Now().Add(500*time.Millisecond).UnixMilli()); serr != nil {
-					return serr
-				}
-				return q.Ack(ctx, raw)
+				return h.deferSend(ctx, q, p, raw, 500*time.Millisecond)
 			}
 			// release the slot after the send completes (background ctx survives cancel)
 			defer h.Redis.Decr(context.Background(), key)
@@ -120,6 +119,23 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	attemptNum := int(row.AttemptCount) + 1
 	msgID := store.GoUUID(row.MessageID).String()
 	epID := store.GoUUID(row.EndpointID)
+
+	// Per-endpoint rate-limit gate. Over-limit → defer (no attempt, no budget).
+	if row.EndpointRateLimit != nil && *row.EndpointRateLimit > 0 && h.Limiter != nil {
+		rlKey := "rl:ep:" + epID.String()
+		res, rerr := h.Limiter.Allow(ctx, rlKey, redis_rate.Limit{
+			Rate:   int(*row.EndpointRateLimit),
+			Burst:  int(*row.EndpointRateLimit),
+			Period: time.Second,
+		})
+		if rerr == nil && res.Allowed == 0 {
+			delay := res.RetryAfter
+			if delay <= 0 {
+				delay = 100 * time.Millisecond
+			}
+			return h.deferSend(ctx, q, p, raw, delay)
+		}
+	}
 
 	// Structural URL check (dial-time guard is the real boundary). Can never
 	// succeed → terminal, does not consume budget.
@@ -146,6 +162,13 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, row.EndpointUrl, bytes.NewReader(row.Payload))
 	if err != nil {
 		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, err.Error())
+	}
+	// Custom endpoint headers first; the reserved webhook-*/Dstream-*/Content-Type
+	// below always overwrite, so a stored custom header can never shadow them.
+	if custom, herr := unmarshalHeaderMap(row.EndpointHeaders); herr == nil {
+		for k, v := range custom {
+			httpReq.Header.Set(k, v)
+		}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("webhook-id", msgID)
@@ -174,6 +197,17 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		return q.Ack(ctx, raw)
 	}
 	return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, fmt.Sprintf("status %d", resp.StatusCode))
+}
+
+// deferSend reschedules p after delay and Acks the leased member — a gate
+// deferral (rate-limit / inflight), NOT a retry: it touches neither
+// attempt_count nor the retry budget.
+func (h Handler) deferSend(ctx context.Context, q *dqueue.Client, p dqueue.Payload, raw string, delay time.Duration) error {
+	p.EnqueuedAt = time.Now().UnixMilli()
+	if err := q.Schedule(ctx, p, time.Now().Add(delay).UnixMilli()); err != nil {
+		return err
+	}
+	return q.Ack(ctx, raw)
 }
 
 // failAttempt schedules the next retry, or dead-letters when the budget is spent.
@@ -231,6 +265,17 @@ func (h Handler) recordAttempt(ctx context.Context, did uuid.UUID, num, status i
 	}); err != nil {
 		h.Log.Error("outbound: record attempt", "err", err, "delivery_id", did)
 	}
+}
+
+func unmarshalHeaderMap(raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func headerJSON(h http.Header) []byte {

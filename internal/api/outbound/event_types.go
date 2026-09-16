@@ -57,6 +57,10 @@ func (d Handlers) CreateEventType(w http.ResponseWriter, r *http.Request) {
 	if len(body.Schema) > 0 {
 		schema = []byte(body.Schema)
 	}
+	if err := compileSchema(schema); err != nil {
+		httpx.Err(w, http.StatusBadRequest, "schema is not a valid JSON Schema: "+err.Error())
+		return
+	}
 	row, err := d.Queries.CreateEventType(r.Context(), store.CreateEventTypeParams{
 		OrgID: store.UUID(p.OrgID), Name: body.Name, Description: body.Description, Schema: schema,
 	})
@@ -132,6 +136,10 @@ func (d Handlers) PatchEventType(w http.ResponseWriter, r *http.Request) {
 	var schema []byte
 	if len(body.Schema) > 0 {
 		schema = []byte(body.Schema)
+	}
+	if err := compileSchema(schema); err != nil {
+		httpx.Err(w, http.StatusBadRequest, "schema is not a valid JSON Schema: "+err.Error())
+		return
 	}
 	row, err := d.Queries.UpdateEventType(r.Context(), store.UpdateEventTypeParams{
 		OrgID: store.UUID(p.OrgID), Name: chi.URLParam(r, "name"),

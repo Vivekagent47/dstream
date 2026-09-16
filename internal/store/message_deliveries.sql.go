@@ -118,7 +118,9 @@ SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_
        m.id AS message_id, m.event_type, m.payload, m.created_at AS message_created_at,
        e.url AS endpoint_url, e.secret AS endpoint_secret, e.disabled AS endpoint_disabled,
        e.prev_secret            AS endpoint_secret_prev,
-       e.prev_secret_expires_at AS endpoint_prev_expires_at
+       e.prev_secret_expires_at AS endpoint_prev_expires_at,
+       e.headers    AS endpoint_headers,
+       e.rate_limit AS endpoint_rate_limit
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
   JOIN endpoints e ON e.id = d.endpoint_id
@@ -140,6 +142,8 @@ type GetMessageDeliveryForSendRow struct {
 	EndpointDisabled      bool               `json:"endpoint_disabled"`
 	EndpointSecretPrev    *string            `json:"endpoint_secret_prev"`
 	EndpointPrevExpiresAt pgtype.Timestamptz `json:"endpoint_prev_expires_at"`
+	EndpointHeaders       []byte             `json:"endpoint_headers"`
+	EndpointRateLimit     *int32             `json:"endpoint_rate_limit"`
 }
 
 func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID) (GetMessageDeliveryForSendRow, error) {
@@ -160,6 +164,8 @@ func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID)
 		&i.EndpointDisabled,
 		&i.EndpointSecretPrev,
 		&i.EndpointPrevExpiresAt,
+		&i.EndpointHeaders,
+		&i.EndpointRateLimit,
 	)
 	return i, err
 }

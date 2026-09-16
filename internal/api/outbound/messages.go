@@ -26,6 +26,7 @@ type sendMessageReq struct {
 	EventType string          `json:"event_type"`
 	Payload   json.RawMessage `json:"payload"`
 	EventID   *string         `json:"event_id,omitempty"`
+	Channels  []string        `json:"channels,omitempty"`
 }
 
 func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +65,14 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusUnprocessableEntity, "unknown or archived event_type")
 		return
 	}
+	if err := validateChannels(req.Channels); err != nil {
+		httpx.Err(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err := validatePayloadAgainstSchema(et.Schema, req.Payload); err != nil {
+		httpx.Err(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	// Serialize the payload once → the exact bytes we store, sign, and send.
 	var buf bytes.Buffer
 	if err := json.Compact(&buf, req.Payload); err != nil {
@@ -80,6 +89,7 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		Payload:     payload,
 		PayloadHash: hex.EncodeToString(sum[:]),
 		EventID:     req.EventID,
+		Channels:    req.Channels,
 	})
 	if err != nil {
 		// ON CONFLICT DO NOTHING returns no row on an idempotency collision.
@@ -105,7 +115,7 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Fan out to matching, enabled endpoints.
 	epIDs, err := d.Queries.ListMatchingEndpoints(r.Context(), store.ListMatchingEndpointsParams{
-		AppID: app.ID, EventType: req.EventType,
+		AppID: app.ID, EventType: req.EventType, MsgChannels: req.Channels,
 	})
 	if err != nil {
 		d.Log.Error("match endpoints", "err", err)

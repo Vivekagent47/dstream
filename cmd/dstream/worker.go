@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
@@ -87,6 +88,7 @@ func workerCmd() *cobra.Command {
 				Redis:                  rdb,
 				MaxConsecutiveFailures: cfg.EndpointMaxConsecutiveFailures,
 				PerOrgMaxInflight:      cfg.Worker.PerOrgMaxInflight,
+				Limiter:                redis_rate.NewLimiter(rdb),
 			}
 
 			// 5× the delivery timeout, matching the in-flight lease: long enough

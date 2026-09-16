@@ -77,8 +77,8 @@ func TestListMessageDeliveries(t *testing.T) {
 	ctx := context.Background()
 	app, _ := q.CreateApplication(ctx, store.CreateApplicationParams{OrgID: store.UUID(oid), Name: "A", Metadata: []byte(`{}`)})
 	sec, _ := webhook.GenerateSecret()
-	ep1, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/1", Secret: sec})
-	ep2, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/2", Secret: sec})
+	ep1, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/1", Secret: sec, Headers: []byte("{}")})
+	ep2, _ := q.CreateEndpoint(ctx, store.CreateEndpointParams{AppID: app.ID, OrgID: store.UUID(oid), Url: "https://ex.test/2", Secret: sec, Headers: []byte("{}")})
 	msg, _ := q.CreateMessage(ctx, store.CreateMessageParams{AppID: app.ID, OrgID: store.UUID(oid), EventType: "x", Payload: []byte(`{}`), PayloadHash: "h"})
 	_, _ = q.CreateMessageDeliveriesBatch(ctx, store.CreateMessageDeliveriesBatchParams{MessageID: msg.ID, OrgID: store.UUID(oid), EndpointIds: []pgtype.UUID{ep1.ID, ep2.ID}})
 

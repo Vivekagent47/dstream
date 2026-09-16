@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -64,5 +65,25 @@ func TestCreateEndpointReturnsSecretOnce(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &sec)
 	if s, _ := sec["secret"].(string); s[:6] != "whsec_" {
 		t.Fatalf("/secret must reveal, got %v", sec)
+	}
+}
+
+// TestRateLimitBoundPreventsOverflow documents why rate_limit is capped at
+// maxRateLimit: int32PtrFromInt narrows with int32(), so an unbounded value
+// above int32 max wraps NEGATIVE and the send gate (*x > 0) silently reads
+// false → the endpoint becomes unlimited. The bound keeps every accepted value
+// within the safe positive range. No DB needed.
+func TestRateLimitBoundPreventsOverflow(t *testing.T) {
+	if maxRateLimit >= math.MaxInt32 {
+		t.Fatalf("maxRateLimit %d must stay below int32 max to avoid wrap", maxRateLimit)
+	}
+	max := maxRateLimit
+	if p := int32PtrFromInt(&max); p == nil || *p != int32(maxRateLimit) || *p <= 0 {
+		t.Fatalf("in-bound value must narrow to a positive int32, got %v", p)
+	}
+	// The wrap the bound prevents: a value past int32 max narrows negative.
+	over := math.MaxInt32 + 1
+	if p := int32PtrFromInt(&over); p == nil || *p > 0 {
+		t.Fatalf("value above int32 max must wrap non-positive (this is what the cap blocks), got %v", p)
 	}
 }

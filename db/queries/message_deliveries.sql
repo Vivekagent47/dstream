@@ -18,7 +18,9 @@ SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_
        m.id AS message_id, m.event_type, m.payload, m.created_at AS message_created_at,
        e.url AS endpoint_url, e.secret AS endpoint_secret, e.disabled AS endpoint_disabled,
        e.prev_secret            AS endpoint_secret_prev,
-       e.prev_secret_expires_at AS endpoint_prev_expires_at
+       e.prev_secret_expires_at AS endpoint_prev_expires_at,
+       e.headers    AS endpoint_headers,
+       e.rate_limit AS endpoint_rate_limit
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
   JOIN endpoints e ON e.id = d.endpoint_id
