@@ -25,19 +25,21 @@ import (
 
 func endpointView(e store.Endpoint) map[string]any {
 	return map[string]any{
-		"id":                 store.GoUUID(e.ID).String(),
-		"app_id":             store.GoUUID(e.AppID).String(),
-		"org_id":             store.GoUUID(e.OrgID).String(),
-		"uid":                httpx.DerefString(e.Uid),
-		"url":                e.Url,
-		"description":        e.Description,
-		"filter_event_types": e.FilterEventTypes,
-		"headers":            headersMap(e.Headers),
-		"rate_limit":         derefInt32(e.RateLimit),
-		"channels":           e.Channels,
-		"disabled":           e.Disabled,
-		"created_at":         e.CreatedAt.Time,
-		"updated_at":         e.UpdatedAt.Time,
+		"id":                   store.GoUUID(e.ID).String(),
+		"app_id":               store.GoUUID(e.AppID).String(),
+		"org_id":               store.GoUUID(e.OrgID).String(),
+		"uid":                  httpx.DerefString(e.Uid),
+		"url":                  e.Url,
+		"description":          e.Description,
+		"filter_event_types":   e.FilterEventTypes,
+		"headers":              headersMap(e.Headers),
+		"rate_limit":           derefInt32(e.RateLimit),
+		"channels":             e.Channels,
+		"disabled":             e.Disabled,
+		"disabled_at":          nullTime(e.DisabledAt),
+		"consecutive_failures": e.ConsecutiveFailures,
+		"created_at":           e.CreatedAt.Time,
+		"updated_at":           e.UpdatedAt.Time,
 	}
 }
 
