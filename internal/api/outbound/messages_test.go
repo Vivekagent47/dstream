@@ -92,6 +92,63 @@ func TestSendMessageFansOutWithFilter(t *testing.T) {
 	}
 }
 
+func replayRoutes(r chi.Router, h Handlers) {
+	r.Route("/applications", func(r chi.Router) {
+		r.Post("/", h.CreateApplication)
+		r.Route("/{app_id}", func(r chi.Router) {
+			r.Post("/endpoints", h.CreateEndpoint)
+			r.Route("/messages", func(r chi.Router) {
+				r.Post("/", h.CreateMessage)
+				r.Post("/{id}/endpoints/{endpoint_id}/replay", h.ReplayDelivery)
+			})
+		})
+	})
+	r.Route("/event-types", func(r chi.Router) { r.Post("/", h.CreateEventType) })
+}
+
+// Replaying a message whose payload was expunged by retention returns 422 and
+// never creates/enqueues a delivery.
+func TestReplayExpungedMessageReturns422(t *testing.T) {
+	pool := testPool(t)
+	q := store.New(pool)
+	rdb := testRedis(t)
+	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
+	uid, oid := seedOrg(t, q)
+	r := newRouter(q, dq, sign(t), replayRoutes)
+
+	post := func(path string, body any) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, sessionReq(t, sign(t), http.MethodPost, path, uid, oid, body))
+		return rec
+	}
+	post("/api/event-types", map[string]any{"name": "invoice.paid"})
+	var app map[string]any
+	_ = json.Unmarshal(post("/api/applications", map[string]any{"name": "A"}).Body.Bytes(), &app)
+	base := "/api/applications/" + app["id"].(string)
+
+	var ep map[string]any
+	_ = json.Unmarshal(post(base+"/endpoints", map[string]any{"url": "https://ex.test/a"}).Body.Bytes(), &ep)
+	epID := ep["id"].(string)
+
+	var msg map[string]any
+	_ = json.Unmarshal(post(base+"/messages", map[string]any{"event_type": "invoice.paid", "payload": map[string]any{"x": 1}}).Body.Bytes(), &msg)
+	msgID := msg["message_id"].(string)
+
+	// Expunge the payload directly (simulating the retention sweep).
+	if _, err := pool.Exec(context.Background(), `UPDATE messages SET payload = NULL WHERE id = $1`, store.UUID(uuid.MustParse(msgID))); err != nil {
+		t.Fatalf("expunge: %v", err)
+	}
+	drainMessageTasks(t, dq) // clear the original fan-out task
+
+	rec := post(base+"/messages/"+msgID+"/endpoints/"+epID+"/replay", nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("replay of expunged message: got %d want 422, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := drainMessageTasks(t, dq); got != 0 {
+		t.Fatalf("expunged replay must not enqueue a delivery, got %d tasks", got)
+	}
+}
+
 // TestSendMessageFansOutWithChannels proves channel-overlap matching and the
 // untagged→unfiltered-only semantics (a nil MsgChannels excludes channel-filtered
 // endpoints but keeps unfiltered ones).

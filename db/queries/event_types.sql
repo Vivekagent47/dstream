@@ -20,3 +20,8 @@ UPDATE event_types
 
 -- name: DeleteEventTypeForOrg :one
 DELETE FROM event_types WHERE org_id = $1 AND name = $2 RETURNING id;
+
+-- name: SeedEventType :exec
+INSERT INTO event_types (org_id, name, description)
+VALUES ($1, $2, $3)
+ON CONFLICT (org_id, name) DO NOTHING;

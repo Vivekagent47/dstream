@@ -15,6 +15,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/opevents"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -74,6 +75,11 @@ func (d Handlers) CreateOrg(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		d.Log.Error("add owner", "err", err)
 		httpx.Err(w, http.StatusInternalServerError, "add owner")
+		return
+	}
+	if _, err := opevents.SeedOperationalApp(r.Context(), d.Queries, store.GoUUID(org.ID)); err != nil {
+		d.Log.Error("seed operational app", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "provision org")
 		return
 	}
 	orgUUID := store.GoUUID(org.ID)

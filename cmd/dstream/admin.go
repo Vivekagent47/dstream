@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/config"
+	"github.com/Vivekagent47/dstream/internal/opevents"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -123,6 +125,12 @@ func bootstrapCmd() *cobra.Command {
 				}
 			}
 
+			// Idempotent; backfill covers pre-existing orgs. Admin tooling
+			// tolerates a seed failure (log + continue).
+			if _, err := opevents.SeedOperationalApp(ctx, q, store.GoUUID(org.ID)); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: seed operational app: %v\n", err)
+			}
+
 			full, prefix, hash, err := auth.NewAPIKey()
 			if err != nil {
 				return fmt.Errorf("gen api key: %w", err)
@@ -210,6 +218,10 @@ func orgCreateCmd() *cobra.Command {
 				Role:   string(auth.RoleOwner),
 			}); err != nil {
 				return fmt.Errorf("add owner: %w", err)
+			}
+			// Idempotent; admin tooling tolerates a seed failure (log + continue).
+			if _, err := opevents.SeedOperationalApp(ctx, q, store.GoUUID(org.ID)); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: seed operational app: %v\n", err)
 			}
 			fmt.Printf("org:   %s (id=%s, slug=%s)\n", name, store.GoUUID(org.ID), slug)
 			fmt.Printf("owner: %s (id=%s)\n", email, store.GoUUID(user.ID))

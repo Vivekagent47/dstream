@@ -53,6 +53,19 @@ func (q *Queries) CreateMessageDeliveryAttempt(ctx context.Context, arg CreateMe
 	return i, err
 }
 
+const expireOldAttemptBodies = `-- name: ExpireOldAttemptBodies :execrows
+UPDATE message_delivery_attempts SET response_body = NULL
+ WHERE attempted_at < $1 AND response_body IS NOT NULL
+`
+
+func (q *Queries) ExpireOldAttemptBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, expireOldAttemptBodies, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listAttemptsByEndpoint = `-- name: ListAttemptsByEndpoint :many
 SELECT a.id, a.delivery_id, a.attempt_num, a.response_status, a.response_headers, a.response_body, a.duration_ms, a.error_message, a.attempted_at FROM message_delivery_attempts a
   JOIN message_deliveries d ON d.id = a.delivery_id

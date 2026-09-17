@@ -20,10 +20,12 @@ SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_
        e.prev_secret            AS endpoint_secret_prev,
        e.prev_secret_expires_at AS endpoint_prev_expires_at,
        e.headers    AS endpoint_headers,
-       e.rate_limit AS endpoint_rate_limit
+       e.rate_limit AS endpoint_rate_limit,
+       a.is_operational AS endpoint_app_is_operational
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
   JOIN endpoints e ON e.id = d.endpoint_id
+  JOIN applications a ON a.id = e.app_id
  WHERE d.id = $1;
 
 -- name: MarkDeliveryInFlight :exec

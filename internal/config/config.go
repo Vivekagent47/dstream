@@ -57,6 +57,10 @@ type Config struct {
 	// deliveries dead-letter back-to-back; a successful delivery resets the run.
 	EndpointMaxConsecutiveFailures int `mapstructure:"endpoint_max_consecutive_failures"`
 
+	// PayloadRetention nulls message payloads (and attempt response bodies)
+	// older than this window. 0 / unset = keep forever.
+	PayloadRetention time.Duration `mapstructure:"payload_retention"`
+
 	DB     DBConfig     `mapstructure:"db"`
 	Redis  RedisConfig  `mapstructure:"redis"`
 	Worker WorkerConfig `mapstructure:"worker"`
@@ -125,6 +129,10 @@ func Load() (Config, error) {
 	v.SetDefault("max_webhook_hops", 3)
 	v.SetDefault("webhook_secret_grace", "24h")
 	v.SetDefault("endpoint_max_consecutive_failures", 5)
+	// "0s" = keep payloads forever. The zero default is load-bearing: it registers
+	// the key so viper's AutomaticEnv+Unmarshal actually reads
+	// DSTREAM_PAYLOAD_RETENTION (see the tracing.otlp_endpoint note below).
+	v.SetDefault("payload_retention", "0s")
 
 	v.SetDefault("db.url", "postgres://dstream:dstream@localhost:5432/dstream?sslmode=disable")
 	v.SetDefault("db.max_conns", 20)

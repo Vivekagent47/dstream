@@ -45,5 +45,7 @@ func applicationView(a store.Application) map[string]any {
 		"metadata":   httpx.RawJSONOrEmpty(a.Metadata),
 		"created_at": a.CreatedAt.Time,
 		"updated_at": a.UpdatedAt.Time,
+
+		"is_operational": a.IsOperational,
 	}
 }

@@ -53,6 +53,19 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 	return i, err
 }
 
+const expireOldMessagePayloads = `-- name: ExpireOldMessagePayloads :execrows
+UPDATE messages SET payload = NULL
+ WHERE created_at < $1 AND payload IS NOT NULL
+`
+
+func (q *Queries) ExpireOldMessagePayloads(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, expireOldMessagePayloads, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getMessageByAppEventID = `-- name: GetMessageByAppEventID :one
 SELECT id, app_id, org_id, event_type, payload, payload_hash, event_id, created_at, channels FROM messages WHERE app_id = $1 AND event_id = $2
 `

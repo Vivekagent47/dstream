@@ -17,3 +17,7 @@ SELECT id, app_id, org_id, event_type, payload_hash, event_id, created_at, chann
 
 -- name: GetMessageForApp :one
 SELECT * FROM messages WHERE id = $1 AND app_id = $2;
+
+-- name: ExpireOldMessagePayloads :execrows
+UPDATE messages SET payload = NULL
+ WHERE created_at < sqlc.arg('cutoff') AND payload IS NOT NULL;

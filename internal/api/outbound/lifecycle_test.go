@@ -98,7 +98,7 @@ func TestReEnableResetsCounter(t *testing.T) {
 	epID, _ := uuid.Parse(ep["id"].(string))
 
 	// Force auto-disabled state: threshold 1 → disabled + failures=1 + disabled_at set.
-	if err := q.IncrEndpointFailures(context.Background(), store.IncrEndpointFailuresParams{
+	if _, err := q.IncrEndpointFailures(context.Background(), store.IncrEndpointFailuresParams{
 		ID: store.UUID(epID), Threshold: 1,
 	}); err != nil {
 		t.Fatal(err)

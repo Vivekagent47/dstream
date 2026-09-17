@@ -201,7 +201,7 @@ func workerCmd() *cobra.Command {
 
 			// Background maintenance: purge expired magic-link tokens + invites.
 			wg.Add(1)
-			go func() { defer wg.Done(); runMaintenance(ctx, q, log) }()
+			go func() { defer wg.Done(); runMaintenance(ctx, q, log, cfg.PayloadRetention) }()
 
 			<-ctx.Done()
 			log.Info("shutting down worker")

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/Vivekagent47/dstream/internal/opevents"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -156,6 +157,9 @@ func ConsumeMagicLink(ctx context.Context, pool TxBeginner, q *store.Queries, to
 			UserID: u.ID,
 			Role:   string(RoleOwner),
 		}); err != nil {
+			return store.User{}, uuid.Nil, err
+		}
+		if _, err := opevents.SeedOperationalApp(ctx, qtx, store.GoUUID(org.ID)); err != nil {
 			return store.User{}, uuid.Nil, err
 		}
 	}

@@ -21,7 +21,7 @@ const (
 // so those tables don't grow without bound (they are insert-per-login /
 // insert-per-invite and were never cleaned up). Runs in the worker; the DELETEs
 // are safe across replicas. Stops when ctx is cancelled.
-func runMaintenance(ctx context.Context, q *store.Queries, log *slog.Logger) {
+func runMaintenance(ctx context.Context, q *store.Queries, log *slog.Logger, retention time.Duration) {
 	sweep := func() {
 		cutoff := pgtype.Timestamptz{Time: time.Now().Add(-expiredRetention), Valid: true}
 		if n, err := q.DeleteExpiredMagicLinkTokens(ctx, cutoff); err != nil {
@@ -33,6 +33,21 @@ func runMaintenance(ctx context.Context, q *store.Queries, log *slog.Logger) {
 			log.Error("maintenance: purge org invites", "err", err)
 		} else if n > 0 {
 			log.Info("maintenance: purged expired org invites", "count", n)
+		}
+		// Payload retention: null out message payloads + attempt response bodies
+		// past the window. 0 = keep forever.
+		if retention > 0 {
+			cut := pgtype.Timestamptz{Time: time.Now().Add(-retention), Valid: true}
+			if n, err := q.ExpireOldMessagePayloads(ctx, cut); err != nil {
+				log.Error("maintenance: expire payloads", "err", err)
+			} else if n > 0 {
+				log.Info("maintenance: expired message payloads", "count", n)
+			}
+			if n, err := q.ExpireOldAttemptBodies(ctx, cut); err != nil {
+				log.Error("maintenance: expire attempt bodies", "err", err)
+			} else if n > 0 {
+				log.Info("maintenance: expired attempt bodies", "count", n)
+			}
 		}
 	}
 	sweep() // once at startup, then on the interval

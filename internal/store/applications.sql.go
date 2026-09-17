@@ -29,7 +29,7 @@ func (q *Queries) BumpApplicationPortalEpoch(ctx context.Context, arg BumpApplic
 const createApplication = `-- name: CreateApplication :one
 INSERT INTO applications (org_id, uid, name, metadata)
 VALUES ($1, $2, $3, $4)
-RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch
+RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational
 `
 
 type CreateApplicationParams struct {
@@ -56,6 +56,7 @@ func (q *Queries) CreateApplication(ctx context.Context, arg CreateApplicationPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PortalEpoch,
+		&i.IsOperational,
 	)
 	return i, err
 }
@@ -76,8 +77,52 @@ func (q *Queries) DeleteApplicationForOrg(ctx context.Context, arg DeleteApplica
 	return id, err
 }
 
+const ensureOperationalApp = `-- name: EnsureOperationalApp :one
+WITH ins AS (
+  INSERT INTO applications (org_id, name, is_operational)
+  VALUES ($1, 'Operational Webhooks', TRUE)
+  ON CONFLICT (org_id) WHERE is_operational DO NOTHING
+  RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational
+)
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational FROM ins
+UNION ALL
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational FROM applications WHERE org_id = $1 AND is_operational
+LIMIT 1
+`
+
+type EnsureOperationalAppRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	Uid           *string            `json:"uid"`
+	Name          string             `json:"name"`
+	Metadata      []byte             `json:"metadata"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	PortalEpoch   int64              `json:"portal_epoch"`
+	IsOperational bool               `json:"is_operational"`
+}
+
+// Idempotent create-or-get of the org's operational app (one per org via the
+// partial unique index). Returns the existing or newly-created row.
+func (q *Queries) EnsureOperationalApp(ctx context.Context, orgID pgtype.UUID) (EnsureOperationalAppRow, error) {
+	row := q.db.QueryRow(ctx, ensureOperationalApp, orgID)
+	var i EnsureOperationalAppRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Uid,
+		&i.Name,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PortalEpoch,
+		&i.IsOperational,
+	)
+	return i, err
+}
+
 const getApplicationForOrg = `-- name: GetApplicationForOrg :one
-SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch FROM applications WHERE id = $1 AND org_id = $2
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational FROM applications WHERE id = $1 AND org_id = $2
 `
 
 type GetApplicationForOrgParams struct {
@@ -97,13 +142,36 @@ func (q *Queries) GetApplicationForOrg(ctx context.Context, arg GetApplicationFo
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PortalEpoch,
+		&i.IsOperational,
+	)
+	return i, err
+}
+
+const getOperationalApp = `-- name: GetOperationalApp :one
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational FROM applications WHERE org_id = $1 AND is_operational
+`
+
+func (q *Queries) GetOperationalApp(ctx context.Context, orgID pgtype.UUID) (Application, error) {
+	row := q.db.QueryRow(ctx, getOperationalApp, orgID)
+	var i Application
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Uid,
+		&i.Name,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PortalEpoch,
+		&i.IsOperational,
 	)
 	return i, err
 }
 
 const listApplicationsByOrg = `-- name: ListApplicationsByOrg :many
-SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch FROM applications
+SELECT id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational FROM applications
  WHERE org_id = $1
+   AND is_operational = FALSE
    AND (created_at, id) < ($2::timestamptz, $3::uuid)
  ORDER BY created_at DESC, id DESC
  LIMIT $4
@@ -139,6 +207,7 @@ func (q *Queries) ListApplicationsByOrg(ctx context.Context, arg ListApplication
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PortalEpoch,
+			&i.IsOperational,
 		); err != nil {
 			return nil, err
 		}
@@ -157,7 +226,7 @@ UPDATE applications
        metadata = COALESCE($3::jsonb, metadata),
        updated_at = now()
  WHERE id = $4 AND org_id = $5
- RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch
+ RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational
 `
 
 type UpdateApplicationParams struct {
@@ -186,6 +255,7 @@ func (q *Queries) UpdateApplication(ctx context.Context, arg UpdateApplicationPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PortalEpoch,
+		&i.IsOperational,
 	)
 	return i, err
 }

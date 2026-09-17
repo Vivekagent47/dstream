@@ -124,6 +124,23 @@ func (q *Queries) ListEventTypesByOrg(ctx context.Context, arg ListEventTypesByO
 	return items, nil
 }
 
+const seedEventType = `-- name: SeedEventType :exec
+INSERT INTO event_types (org_id, name, description)
+VALUES ($1, $2, $3)
+ON CONFLICT (org_id, name) DO NOTHING
+`
+
+type SeedEventTypeParams struct {
+	OrgID       pgtype.UUID `json:"org_id"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+}
+
+func (q *Queries) SeedEventType(ctx context.Context, arg SeedEventTypeParams) error {
+	_, err := q.db.Exec(ctx, seedEventType, arg.OrgID, arg.Name, arg.Description)
+	return err
+}
+
 const updateEventType = `-- name: UpdateEventType :one
 UPDATE event_types
    SET description = COALESCE($1, description),

@@ -189,6 +189,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Post("/{id}/retry", pl.RetryEvent)
 				})
 
+				r.Get("/operational-app", ob.GetOperationalApp)
+
 				r.Route("/applications", func(r chi.Router) {
 					r.Get("/", ob.ListApplications)
 					r.Post("/", ob.CreateApplication)

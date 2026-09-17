@@ -19,6 +19,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/opevents"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -117,8 +118,26 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	}
 
 	attemptNum := int(row.AttemptCount) + 1
+
+	// Payload expunged by the retention sweep: nothing to sign or send, and no
+	// retry can ever recover it → terminal. An empty JSON body compacts to `{}`
+	// (2 bytes), so len==0 uniquely means NULL/expunged.
+	if len(row.Payload) == 0 {
+		h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, 0, "message payload expunged (retention)")
+		_ = h.Queries.MarkDeliveryDead(ctx, store.UUID(did))
+		return q.DeadLetter(ctx, raw)
+	}
+
 	msgID := store.GoUUID(row.MessageID).String()
 	epID := store.GoUUID(row.EndpointID)
+	// Loop guard: an operational-app delivery that itself exhausts/auto-disables
+	// must emit NO operational event, or op events would recurse forever.
+	ev := opEventCtx{
+		OrgID:         store.GoUUID(row.OrgID),
+		MessageID:     store.GoUUID(row.MessageID),
+		EventType:     row.EventType,
+		IsOperational: row.EndpointAppIsOperational,
+	}
 
 	// Per-endpoint rate-limit gate. Over-limit → defer (no attempt, no budget).
 	if row.EndpointRateLimit != nil && *row.EndpointRateLimit > 0 && h.Limiter != nil {
@@ -161,7 +180,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, row.EndpointUrl, bytes.NewReader(row.Payload))
 	if err != nil {
-		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, err.Error())
+		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, err.Error(), ev)
 	}
 	// Custom endpoint headers first; the reserved webhook-*/Dstream-*/Content-Type
 	// below always overwrite, so a stored custom header can never shadow them.
@@ -181,7 +200,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	dur := int(time.Since(start).Milliseconds())
 	if doErr != nil {
 		h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, dur, doErr.Error())
-		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, doErr.Error())
+		return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, doErr.Error(), ev)
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
@@ -196,7 +215,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		}
 		return q.Ack(ctx, raw)
 	}
-	return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, fmt.Sprintf("status %d", resp.StatusCode))
+	return h.failAttempt(ctx, q, p, raw, did, epID, attemptNum, fmt.Sprintf("status %d", resp.StatusCode), ev)
 }
 
 // deferSend reschedules p after delay and Acks the leased member — a gate
@@ -210,18 +229,43 @@ func (h Handler) deferSend(ctx context.Context, q *dqueue.Client, p dqueue.Paylo
 	return q.Ack(ctx, raw)
 }
 
+// opEventCtx carries the loop-guard flag + identifiers needed to emit
+// operational events when a delivery dead-letters or auto-disables its endpoint.
+// IsOperational is true when the delivery itself belongs to the org's
+// operational app — such a delivery must emit NO operational event (recursion).
+type opEventCtx struct {
+	OrgID         uuid.UUID
+	MessageID     uuid.UUID
+	EventType     string
+	IsOperational bool
+}
+
 // failAttempt schedules the next retry, or dead-letters when the budget is spent.
-func (h Handler) failAttempt(ctx context.Context, q *dqueue.Client, p dqueue.Payload, raw string, did, epID uuid.UUID, attemptNum int, reason string) error {
+func (h Handler) failAttempt(ctx context.Context, q *dqueue.Client, p dqueue.Payload, raw string, did, epID uuid.UUID, attemptNum int, reason string, ev opEventCtx) error {
 	delay, ok := nextDelay(attemptNum)
 	if !ok {
 		h.Log.Warn("outbound: delivery exhausted, dead-lettering", "delivery_id", did, "reason", reason)
 		if err := h.Queries.MarkDeliveryDead(ctx, store.UUID(did)); err != nil {
 			return err
 		}
+		// Best-effort operational trigger; never abort the delivery outcome.
+		if !ev.IsOperational {
+			_ = opevents.Publish(ctx, h.Queries, q, ev.OrgID, "message.attempt.exhausted", map[string]any{
+				"type": "message.attempt.exhausted", "message_id": ev.MessageID.String(),
+				"endpoint_id": epID.String(), "event_type": ev.EventType, "attempt_count": attemptNum,
+			})
+		}
 		if h.MaxConsecutiveFailures > 0 {
-			_ = h.Queries.IncrEndpointFailures(ctx, store.IncrEndpointFailuresParams{
+			dr, err := h.Queries.IncrEndpointFailures(ctx, store.IncrEndpointFailuresParams{
 				ID: store.UUID(epID), Threshold: int32(h.MaxConsecutiveFailures),
 			})
+			if err == nil && dr.JustDisabled != nil && *dr.JustDisabled && !ev.IsOperational {
+				_ = opevents.Publish(ctx, h.Queries, q, ev.OrgID, "endpoint.disabled", map[string]any{
+					"type": "endpoint.disabled", "endpoint_id": epID.String(),
+					"app_id": store.GoUUID(dr.AppID).String(), "url": dr.Url,
+					"consecutive_failures": dr.ConsecutiveFailures, "disabled_at": dr.DisabledAt.Time,
+				})
+			}
 		}
 		return q.DeadLetter(ctx, raw)
 	}

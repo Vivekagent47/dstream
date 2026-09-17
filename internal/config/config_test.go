@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestLoad_TrustedProxiesCSV(t *testing.T) {
@@ -75,5 +76,30 @@ func TestLoad_TracingOTLPEndpointBinding(t *testing.T) {
 	}
 	if c.Tracing.OTLPEndpoint != "http://jaeger:4318" {
 		t.Fatalf("OTLPEndpoint got %q want %q", c.Tracing.OTLPEndpoint, "http://jaeger:4318")
+	}
+}
+
+// payload_retention must parse a duration from env (same viper gotcha as above:
+// the "0s" default registers the key so AutomaticEnv actually reads it).
+func TestLoad_PayloadRetentionBinding(t *testing.T) {
+	t.Setenv("DSTREAM_PAYLOAD_RETENTION", "720h")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.PayloadRetention != 720*time.Hour {
+		t.Fatalf("PayloadRetention got %v want 720h", c.PayloadRetention)
+	}
+}
+
+// Unset => zero => keep payloads forever.
+func TestLoad_PayloadRetentionDefaultZero(t *testing.T) {
+	os.Unsetenv("DSTREAM_PAYLOAD_RETENTION")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.PayloadRetention != 0 {
+		t.Fatalf("PayloadRetention default got %v want 0", c.PayloadRetention)
 	}
 }

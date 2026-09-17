@@ -16,3 +16,7 @@ SELECT a.* FROM message_delivery_attempts a
   JOIN message_deliveries d ON d.id = a.delivery_id
  WHERE d.endpoint_id = $1
  ORDER BY a.attempted_at DESC LIMIT $2;
+
+-- name: ExpireOldAttemptBodies :execrows
+UPDATE message_delivery_attempts SET response_body = NULL
+ WHERE attempted_at < sqlc.arg('cutoff') AND response_body IS NOT NULL;

@@ -20,6 +20,7 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/opevents"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -366,7 +367,7 @@ func TestConsecutiveFailuresResetOnSuccess(t *testing.T) {
 	delID, _, orgID, epID, appID := seedDeliveryFull(t, q, srv.URL, secret)
 
 	// Pre-load a failure run (high threshold so it doesn't auto-disable).
-	if err := q.IncrEndpointFailures(ctx, store.IncrEndpointFailuresParams{ID: store.UUID(epID), Threshold: 100}); err != nil {
+	if _, err := q.IncrEndpointFailures(ctx, store.IncrEndpointFailuresParams{ID: store.UUID(epID), Threshold: 100}); err != nil {
 		t.Fatal(err)
 	}
 	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true), MaxConsecutiveFailures: 5}
@@ -574,6 +575,222 @@ func seedExtraDelivery(t *testing.T, q *store.Queries, orgID, appID, epID uuid.U
 		t.Fatalf("deliveries: %v (%d)", err, len(dels))
 	}
 	return store.GoUUID(dels[0].ID)
+}
+
+// opMessageCounts returns the per-event-type message count on an op app.
+func opMessageCounts(t *testing.T, q *store.Queries, appID uuid.UUID) map[string]int {
+	t.Helper()
+	msgs, err := q.ListMessagesByApp(context.Background(), store.ListMessagesByAppParams{
+		AppID:    store.UUID(appID),
+		CursorTs: pgtype.Timestamptz{Time: time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), Valid: true},
+		CursorID: store.UUID(uuid.Max),
+		Lim:      100,
+	})
+	if err != nil {
+		t.Fatalf("list op messages: %v", err)
+	}
+	byType := map[string]int{}
+	for _, m := range msgs {
+		byType[m.EventType]++
+	}
+	return byType
+}
+
+// A normal delivery that dead-letters AND crosses the auto-disable threshold
+// emits both operational events (message.attempt.exhausted + endpoint.disabled)
+// to its org's operational app.
+func TestExhaustEmitsOperationalEvents(t *testing.T) {
+	q := testPool(t)
+	dq, _, _ := testQueue(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	secret, _ := GenerateSecret()
+
+	// NORMAL app + endpoint + message + delivery.
+	delID, _, orgID, _, _ := seedDeliveryFull(t, q, srv.URL, secret)
+	// The org's operational app + an endpoint on it, so op events fan out.
+	opAppID, err := opevents.SeedOperationalApp(ctx, q, orgID)
+	if err != nil {
+		t.Fatalf("seed op app: %v", err)
+	}
+	if _, err := q.CreateEndpoint(ctx, store.CreateEndpointParams{
+		AppID: store.UUID(opAppID), OrgID: store.UUID(orgID),
+		Url: "https://example.test/ops", Secret: secret, Headers: []byte("{}"),
+	}); err != nil {
+		t.Fatalf("op endpoint: %v", err)
+	}
+
+	// Burn the retry budget so this Process dead-letters in one shot; threshold 1
+	// so the same failure also auto-disables the endpoint.
+	for i := 0; i < len(retrySchedule); i++ {
+		_ = q.MarkDeliveryInFlight(ctx, store.UUID(delID))
+	}
+	enqueueDelivery(t, dq, delID, orgID)
+	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true), MaxConsecutiveFailures: 1}
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+
+	byType := opMessageCounts(t, q, opAppID)
+	if byType["message.attempt.exhausted"] != 1 {
+		t.Fatalf("want 1 message.attempt.exhausted op message, got %d", byType["message.attempt.exhausted"])
+	}
+	if byType["endpoint.disabled"] != 1 {
+		t.Fatalf("want exactly 1 endpoint.disabled op message, got %d", byType["endpoint.disabled"])
+	}
+}
+
+// LOOP GUARD: a delivery whose endpoint lives on the OPERATIONAL app, driven to
+// exhaustion + auto-disable, must emit NO new operational message (else op
+// events would recurse forever).
+func TestOperationalDeliveryDoesNotRecurse(t *testing.T) {
+	q := testPool(t)
+	dq, _, _ := testQueue(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	secret, _ := GenerateSecret()
+
+	// org + its operational app + an endpoint ON the op app (failing server).
+	u, err := q.CreateUser(ctx, store.CreateUserParams{Email: "t+" + uuid.NewString() + "@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := q.CreateOrganization(ctx, store.CreateOrganizationParams{Name: "T", Slug: "t-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = q.AddOrgMember(ctx, store.AddOrgMemberParams{OrgID: o.ID, UserID: u.ID, Role: "owner"})
+	orgID := store.GoUUID(o.ID)
+	opAppID, err := opevents.SeedOperationalApp(ctx, q, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := q.CreateEndpoint(ctx, store.CreateEndpointParams{
+		AppID: store.UUID(opAppID), OrgID: o.ID, Url: srv.URL, Secret: secret, Headers: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One message on the op app + a delivery to the op endpoint.
+	msg, err := q.CreateMessage(ctx, store.CreateMessageParams{
+		AppID: store.UUID(opAppID), OrgID: o.ID, EventType: "endpoint.disabled",
+		Payload: []byte(`{"x":1}`), PayloadHash: "h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dels, err := q.CreateMessageDeliveriesBatch(ctx, store.CreateMessageDeliveriesBatchParams{
+		MessageID: msg.ID, OrgID: o.ID, EndpointIds: []pgtype.UUID{ep.ID},
+	})
+	if err != nil || len(dels) != 1 {
+		t.Fatalf("deliveries: %v (%d)", err, len(dels))
+	}
+	delID := store.GoUUID(dels[0].ID)
+
+	total := func(m map[string]int) int {
+		s := 0
+		for _, v := range m {
+			s += v
+		}
+		return s
+	}
+	before := total(opMessageCounts(t, q, opAppID)) // exactly the 1 message seeded
+
+	// Drive it to exhaustion + would-be auto-disable.
+	for i := 0; i < len(retrySchedule); i++ {
+		_ = q.MarkDeliveryInFlight(ctx, store.UUID(delID))
+	}
+	enqueueDelivery(t, dq, delID, orgID)
+	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true), MaxConsecutiveFailures: 1}
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+
+	after := total(opMessageCounts(t, q, opAppID))
+	if after != before {
+		t.Fatalf("operational delivery must not create new op messages: before=%d after=%d", before, after)
+	}
+}
+
+// nullMessagePayload expunges one message's payload directly, simulating the
+// retention sweep having nulled it.
+func nullMessagePayload(t *testing.T, msgID uuid.UUID) {
+	t.Helper()
+	pool, err := store.NewPool(context.Background(), os.Getenv("DSTREAM_TEST_DB_URL"), 2)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(context.Background(), `UPDATE messages SET payload = NULL WHERE id = $1`, store.UUID(msgID)); err != nil {
+		t.Fatalf("null payload: %v", err)
+	}
+}
+
+// A delivery whose message payload was expunged by retention must dead-letter
+// with no send and an attempt recorded, never sign+POST an empty body.
+func TestDeliverExpungedPayloadDeadLetters(t *testing.T) {
+	q := testPool(t)
+	dq, rdb, prefix := testQueue(t)
+	ctx := context.Background()
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	secret, _ := GenerateSecret()
+	delID, msgID, orgID := seedDelivery(t, q, srv.URL, secret)
+	nullMessagePayload(t, msgID)
+	enqueueDelivery(t, dq, delID, orgID)
+
+	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true)}
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 0 {
+		t.Fatalf("expunged payload must not send, got %d hits", hits)
+	}
+	if n, _ := rdb.LLen(ctx, prefix+":dead").Result(); n != 1 {
+		t.Fatalf("want 1 dead-lettered, got %d", n)
+	}
+	row, err := q.GetMessageDeliveryForSend(ctx, store.UUID(delID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.DeliveryStatus != "dead" {
+		t.Fatalf("want delivery status dead, got %q", row.DeliveryStatus)
+	}
+	atts, err := q.ListAttemptsByMessage(ctx, store.ListAttemptsByMessageParams{MessageID: store.UUID(msgID), Lim: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range atts {
+		if a.ErrorMessage != nil && strings.Contains(*a.ErrorMessage, "expunged") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want an attempt recorded with the expunged error, got %d attempts", len(atts))
+	}
 }
 
 func TestOutboundInflightDefers(t *testing.T) {

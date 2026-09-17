@@ -23,14 +23,15 @@ type ApiKey struct {
 }
 
 type Application struct {
-	ID          pgtype.UUID        `json:"id"`
-	OrgID       pgtype.UUID        `json:"org_id"`
-	Uid         *string            `json:"uid"`
-	Name        string             `json:"name"`
-	Metadata    []byte             `json:"metadata"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	PortalEpoch int64              `json:"portal_epoch"`
+	ID            pgtype.UUID        `json:"id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	Uid           *string            `json:"uid"`
+	Name          string             `json:"name"`
+	Metadata      []byte             `json:"metadata"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	PortalEpoch   int64              `json:"portal_epoch"`
+	IsOperational bool               `json:"is_operational"`
 }
 
 type Attempt struct {

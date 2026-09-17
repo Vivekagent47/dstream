@@ -319,11 +319,13 @@ CREATE TABLE applications (
   -- Bumped to revoke every outstanding App Portal link for this app
   -- (kill-switch). Embedded in the signed portal token; a mismatch = 401.
   portal_epoch BIGINT NOT NULL DEFAULT 0,
+  is_operational BOOLEAN NOT NULL DEFAULT FALSE,   -- the org's reserved operational-webhooks app
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX applications_org_idx ON applications (org_id);
 CREATE UNIQUE INDEX applications_org_uid_idx ON applications (org_id, uid) WHERE uid IS NOT NULL;
+CREATE UNIQUE INDEX applications_org_operational_idx ON applications (org_id) WHERE is_operational;
 
 CREATE TABLE event_types (
   id          UUID PRIMARY KEY DEFAULT uuidv7(),
@@ -365,7 +367,7 @@ CREATE TABLE messages (
   app_id       UUID NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
   org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   event_type   TEXT NOT NULL,           -- name (not FK): historical msgs survive type delete
-  payload      BYTEA NOT NULL,          -- serialized delivery body, signed+sent verbatim
+  payload      BYTEA,                   -- serialized delivery body, signed+sent verbatim (NULL once expunged by retention sweep)
   payload_hash TEXT NOT NULL,           -- sha256 hex of payload
   event_id     TEXT,                    -- caller idempotency key
   channels     TEXT[],                    -- message channel tags; NULL/empty = untagged

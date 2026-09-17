@@ -31,14 +31,18 @@ UPDATE endpoints
  WHERE id = sqlc.arg('id') AND app_id = sqlc.arg('app_id')
  RETURNING *;
 
--- name: IncrEndpointFailures :exec
-UPDATE endpoints
-   SET consecutive_failures = consecutive_failures + 1,
-       disabled    = (consecutive_failures + 1 >= sqlc.arg('threshold')::int) OR disabled,
-       disabled_at = CASE WHEN (consecutive_failures + 1 >= sqlc.arg('threshold')::int) AND NOT disabled
-                          THEN now() ELSE disabled_at END,
+-- name: IncrEndpointFailures :one
+WITH prev AS (SELECT ep.id, ep.disabled AS was_disabled FROM endpoints ep WHERE ep.id = sqlc.arg('id'))
+UPDATE endpoints e
+   SET consecutive_failures = e.consecutive_failures + 1,
+       disabled    = (e.consecutive_failures + 1 >= sqlc.arg('threshold')::int) OR e.disabled,
+       disabled_at = CASE WHEN (e.consecutive_failures + 1 >= sqlc.arg('threshold')::int) AND NOT e.disabled
+                          THEN now() ELSE e.disabled_at END,
        updated_at  = now()
- WHERE id = sqlc.arg('id');
+  FROM prev
+ WHERE e.id = prev.id
+ RETURNING e.id, e.org_id, e.app_id, e.url, e.consecutive_failures, e.disabled_at,
+           (NOT prev.was_disabled AND e.disabled) AS just_disabled;
 
 -- name: ResetEndpointFailures :exec
 UPDATE endpoints SET consecutive_failures = 0, updated_at = now()

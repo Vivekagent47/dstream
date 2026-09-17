@@ -113,6 +113,9 @@ type Querier interface {
 	// the rate; avg_latency_ms averages the delivery HTTP call time recorded per
 	// attempt (NULL when no completed attempts in the window).
 	DestinationDeliveryStats(ctx context.Context, arg DestinationDeliveryStatsParams) (DestinationDeliveryStatsRow, error)
+	// Idempotent create-or-get of the org's operational app (one per org via the
+	// partial unique index). Returns the existing or newly-created row.
+	EnsureOperationalApp(ctx context.Context, orgID pgtype.UUID) (EnsureOperationalAppRow, error)
 	// Time-bucketed event counts by status for the events-page timeline graph.
 	// @bucket is a date_trunc unit ('minute' | 'hour' | 'day' | 'week') chosen by
 	// the handler from the selected range. The series is GAP-FILLED in SQL:
@@ -121,6 +124,8 @@ type Querier interface {
 	// plots the rows as-is, no reconstruction. Buckets are UTC-aligned. Same optional
 	// connection_id/status filters as ListEvents; includes test events.
 	EventsHistogram(ctx context.Context, arg EventsHistogramParams) ([]EventsHistogramRow, error)
+	ExpireOldAttemptBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	ExpireOldMessagePayloads(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	// FOR UPDATE locks the row for the consume transaction so two concurrent
 	// verifies can't both see it active: the second blocks, then re-checks the
@@ -149,6 +154,7 @@ type Querier interface {
 	GetMessageByAppEventID(ctx context.Context, arg GetMessageByAppEventIDParams) (Message, error)
 	GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID) (GetMessageDeliveryForSendRow, error)
 	GetMessageForApp(ctx context.Context, arg GetMessageForAppParams) (Message, error)
+	GetOperationalApp(ctx context.Context, orgID pgtype.UUID) (Application, error)
 	GetOrgMember(ctx context.Context, arg GetOrgMemberParams) (OrgMember, error)
 	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error)
 	GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error)
@@ -161,7 +167,7 @@ type Querier interface {
 	// last 24h, worst first. total/failed let the handler compute a failure rate.
 	// Only destinations that actually failed are returned (HAVING).
 	HotDestinations(ctx context.Context) ([]HotDestinationsRow, error)
-	IncrEndpointFailures(ctx context.Context, arg IncrEndpointFailuresParams) error
+	IncrEndpointFailures(ctx context.Context, arg IncrEndpointFailuresParams) (IncrEndpointFailuresRow, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
 	ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error)
@@ -240,6 +246,7 @@ type Querier interface {
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
 	RotateEndpointSecret(ctx context.Context, arg RotateEndpointSecretParams) (Endpoint, error)
+	SeedEventType(ctx context.Context, arg SeedEventTypeParams) error
 	// Gap-filled ingest-request volume over time for ONE source (single series, no
 	// status dimension). Same gap-fill contract as the delivery histogram.
 	SourceRequestHistogram(ctx context.Context, arg SourceRequestHistogramParams) ([]SourceRequestHistogramRow, error)

@@ -134,14 +134,18 @@ func (q *Queries) GetEndpointSecret(ctx context.Context, arg GetEndpointSecretPa
 	return secret, err
 }
 
-const incrEndpointFailures = `-- name: IncrEndpointFailures :exec
-UPDATE endpoints
-   SET consecutive_failures = consecutive_failures + 1,
-       disabled    = (consecutive_failures + 1 >= $1::int) OR disabled,
-       disabled_at = CASE WHEN (consecutive_failures + 1 >= $1::int) AND NOT disabled
-                          THEN now() ELSE disabled_at END,
+const incrEndpointFailures = `-- name: IncrEndpointFailures :one
+WITH prev AS (SELECT ep.id, ep.disabled AS was_disabled FROM endpoints ep WHERE ep.id = $2)
+UPDATE endpoints e
+   SET consecutive_failures = e.consecutive_failures + 1,
+       disabled    = (e.consecutive_failures + 1 >= $1::int) OR e.disabled,
+       disabled_at = CASE WHEN (e.consecutive_failures + 1 >= $1::int) AND NOT e.disabled
+                          THEN now() ELSE e.disabled_at END,
        updated_at  = now()
- WHERE id = $2
+  FROM prev
+ WHERE e.id = prev.id
+ RETURNING e.id, e.org_id, e.app_id, e.url, e.consecutive_failures, e.disabled_at,
+           (NOT prev.was_disabled AND e.disabled) AS just_disabled
 `
 
 type IncrEndpointFailuresParams struct {
@@ -149,9 +153,29 @@ type IncrEndpointFailuresParams struct {
 	ID        pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) IncrEndpointFailures(ctx context.Context, arg IncrEndpointFailuresParams) error {
-	_, err := q.db.Exec(ctx, incrEndpointFailures, arg.Threshold, arg.ID)
-	return err
+type IncrEndpointFailuresRow struct {
+	ID                  pgtype.UUID        `json:"id"`
+	OrgID               pgtype.UUID        `json:"org_id"`
+	AppID               pgtype.UUID        `json:"app_id"`
+	Url                 string             `json:"url"`
+	ConsecutiveFailures int32              `json:"consecutive_failures"`
+	DisabledAt          pgtype.Timestamptz `json:"disabled_at"`
+	JustDisabled        *bool              `json:"just_disabled"`
+}
+
+func (q *Queries) IncrEndpointFailures(ctx context.Context, arg IncrEndpointFailuresParams) (IncrEndpointFailuresRow, error) {
+	row := q.db.QueryRow(ctx, incrEndpointFailures, arg.Threshold, arg.ID)
+	var i IncrEndpointFailuresRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.AppID,
+		&i.Url,
+		&i.ConsecutiveFailures,
+		&i.DisabledAt,
+		&i.JustDisabled,
+	)
+	return i, err
 }
 
 const listEndpointsByApp = `-- name: ListEndpointsByApp :many

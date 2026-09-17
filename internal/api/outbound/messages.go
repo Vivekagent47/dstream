@@ -179,8 +179,14 @@ func (d Handlers) ReplayDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ownership: message + endpoint both belong to this app
-	if _, err := d.Queries.GetMessageForApp(r.Context(), store.GetMessageForAppParams{ID: store.UUID(msgID), AppID: app.ID}); err != nil {
+	msg, err := d.Queries.GetMessageForApp(r.Context(), store.GetMessageForAppParams{ID: store.UUID(msgID), AppID: app.ID})
+	if err != nil {
 		httpx.Err(w, http.StatusNotFound, "message not found")
+		return
+	}
+	// Payload expunged by the retention sweep: nothing left to deliver.
+	if len(msg.Payload) == 0 {
+		httpx.Err(w, http.StatusUnprocessableEntity, "message payload has been expunged and can no longer be delivered")
 		return
 	}
 	if _, ok := d.endpointForAppID(w, r, store.GoUUID(app.ID), epID); !ok {

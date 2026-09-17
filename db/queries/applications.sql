@@ -6,9 +6,27 @@ RETURNING *;
 -- name: ListApplicationsByOrg :many
 SELECT * FROM applications
  WHERE org_id = $1
+   AND is_operational = FALSE
    AND (created_at, id) < (sqlc.arg('cursor_ts')::timestamptz, sqlc.arg('cursor_id')::uuid)
  ORDER BY created_at DESC, id DESC
  LIMIT sqlc.arg('lim');
+
+-- name: EnsureOperationalApp :one
+-- Idempotent create-or-get of the org's operational app (one per org via the
+-- partial unique index). Returns the existing or newly-created row.
+WITH ins AS (
+  INSERT INTO applications (org_id, name, is_operational)
+  VALUES (sqlc.arg('org_id'), 'Operational Webhooks', TRUE)
+  ON CONFLICT (org_id) WHERE is_operational DO NOTHING
+  RETURNING *
+)
+SELECT * FROM ins
+UNION ALL
+SELECT * FROM applications WHERE org_id = sqlc.arg('org_id') AND is_operational
+LIMIT 1;
+
+-- name: GetOperationalApp :one
+SELECT * FROM applications WHERE org_id = $1 AND is_operational;
 
 -- name: GetApplicationForOrg :one
 SELECT * FROM applications WHERE id = $1 AND org_id = $2;

@@ -120,30 +120,33 @@ SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_
        e.prev_secret            AS endpoint_secret_prev,
        e.prev_secret_expires_at AS endpoint_prev_expires_at,
        e.headers    AS endpoint_headers,
-       e.rate_limit AS endpoint_rate_limit
+       e.rate_limit AS endpoint_rate_limit,
+       a.is_operational AS endpoint_app_is_operational
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
   JOIN endpoints e ON e.id = d.endpoint_id
+  JOIN applications a ON a.id = e.app_id
  WHERE d.id = $1
 `
 
 type GetMessageDeliveryForSendRow struct {
-	DeliveryID            pgtype.UUID        `json:"delivery_id"`
-	DeliveryStatus        string             `json:"delivery_status"`
-	AttemptCount          int32              `json:"attempt_count"`
-	OrgID                 pgtype.UUID        `json:"org_id"`
-	EndpointID            pgtype.UUID        `json:"endpoint_id"`
-	MessageID             pgtype.UUID        `json:"message_id"`
-	EventType             string             `json:"event_type"`
-	Payload               []byte             `json:"payload"`
-	MessageCreatedAt      pgtype.Timestamptz `json:"message_created_at"`
-	EndpointUrl           string             `json:"endpoint_url"`
-	EndpointSecret        string             `json:"endpoint_secret"`
-	EndpointDisabled      bool               `json:"endpoint_disabled"`
-	EndpointSecretPrev    *string            `json:"endpoint_secret_prev"`
-	EndpointPrevExpiresAt pgtype.Timestamptz `json:"endpoint_prev_expires_at"`
-	EndpointHeaders       []byte             `json:"endpoint_headers"`
-	EndpointRateLimit     *int32             `json:"endpoint_rate_limit"`
+	DeliveryID               pgtype.UUID        `json:"delivery_id"`
+	DeliveryStatus           string             `json:"delivery_status"`
+	AttemptCount             int32              `json:"attempt_count"`
+	OrgID                    pgtype.UUID        `json:"org_id"`
+	EndpointID               pgtype.UUID        `json:"endpoint_id"`
+	MessageID                pgtype.UUID        `json:"message_id"`
+	EventType                string             `json:"event_type"`
+	Payload                  []byte             `json:"payload"`
+	MessageCreatedAt         pgtype.Timestamptz `json:"message_created_at"`
+	EndpointUrl              string             `json:"endpoint_url"`
+	EndpointSecret           string             `json:"endpoint_secret"`
+	EndpointDisabled         bool               `json:"endpoint_disabled"`
+	EndpointSecretPrev       *string            `json:"endpoint_secret_prev"`
+	EndpointPrevExpiresAt    pgtype.Timestamptz `json:"endpoint_prev_expires_at"`
+	EndpointHeaders          []byte             `json:"endpoint_headers"`
+	EndpointRateLimit        *int32             `json:"endpoint_rate_limit"`
+	EndpointAppIsOperational bool               `json:"endpoint_app_is_operational"`
 }
 
 func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID) (GetMessageDeliveryForSendRow, error) {
@@ -166,6 +169,7 @@ func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID)
 		&i.EndpointPrevExpiresAt,
 		&i.EndpointHeaders,
 		&i.EndpointRateLimit,
+		&i.EndpointAppIsOperational,
 	)
 	return i, err
 }

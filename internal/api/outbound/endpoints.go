@@ -456,6 +456,10 @@ func (d Handlers) RecoverEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recovered := 0
+	// ponytail: no expunged-payload filter here. If a recovered delivery's message
+	// payload was expunged, the send-path guard (handler.Process) dead-letters it
+	// immediately with no send — cheaper than a second query. Add a skip filter
+	// only if re-dead-lettering churn ever shows up as a problem.
 	for _, id := range ids {
 		if err := d.Queries.ResetDeliveryForReplay(r.Context(), id); err != nil {
 			d.Log.Error("recover reset", "err", err, "delivery_id", store.GoUUID(id))
