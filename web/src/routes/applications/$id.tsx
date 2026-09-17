@@ -161,7 +161,7 @@ function ApplicationDetail() {
   )
 }
 
-function OverviewTab({ app }: { app: Application }) {
+export function OverviewTab({ app }: { app: Application }) {
   const { data: endpoints } = useQuery({
     queryKey: qk.endpoints(app.id),
     queryFn: () => api.listEndpoints(app.id),
@@ -237,7 +237,7 @@ function OverviewTab({ app }: { app: Application }) {
   )
 }
 
-function EndpointsTab({ appId }: { appId: string }) {
+export function EndpointsTab({ appId }: { appId: string }) {
   const [addOpen, setAddOpen] = useState(false)
   const [revealSecret, setRevealSecret] = useState<string | null>(null)
   const { data: endpoints, error } = useQuery({

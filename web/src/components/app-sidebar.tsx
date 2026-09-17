@@ -14,6 +14,7 @@ import {
   Mail,
   ScrollText,
   Send,
+  Siren,
   Tag,
   Users,
 } from 'lucide-react'
@@ -50,6 +51,7 @@ const PLATFORM = [
   { label: 'Events', to: '/events', icon: Activity, prefix: true },
   { label: 'Applications', to: '/applications', icon: AppWindow, prefix: true },
   { label: 'Event Types', to: '/event-types', icon: Tag, prefix: true },
+  { label: 'Operational Webhooks', to: '/operational-webhooks', icon: Siren, prefix: true },
 ] as const
 
 const SETTINGS = [

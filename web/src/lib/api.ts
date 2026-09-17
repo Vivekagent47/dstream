@@ -297,6 +297,7 @@ export interface Application {
   uid?: string | null
   name: string
   metadata: unknown
+  is_operational?: boolean
   created_at: string
   updated_at: string
 }
@@ -522,6 +523,9 @@ export const api = {
     http.patch<Application>(`/api/applications/${id}`, input).then((r) => r.data),
   deleteApplication: (id: string) =>
     http.delete(`/api/applications/${id}`).then(() => undefined),
+  // The org's operational application (get-or-create); dstream delivers
+  // endpoint.disabled / message.attempt.exhausted events to its endpoints.
+  getOperationalApp: () => http.get<Application>('/api/operational-app').then((r) => r.data),
 
   // Event types (bare array)
   listEventTypes: () => http.get<EventType[]>('/api/event-types').then((r) => r.data),
@@ -683,6 +687,7 @@ export const qk = {
     ['sources', id, 'metrics', params ?? {}] as const,
   applications: () => ['applications'] as const,
   application: (id: string) => ['applications', id] as const,
+  operationalApp: () => ['operational-app'] as const,
   eventTypes: () => ['event-types'] as const,
   endpoints: (appId: string) => ['applications', appId, 'endpoints'] as const,
   endpoint: (appId: string, id: string) => ['applications', appId, 'endpoints', id] as const,

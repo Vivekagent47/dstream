@@ -14,6 +14,7 @@ import { Route as PortalRouteRouteImport } from './routes/portal/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
 import { Route as PortalIndexRouteImport } from './routes/portal/index'
+import { Route as OperationalWebhooksIndexRouteImport } from './routes/operational-webhooks/index'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventTypesIndexRouteImport } from './routes/event-types/index'
 import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
@@ -63,6 +64,12 @@ const PortalIndexRoute = PortalIndexRouteImport.update({
   path: '/',
   getParentRoute: () => PortalRouteRoute,
 } as any)
+const OperationalWebhooksIndexRoute =
+  OperationalWebhooksIndexRouteImport.update({
+    id: '/operational-webhooks/',
+    path: '/operational-webhooks/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const EventsIndexRoute = EventsIndexRouteImport.update({
   id: '/events/',
   path: '/events/',
@@ -204,6 +211,7 @@ export interface FileRoutesByFullPath {
   '/destinations/': typeof DestinationsIndexRoute
   '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
+  '/operational-webhooks/': typeof OperationalWebhooksIndexRoute
   '/portal/': typeof PortalIndexRoute
   '/sources/': typeof SourcesIndexRoute
   '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
@@ -233,6 +241,7 @@ export interface FileRoutesByTo {
   '/destinations': typeof DestinationsIndexRoute
   '/event-types': typeof EventTypesIndexRoute
   '/events': typeof EventsIndexRoute
+  '/operational-webhooks': typeof OperationalWebhooksIndexRoute
   '/portal': typeof PortalIndexRoute
   '/sources': typeof SourcesIndexRoute
   '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
@@ -264,6 +273,7 @@ export interface FileRoutesById {
   '/destinations/': typeof DestinationsIndexRoute
   '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
+  '/operational-webhooks/': typeof OperationalWebhooksIndexRoute
   '/portal/': typeof PortalIndexRoute
   '/sources/': typeof SourcesIndexRoute
   '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
@@ -296,6 +306,7 @@ export interface FileRouteTypes {
     | '/destinations/'
     | '/event-types/'
     | '/events/'
+    | '/operational-webhooks/'
     | '/portal/'
     | '/sources/'
     | '/portal/messages/$messageId'
@@ -325,6 +336,7 @@ export interface FileRouteTypes {
     | '/destinations'
     | '/event-types'
     | '/events'
+    | '/operational-webhooks'
     | '/portal'
     | '/sources'
     | '/portal/messages/$messageId'
@@ -355,6 +367,7 @@ export interface FileRouteTypes {
     | '/destinations/'
     | '/event-types/'
     | '/events/'
+    | '/operational-webhooks/'
     | '/portal/'
     | '/sources/'
     | '/portal/messages/$messageId'
@@ -386,6 +399,7 @@ export interface RootRouteChildren {
   DestinationsIndexRoute: typeof DestinationsIndexRoute
   EventTypesIndexRoute: typeof EventTypesIndexRoute
   EventsIndexRoute: typeof EventsIndexRoute
+  OperationalWebhooksIndexRoute: typeof OperationalWebhooksIndexRoute
   SourcesIndexRoute: typeof SourcesIndexRoute
   ApplicationsIdEndpointsEndpointIdRoute: typeof ApplicationsIdEndpointsEndpointIdRoute
   ApplicationsIdMessagesMessageIdRoute: typeof ApplicationsIdMessagesMessageIdRoute
@@ -427,6 +441,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/portal/'
       preLoaderRoute: typeof PortalIndexRouteImport
       parentRoute: typeof PortalRouteRoute
+    }
+    '/operational-webhooks/': {
+      id: '/operational-webhooks/'
+      path: '/operational-webhooks'
+      fullPath: '/operational-webhooks/'
+      preLoaderRoute: typeof OperationalWebhooksIndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/events/': {
       id: '/events/'
@@ -631,6 +652,7 @@ const rootRouteChildren: RootRouteChildren = {
   DestinationsIndexRoute: DestinationsIndexRoute,
   EventTypesIndexRoute: EventTypesIndexRoute,
   EventsIndexRoute: EventsIndexRoute,
+  OperationalWebhooksIndexRoute: OperationalWebhooksIndexRoute,
   SourcesIndexRoute: SourcesIndexRoute,
   ApplicationsIdEndpointsEndpointIdRoute:
     ApplicationsIdEndpointsEndpointIdRoute,
