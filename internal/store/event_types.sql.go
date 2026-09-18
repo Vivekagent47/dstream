@@ -144,15 +144,17 @@ func (q *Queries) SeedEventType(ctx context.Context, arg SeedEventTypeParams) er
 const updateEventType = `-- name: UpdateEventType :one
 UPDATE event_types
    SET description = COALESCE($1, description),
-       schema      = COALESCE($2::jsonb, schema),
-       archived    = COALESCE($3, archived),
+       schema      = CASE WHEN $2::bool
+                          THEN $3::jsonb ELSE schema END,
+       archived    = COALESCE($4, archived),
        updated_at  = now()
- WHERE org_id = $4 AND name = $5
+ WHERE org_id = $5 AND name = $6
  RETURNING id, org_id, name, description, schema, archived, created_at, updated_at
 `
 
 type UpdateEventTypeParams struct {
 	Description *string     `json:"description"`
+	SetSchema   bool        `json:"set_schema"`
 	Schema      []byte      `json:"schema"`
 	Archived    *bool       `json:"archived"`
 	OrgID       pgtype.UUID `json:"org_id"`
@@ -162,6 +164,7 @@ type UpdateEventTypeParams struct {
 func (q *Queries) UpdateEventType(ctx context.Context, arg UpdateEventTypeParams) (EventType, error) {
 	row := q.db.QueryRow(ctx, updateEventType,
 		arg.Description,
+		arg.SetSchema,
 		arg.Schema,
 		arg.Archived,
 		arg.OrgID,

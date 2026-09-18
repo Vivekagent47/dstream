@@ -152,6 +152,10 @@ func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		Channels:         body.Channels,
 	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			httpx.Err(w, http.StatusConflict, "endpoint uid already in use")
+			return
+		}
 		d.Log.Error("create endpoint", "err", err)
 		httpx.Err(w, http.StatusInternalServerError, "create endpoint")
 		return
@@ -404,6 +408,10 @@ func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			httpx.Err(w, http.StatusNotFound, "not found")
+			return
+		}
+		if isUniqueViolation(err) {
+			httpx.Err(w, http.StatusConflict, "endpoint uid already in use")
 			return
 		}
 		d.Log.Error("update endpoint", "err", err)

@@ -125,7 +125,9 @@ type Querier interface {
 	// connection_id/status filters as ListEvents; includes test events.
 	EventsHistogram(ctx context.Context, arg EventsHistogramParams) ([]EventsHistogramRow, error)
 	ExpireOldAttemptBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	ExpireOldInboundAttemptBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	ExpireOldMessagePayloads(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	ExpireOldRequestBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error)
 	// FOR UPDATE locks the row for the consume transaction so two concurrent
 	// verifies can't both see it active: the second blocks, then re-checks the
@@ -158,6 +160,8 @@ type Querier interface {
 	GetOrgMember(ctx context.Context, arg GetOrgMemberParams) (OrgMember, error)
 	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error)
 	GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error)
+	// Excludes a retention-expunged (NULL) body so it surfaces as ErrNoRows, taking
+	// the delivery worker's missing-body terminate path instead of sending empty.
 	GetRequestBody(ctx context.Context, requestID pgtype.UUID) ([]byte, error)
 	GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error)
 	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)

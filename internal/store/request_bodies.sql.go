@@ -11,10 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getRequestBody = `-- name: GetRequestBody :one
-SELECT body FROM request_bodies WHERE request_id = $1
+const expireOldRequestBodies = `-- name: ExpireOldRequestBodies :execrows
+UPDATE request_bodies SET body = NULL
+ WHERE stored_at < $1 AND body IS NOT NULL
 `
 
+func (q *Queries) ExpireOldRequestBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, expireOldRequestBodies, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getRequestBody = `-- name: GetRequestBody :one
+SELECT body FROM request_bodies WHERE request_id = $1 AND body IS NOT NULL
+`
+
+// Excludes a retention-expunged (NULL) body so it surfaces as ErrNoRows, taking
+// the delivery worker's missing-body terminate path instead of sending empty.
 func (q *Queries) GetRequestBody(ctx context.Context, requestID pgtype.UUID) ([]byte, error) {
 	row := q.db.QueryRow(ctx, getRequestBody, requestID)
 	var body []byte

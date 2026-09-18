@@ -1,4 +1,4 @@
-h1:o/UQt6N78ie8T1bq1++aF4S5F7vJ/IigV6pS4aNrYRg=
+h1:YRFyxAIwh+n7b6oR3u9mylwTwFfozkNMWc3HrfEzUCo=
 00000000000000_extensions.sql h1:hbbiUsP7yRuJwyp7q1wb/fOVkdzYbFY2w+F8UtF8OVE=
 20260616155338_init.sql h1:iQJwQHDsULVs1PYLToRZ1OuX61DKc7cYW9c4hAhGMIQ=
 20260621000000_audit_org_id_nullable.sql h1:YAeVbvWPn2+RBWdZI4fbrQrev8ZZ3zS5jghcig8rrmw=
@@ -21,3 +21,4 @@ h1:o/UQt6N78ie8T1bq1++aF4S5F7vJ/IigV6pS4aNrYRg=
 20260904132637_delivery_controls.sql h1:KaaQskZLRwVfKGePruGtEzu/IIcqnbhGUxpdNCKPrzw=
 20260916152504_operational_webhooks.sql h1:Mu+jZFNcCIC5l4iT4cvfFe35znZFWoYeOINsiqjdliI=
 20260917125144_payload_retention.sql h1:pDr3f5/t3oXpt+KawX7Fxvsorrgmc02BD1SQtU/9rPw=
+20260918035425_audit_fixes.sql h1:yaap/pm3eiNfAF2ksvwVC0V3eH75LENmESLZ3+ILY5I=

@@ -229,7 +229,7 @@ CREATE INDEX requests_body_hash_idx       ON requests (source_id, body_hash);
 -- touching requests rows (body_ref indirection).
 CREATE TABLE request_bodies (
     request_id  UUID PRIMARY KEY REFERENCES requests(id) ON DELETE CASCADE,
-    body        BYTEA NOT NULL,
+    body        BYTEA,                       -- nullable: payload retention nulls it past the window
     stored_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -391,6 +391,10 @@ CREATE TABLE message_deliveries (
 );
 CREATE INDEX message_deliveries_endpoint_idx ON message_deliveries (endpoint_id, created_at DESC);
 CREATE INDEX message_deliveries_message_idx ON message_deliveries (message_id);
+-- One delivery row per (message, endpoint): fan-out inserts distinct endpoints,
+-- replay/recover reuse the existing row. Enforces that + makes concurrent replay
+-- safe (the loser hits ON CONFLICT instead of inserting a duplicate → double send).
+CREATE UNIQUE INDEX message_deliveries_msg_ep_idx ON message_deliveries (message_id, endpoint_id);
 
 CREATE TABLE message_delivery_attempts (
   id               UUID PRIMARY KEY DEFAULT uuidv7(),

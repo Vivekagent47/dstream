@@ -12,7 +12,8 @@ SELECT * FROM event_types WHERE org_id = $1 AND name = $2;
 -- name: UpdateEventType :one
 UPDATE event_types
    SET description = COALESCE(sqlc.narg('description'), description),
-       schema      = COALESCE(sqlc.narg('schema')::jsonb, schema),
+       schema      = CASE WHEN sqlc.arg('set_schema')::bool
+                          THEN sqlc.narg('schema')::jsonb ELSE schema END,
        archived    = COALESCE(sqlc.narg('archived'), archived),
        updated_at  = now()
  WHERE org_id = sqlc.arg('org_id') AND name = sqlc.arg('name')

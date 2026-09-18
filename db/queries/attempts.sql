@@ -9,3 +9,7 @@ RETURNING *;
 SELECT * FROM attempts
 WHERE event_id = $1
 ORDER BY attempt_num ASC;
+
+-- name: ExpireOldInboundAttemptBodies :execrows
+UPDATE attempts SET response_body = NULL
+ WHERE attempted_at < sqlc.arg('cutoff') AND response_body IS NOT NULL;

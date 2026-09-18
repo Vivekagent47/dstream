@@ -15,8 +15,8 @@ const claimStuckMessageDeliveries = `-- name: ClaimStuckMessageDeliveries :many
 UPDATE message_deliveries SET updated_at=now()
  WHERE id IN (
    SELECT id FROM message_deliveries
-    WHERE status='queued' AND next_retry_at IS NULL AND created_at < now() - interval '15 minutes'
-    ORDER BY created_at
+    WHERE status='queued' AND next_retry_at IS NULL AND updated_at < now() - interval '15 minutes'
+    ORDER BY updated_at
     FOR UPDATE SKIP LOCKED
     LIMIT 100)
 RETURNING id, org_id
@@ -51,6 +51,7 @@ const createMessageDeliveriesBatch = `-- name: CreateMessageDeliveriesBatch :man
 INSERT INTO message_deliveries (message_id, endpoint_id, org_id, status)
 SELECT $1::uuid, ep_id, $2::uuid, 'queued'
   FROM unnest($3::uuid[]) AS ep_id
+ON CONFLICT (message_id, endpoint_id) DO NOTHING
 RETURNING id, endpoint_id
 `
 

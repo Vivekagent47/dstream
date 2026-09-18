@@ -57,6 +57,19 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (A
 	return i, err
 }
 
+const expireOldInboundAttemptBodies = `-- name: ExpireOldInboundAttemptBodies :execrows
+UPDATE attempts SET response_body = NULL
+ WHERE attempted_at < $1 AND response_body IS NOT NULL
+`
+
+func (q *Queries) ExpireOldInboundAttemptBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, expireOldInboundAttemptBodies, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listAttemptsByEvent = `-- name: ListAttemptsByEvent :many
 SELECT id, event_id, attempt_num, response_status, response_headers, response_body, duration_ms, queued_in_ms, error_message, attempted_at FROM attempts
 WHERE event_id = $1

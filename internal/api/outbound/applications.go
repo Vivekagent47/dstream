@@ -48,6 +48,10 @@ func (d Handlers) CreateApplication(w http.ResponseWriter, r *http.Request) {
 		Metadata: meta,
 	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			httpx.Err(w, http.StatusConflict, "application uid already in use")
+			return
+		}
 		d.Log.Error("create application", "err", err)
 		httpx.Err(w, http.StatusInternalServerError, "create application")
 		return
@@ -150,6 +154,10 @@ func (d Handlers) PatchApplication(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			httpx.Err(w, http.StatusNotFound, "not found")
+			return
+		}
+		if isUniqueViolation(err) {
+			httpx.Err(w, http.StatusConflict, "application uid already in use")
 			return
 		}
 		d.Log.Error("update application", "err", err)

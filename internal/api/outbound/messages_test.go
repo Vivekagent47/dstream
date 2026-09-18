@@ -213,3 +213,45 @@ func TestSendMessageFansOutWithChannels(t *testing.T) {
 		t.Fatalf("untagged fan-out: want {a}, got %v", got)
 	}
 }
+
+// An empty event_id is not an idempotency key: two publishes with "event_id":""
+// must each fan out, not collide into a silent idempotent drop.
+func TestSendMessageEmptyEventIDNotIdempotent(t *testing.T) {
+	q := store.New(testPool(t))
+	rdb := testRedis(t)
+	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
+	uid, oid := seedOrg(t, q)
+	r := newRouter(q, dq, sign(t), msgRoutes)
+
+	post := func(path string, body any) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, sessionReq(t, sign(t), http.MethodPost, path, uid, oid, body))
+		return rec
+	}
+	post("/api/event-types", map[string]any{"name": "invoice.paid"})
+	var app map[string]any
+	_ = json.Unmarshal(post("/api/applications", map[string]any{"name": "A"}).Body.Bytes(), &app)
+	base := "/api/applications/" + app["id"].(string)
+	post(base+"/endpoints", map[string]any{"url": "https://ex.test/c"}) // match-all
+
+	msg := map[string]any{"event_type": "invoice.paid", "payload": map[string]any{"x": 1}, "event_id": ""}
+	rec := post(base+"/messages", msg)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("first send: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := drainMessageTasks(t, dq); got != 1 {
+		t.Fatalf("first fan-out: got %d want 1", got)
+	}
+	rec = post(base+"/messages", msg)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("second send: got %d want 202 (not idempotent) body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["idempotent_replay"] == true {
+		t.Fatalf("empty event_id must not be idempotent, got %v", body)
+	}
+	if got := drainMessageTasks(t, dq); got != 1 {
+		t.Fatalf("second fan-out: got %d want 1 (re-delivered)", got)
+	}
+}

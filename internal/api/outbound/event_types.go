@@ -1,6 +1,7 @@
 package outbound
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,14 @@ import (
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
+
+// isJSONNull reports whether raw is the JSON literal null — what the client
+// sends to clear an optional field. It is not a schema document, so it must be
+// normalized away before compileSchema (which would reject "null") and stored
+// as SQL NULL, not the literal jsonb null.
+func isJSONNull(raw []byte) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
 
 func eventTypeView(e store.EventType) map[string]any {
 	var schema any
@@ -54,7 +63,7 @@ func (d Handlers) CreateEventType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var schema []byte
-	if len(body.Schema) > 0 {
+	if len(body.Schema) > 0 && !isJSONNull(body.Schema) {
 		schema = []byte(body.Schema)
 	}
 	if err := compileSchema(schema); err != nil {
@@ -133,17 +142,21 @@ func (d Handlers) PatchEventType(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	// schema: omitted → leave unchanged; JSON null → clear (SQL NULL);
+	// an object → validate and set. (json.RawMessage distinguishes omitted
+	// (nil) from an explicit null, so the client can clear a stored schema.)
 	var schema []byte
-	if len(body.Schema) > 0 {
+	setSchema := len(body.Schema) > 0
+	if setSchema && !isJSONNull(body.Schema) {
 		schema = []byte(body.Schema)
-	}
-	if err := compileSchema(schema); err != nil {
-		httpx.Err(w, http.StatusBadRequest, "schema is not a valid JSON Schema: "+err.Error())
-		return
+		if err := compileSchema(schema); err != nil {
+			httpx.Err(w, http.StatusBadRequest, "schema is not a valid JSON Schema: "+err.Error())
+			return
+		}
 	}
 	row, err := d.Queries.UpdateEventType(r.Context(), store.UpdateEventTypeParams{
 		OrgID: store.UUID(p.OrgID), Name: chi.URLParam(r, "name"),
-		Description: body.Description, Schema: schema, Archived: body.Archived,
+		Description: body.Description, SetSchema: setSchema, Schema: schema, Archived: body.Archived,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

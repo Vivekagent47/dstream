@@ -53,6 +53,11 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusBadRequest, "event_type required")
 		return
 	}
+	// An empty event_id is not an idempotency key — treat it as absent, else
+	// every publish with "event_id":"" collides on the first and silently drops.
+	if req.EventID != nil && *req.EventID == "" {
+		req.EventID = nil
+	}
 	if len(req.Payload) == 0 || !json.Valid(req.Payload) {
 		httpx.Err(w, http.StatusBadRequest, "payload must be a valid json value")
 		return
@@ -201,11 +206,28 @@ func (d Handlers) ReplayDelivery(w http.ResponseWriter, r *http.Request) {
 		created, cerr := d.Queries.CreateMessageDeliveriesBatch(r.Context(), store.CreateMessageDeliveriesBatchParams{
 			MessageID: store.UUID(msgID), OrgID: store.UUID(p.OrgID), EndpointIds: []pgtype.UUID{store.UUID(epID)},
 		})
-		if cerr != nil || len(created) != 1 {
+		if cerr != nil {
 			httpx.Err(w, http.StatusInternalServerError, "create delivery")
 			return
 		}
-		delID = created[0].ID
+		if len(created) == 1 {
+			delID = created[0].ID
+		} else {
+			// Lost a concurrent replay race — ON CONFLICT DO NOTHING inserted no
+			// row because the other request created it. Load + reset that row.
+			ex, gerr := d.Queries.GetDeliveryByMessageEndpoint(r.Context(), store.GetDeliveryByMessageEndpointParams{
+				MessageID: store.UUID(msgID), EndpointID: store.UUID(epID),
+			})
+			if gerr != nil {
+				httpx.Err(w, http.StatusInternalServerError, "load delivery")
+				return
+			}
+			delID = ex.ID
+			if err := d.Queries.ResetDeliveryForReplay(r.Context(), delID); err != nil {
+				httpx.Err(w, http.StatusInternalServerError, "reset delivery")
+				return
+			}
+		}
 	} else if err != nil {
 		httpx.Err(w, http.StatusInternalServerError, "load delivery")
 		return

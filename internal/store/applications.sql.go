@@ -62,7 +62,7 @@ func (q *Queries) CreateApplication(ctx context.Context, arg CreateApplicationPa
 }
 
 const deleteApplicationForOrg = `-- name: DeleteApplicationForOrg :one
-DELETE FROM applications WHERE id = $1 AND org_id = $2 RETURNING id
+DELETE FROM applications WHERE id = $1 AND org_id = $2 AND is_operational = FALSE RETURNING id
 `
 
 type DeleteApplicationForOrgParams struct {
@@ -225,7 +225,7 @@ UPDATE applications
        uid      = COALESCE($2, uid),
        metadata = COALESCE($3::jsonb, metadata),
        updated_at = now()
- WHERE id = $4 AND org_id = $5
+ WHERE id = $4 AND org_id = $5 AND is_operational = FALSE
  RETURNING id, org_id, uid, name, metadata, created_at, updated_at, portal_epoch, is_operational
 `
 
