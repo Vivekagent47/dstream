@@ -57,8 +57,9 @@ type Config struct {
 	// deliveries dead-letter back-to-back; a successful delivery resets the run.
 	EndpointMaxConsecutiveFailures int `mapstructure:"endpoint_max_consecutive_failures"`
 
-	// PayloadRetention nulls message payloads (and attempt response bodies)
-	// older than this window. 0 / unset = keep forever.
+	// PayloadRetention nulls stored payloads older than this window — outbound
+	// message payloads + delivery attempt bodies, and inbound request bodies +
+	// attempt bodies. 0 / unset = keep forever.
 	PayloadRetention time.Duration `mapstructure:"payload_retention"`
 
 	DB     DBConfig     `mapstructure:"db"`

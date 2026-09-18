@@ -48,6 +48,19 @@ func runMaintenance(ctx context.Context, q *store.Queries, log *slog.Logger, ret
 			} else if n > 0 {
 				log.Info("maintenance: expired attempt bodies", "count", n)
 			}
+			// Inbound: request payloads + inbound delivery attempt bodies (the bulk
+			// of ingress storage). An expunged request body reads back as NULL →
+			// GetRequestBody yields no row → the delivery worker's missing-body path.
+			if n, err := q.ExpireOldRequestBodies(ctx, cut); err != nil {
+				log.Error("maintenance: expire request bodies", "err", err)
+			} else if n > 0 {
+				log.Info("maintenance: expired request bodies", "count", n)
+			}
+			if n, err := q.ExpireOldInboundAttemptBodies(ctx, cut); err != nil {
+				log.Error("maintenance: expire inbound attempt bodies", "err", err)
+			} else if n > 0 {
+				log.Info("maintenance: expired inbound attempt bodies", "count", n)
+			}
 		}
 	}
 	sweep() // once at startup, then on the interval

@@ -96,7 +96,21 @@ func workerCmd() *cobra.Command {
 			// enough that a crashed worker's events are recovered promptly.
 			const leaseMs = int64(150000)
 
+			// workerDrainWindow bounds how long a SIGTERM waits for in-flight
+			// deliveries to finish before their context is cancelled. ~the delivery
+			// HTTP timeout, so a POST in progress at shutdown gets to complete.
+			const workerDrainWindow = 30 * time.Second
+
 			var wg sync.WaitGroup
+
+			// Deliveries run on procCtx, not the signal ctx: on SIGTERM the pool
+			// stops picking NEW work (loop + FairPick key off ctx) but an in-flight
+			// delivery HTTP call keeps its context for a bounded drain window rather
+			// than being cancelled mid-request — a cancelled POST the endpoint may
+			// already have processed becomes a duplicate on retry. procCancel fires
+			// after workerDrainWindow so a hung delivery can't block shutdown.
+			procCtx, procCancel := context.WithCancel(context.Background())
+			defer procCancel()
 
 			// Worker pool: each goroutine fair-picks one event round-robin across
 			// orgs and processes it. On an empty ring it blocks on WaitNotify so it
@@ -131,7 +145,7 @@ func workerCmd() *cobra.Command {
 										_ = dq.DeadLetter(context.Background(), raw)
 									}
 								}()
-								if err := emailHandler.Process(ctx, p, raw, dq); err != nil {
+								if err := emailHandler.Process(procCtx, p, raw, dq); err != nil {
 									log.Error("email process", "err", err)
 								}
 								return
@@ -147,12 +161,12 @@ func workerCmd() *cobra.Command {
 										}
 									}
 								}()
-								if err := outboundHandler.Process(ctx, p, raw, dq); err != nil {
+								if err := outboundHandler.Process(procCtx, p, raw, dq); err != nil {
 									log.Error("outbound process", "err", err)
 								}
 								return
 							}
-							dctx := otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(p.Trace))
+							dctx := otel.GetTextMapPropagator().Extract(procCtx, propagation.MapCarrier(p.Trace))
 							dctx, span := otel.Tracer("dstream/deliver").Start(dctx, "deliver")
 							defer span.End()
 							defer func() {
@@ -204,8 +218,13 @@ func workerCmd() *cobra.Command {
 			go func() { defer wg.Done(); runMaintenance(ctx, q, log, cfg.PayloadRetention) }()
 
 			<-ctx.Done()
-			log.Info("shutting down worker")
+			log.Info("shutting down worker; draining in-flight deliveries", "drain", workerDrainWindow)
+			// Pull loops already stopped (they key off ctx). Give in-flight
+			// deliveries a bounded window to finish on procCtx, then force-cancel so
+			// a hung one can't block shutdown forever.
+			go func() { time.Sleep(workerDrainWindow); procCancel() }()
 			wg.Wait()
+			procCancel()
 			return nil
 		},
 	}
