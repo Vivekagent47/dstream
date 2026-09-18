@@ -108,6 +108,15 @@ func clientIP(r *http.Request) string {
 // CORS preflight so a foreign origin can't drive it. Returns 204; the SPA calls
 // this via XHR from /auth/verify and drives navigation itself.
 func (d Handlers) VerifyMagicLink(w http.ResponseWriter, r *http.Request) {
+	// Require a JSON content type. This endpoint issues a session cookie and is
+	// CSRF-exempt (no session exists yet), so without this a cross-site
+	// text/plain form POST could plant the attacker's token → session fixation.
+	// A cross-origin fetch with application/json triggers a CORS preflight that
+	// fails here (no CORS), while a form can only send text/plain|form types.
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		httpx.Err(w, http.StatusUnsupportedMediaType, "content-type must be application/json")
+		return
+	}
 	var body struct {
 		Token string `json:"token"`
 	}
