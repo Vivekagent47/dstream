@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis_rate/v10"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
 
@@ -116,6 +118,12 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 
 	row, err := h.Queries.GetEventForDelivery(ctx, store.UUID(p.EventID))
 	if err != nil {
+		// Event deleted (org/connection cascade) while a copy was still leased or
+		// scheduled: Ack the dead member instead of looping the recoverer forever.
+		// Mirrors the webhook engine's ErrNoRows guard.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return h.Queue.Ack(ctx, raw)
+		}
 		return fmt.Errorf("load event: %w", err)
 	}
 
@@ -230,7 +238,12 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	}
 
 	// Mark in-flight.
-	_ = h.Queries.MarkEventInFlight(ctx, row.ID)
+	// On a DB error here, do NOT proceed: the send would use a stale attempt_count
+	// and CreateAttempt would collide on UNIQUE(event_id, attempt_num), silently
+	// dropping the attempt row. Leave the member leased for the recoverer.
+	if err := h.Queries.MarkEventInFlight(ctx, row.ID); err != nil {
+		return fmt.Errorf("mark in-flight: %w", err)
+	}
 
 	// failAttempt is the shared retry/terminate tail: bump the attempt and either
 	// dead-letter (budget exhausted) or re-schedule with the policy backoff, then
