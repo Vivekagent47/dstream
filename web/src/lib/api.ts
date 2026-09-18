@@ -334,7 +334,6 @@ export interface EndpointWithSecret extends Endpoint {
 export interface Message {
   id: string
   app_id: string
-  org_id: string
   event_type: string
   payload_hash: string
   event_id?: string | null

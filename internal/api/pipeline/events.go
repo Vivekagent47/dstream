@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
 	"strconv"
@@ -260,7 +259,7 @@ func (d Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
 		"request": map[string]any{
 			"method":       row.HTTPMethod,
 			"path":         row.HTTPPath,
-			"headers":      json.RawMessage(row.RequestHeaders),
+			"headers":      httpx.RawJSONOrEmpty(row.RequestHeaders),
 			"body":         body,
 			"body_size":    row.BodySize,
 			"content_type": row.ContentType,
@@ -346,8 +345,8 @@ func attemptViews(rows []store.Attempt) []map[string]any {
 			"id":               store.GoUUID(a.ID).String(),
 			"attempt_num":      a.AttemptNum,
 			"response_status":  a.ResponseStatus,
-			"response_headers": json.RawMessage(a.ResponseHeaders),
-			"response_body":    a.ResponseBody,
+			"response_headers": httpx.RawJSONOrEmpty(a.ResponseHeaders),
+			"response_body":    string(a.ResponseBody),
 			"duration_ms":      a.DurationMs,
 			"queued_in_ms":     a.QueuedInMs,
 			"error_message":    a.ErrorMessage,
