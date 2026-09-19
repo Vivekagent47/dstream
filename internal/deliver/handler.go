@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis_rate/v10"
@@ -17,9 +18,11 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/transform"
 )
 
 const (
@@ -73,6 +76,12 @@ type Handler struct {
 	// PerOrgMaxInflight caps concurrent in-flight deliveries per org across the
 	// whole worker fleet (0 = disabled). Set by the worker from config.
 	PerOrgMaxInflight int
+
+	// TransformTimeout / TransformMaxOutput bound the delivery-time JS transform
+	// sandbox. New() fills sane defaults when left zero; the worker overrides
+	// them from config.
+	TransformTimeout   time.Duration
+	TransformMaxOutput int
 }
 
 func New(
@@ -91,15 +100,38 @@ func New(
 		BodyStore: bs,
 		HTTP:      newSafeHTTPClient(DeliveryTimeout, allowPrivateDestinations),
 		Queue:     dq,
+		// Defaults so a zero value can't wedge transforms: a 0 timeout makes
+		// time.AfterFunc(0,…) interrupt every transform instantly, and a 0 output
+		// cap rejects every result. The worker overrides both from config.
+		TransformTimeout:   time.Second,
+		TransformMaxOutput: 5 << 20, // 5 MiB
 	}
+}
+
+// effTransformTimeout / effTransformMaxOutput default at point-of-use so a zero
+// OR negative config (the worker overwrites New()'s defaults from config) can't
+// wedge transforms: a <=0 timeout makes time.AfterFunc fire instantly and a <=0
+// output cap rejects every result. Mirrors webhook's eff-guards.
+func (h *Handler) effTransformTimeout() time.Duration {
+	if h.TransformTimeout <= 0 {
+		return time.Second
+	}
+	return h.TransformTimeout
+}
+
+func (h *Handler) effTransformMaxOutput() int {
+	if h.TransformMaxOutput <= 0 {
+		return 5 << 20
+	}
+	return h.TransformMaxOutput
 }
 
 // isTerminalStatus reports whether an event has already reached an end state and
 // must never be delivered again. Mirrors the terminal writes in events.sql
-// (MarkEventDelivered/Failed/Discarded) plus the schema's 'dead'.
+// (MarkEventDelivered/Failed/Discarded/Filtered) plus the schema's 'dead'.
 func isTerminalStatus(s string) bool {
 	switch s {
-	case "delivered", "failed", "discarded", "dead":
+	case "delivered", "failed", "discarded", "filtered", "dead":
 		return true
 	}
 	return false
@@ -291,6 +323,43 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	}
 
 	headers, _ := unmarshalHeaders(row.RequestHeaders)
+
+	// Delivery-time filter → transform. Order matters: the filter can drop the
+	// event before we spend a transform, and the transform then reshapes the
+	// bytes actually sent (body is replaced, so the request below reads them).
+	if (row.FilterExpr != nil && *row.FilterExpr != "") || (row.TransformJs != nil && *row.TransformJs != "") {
+		flat := flattenHeaders(headers)
+		if row.FilterExpr != nil && *row.FilterExpr != "" {
+			ok, ferr := filter.Match(*row.FilterExpr, false, body, flat, filter.Meta{})
+			if ferr != nil {
+				// Fail-open: an eval error must not silently swallow events.
+				h.Log.Warn("filter eval error; failing open", "event_id", p.EventID, "err", ferr)
+			} else if !ok {
+				if err := h.Queries.MarkEventFiltered(ctx, row.ID); err != nil {
+					return fmt.Errorf("mark filtered: %w", err)
+				}
+				return h.Queue.Ack(ctx, raw) // terminal 'filtered', no HTTP
+			}
+		}
+		if row.TransformJs != nil && *row.TransformJs != "" {
+			out, terr := transform.Apply(*row.TransformJs, body, flat, h.effTransformTimeout(), h.effTransformMaxOutput())
+			if terr != nil {
+				// Deterministic: a retry re-fails identically, so terminate now —
+				// same non-retryable sequence as the ValidateDestinationURL path
+				// above (record attempt + mark failed + dead-letter, no re-enqueue).
+				h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), fmt.Errorf("transform: %v", terr))
+				_ = h.Queries.MarkEventFailed(ctx, row.ID)
+				if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+					return err
+				}
+				metrics.Delivery(destID, connID, "failed")
+				metrics.Attempt(connID, "deadletter")
+				return nil
+			}
+			body = out
+		}
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", *row.DestinationUrl, bytes.NewReader(body))
 	if err != nil {
 		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), err)
@@ -501,6 +570,19 @@ func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
 		h.Log.Info("reaper: re-queued stuck events", "count", n)
 	}
 	return n, nil
+}
+
+// flattenHeaders collapses the multi-valued request headers into the single-
+// valued map the filter/transform sandboxes accept, joining repeated values
+// with "," (the HTTP field-combination rule) so no data is dropped.
+func flattenHeaders(h map[string][]string) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			out[k] = strings.Join(v, ",")
+		}
+	}
+	return out
 }
 
 func unmarshalHeaders(raw []byte) (map[string][]string, error) {

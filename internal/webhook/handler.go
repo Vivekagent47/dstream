@@ -19,8 +19,10 @@ import (
 
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/opevents"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/transform"
 )
 
 // Handler delivers one signed outbound webhook (a message_delivery) off the
@@ -40,6 +42,29 @@ type Handler struct {
 	PerOrgMaxInflight int
 	// Limiter enforces the per-endpoint rate_limit (nil disables the gate).
 	Limiter *redis_rate.Limiter
+	// TransformTimeout bounds each outbound transform's wall-clock run.
+	// Zero → effTransformTimeout's 1s default (Task 6 sets it from config).
+	TransformTimeout time.Duration
+	// TransformMaxOutput caps a transform's output in bytes.
+	// Zero → effTransformMaxOutput's 5 MiB default.
+	TransformMaxOutput int
+}
+
+// effTransformTimeout / effTransformMaxOutput default a zero-value Handler at
+// point-of-use — the struct has no constructor, and a literal 0 timeout would
+// make time.AfterFunc fire instantly.
+func (h Handler) effTransformTimeout() time.Duration {
+	if h.TransformTimeout > 0 {
+		return h.TransformTimeout
+	}
+	return time.Second
+}
+
+func (h Handler) effTransformMaxOutput() int {
+	if h.TransformMaxOutput > 0 {
+		return h.TransformMaxOutput
+	}
+	return 5 << 20
 }
 
 const inflightTTL = 150 * time.Second // 5x the delivery timeout, matches deliver's lease
@@ -91,7 +116,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 
 	// Terminal idempotency guard.
 	switch row.DeliveryStatus {
-	case "delivered", "dead", "disabled":
+	case "delivered", "dead", "disabled", "filtered":
 		return q.Ack(ctx, raw)
 	}
 	// Endpoint disabled after enqueue: skip, no attempt, no retry.
@@ -126,6 +151,34 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, 0, "message payload expunged (retention)")
 		_ = h.Queries.MarkDeliveryDead(ctx, store.UUID(did))
 		return q.DeadLetter(ctx, raw)
+	}
+
+	// Filter → transform, before signing. Placed ahead of the rate-limit/URL
+	// gates so a filtered event drops cleanly (no defer churn, no dead-letter,
+	// no auto-disable count) regardless of endpoint URL or rate state.
+	epHeaders, _ := unmarshalHeaderMap(row.EndpointHeaders) // nil on parse error is fine here
+	if row.EndpointFilterExpr != nil && *row.EndpointFilterExpr != "" {
+		ok, ferr := filter.Match(*row.EndpointFilterExpr, true, row.Payload, epHeaders,
+			filter.Meta{EventType: row.EventType, Channels: row.Channels})
+		if ferr != nil {
+			h.Log.Warn("filter eval error; failing open", "delivery_id", did, "err", ferr) // fail-open: deliver
+		} else if !ok {
+			_ = h.Queries.MarkDeliveryFiltered(ctx, store.UUID(did))
+			return q.Ack(ctx, raw) // terminal 'filtered': no HTTP, no sign
+		}
+	}
+	if row.EndpointTransformJs != nil && *row.EndpointTransformJs != "" {
+		out, terr := transform.Apply(*row.EndpointTransformJs, row.Payload, epHeaders, h.effTransformTimeout(), h.effTransformMaxOutput())
+		if terr != nil {
+			// Deterministic failure → terminal, no retry (same non-retryable
+			// sequence as the sign/url branches below).
+			h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, 0, "transform: "+terr.Error())
+			_ = h.Queries.MarkDeliveryDead(ctx, store.UUID(did))
+			return q.DeadLetter(ctx, raw)
+		}
+		// Reassign ONCE: signHeader and bytes.NewReader below both read
+		// row.Payload, so the signature covers the transformed bytes.
+		row.Payload = out
 	}
 
 	msgID := store.GoUUID(row.MessageID).String()

@@ -793,6 +793,111 @@ func TestDeliverExpungedPayloadDeadLetters(t *testing.T) {
 	}
 }
 
+// execRaw runs one SQL statement against the test DB, for seeding columns the
+// store's typed queries don't expose (filter_expr/transform_js, custom payload).
+// Mirrors nullMessagePayload's fresh-pool pattern.
+func execRaw(t *testing.T, sql string, args ...any) {
+	t.Helper()
+	pool, err := store.NewPool(context.Background(), os.Getenv("DSTREAM_TEST_DB_URL"), 2)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("exec %q: %v", sql, err)
+	}
+}
+
+// A non-matching endpoint filter drops the delivery: status 'filtered', no send.
+func TestOutboundFilteredNoMatch(t *testing.T) {
+	q := testPool(t)
+	dq, _, _ := testQueue(t)
+	ctx := context.Background()
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	secret, _ := GenerateSecret()
+	delID, msgID, orgID, epID, _ := seedDeliveryFull(t, q, srv.URL, secret)
+	// payload.amount=1 fails `payload.amount > 1000` → filtered (the field must
+	// exist, or a missing-key eval error would fail open and deliver).
+	execRaw(t, `UPDATE messages SET payload=$1 WHERE id=$2`, []byte(`{"amount":1}`), store.UUID(msgID))
+	execRaw(t, `UPDATE endpoints SET filter_expr='payload.amount > 1000' WHERE id=$1`, store.UUID(epID))
+	enqueueDelivery(t, dq, delID, orgID)
+
+	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true)}
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 0 {
+		t.Fatalf("filtered delivery must not send, got %d hits", hits)
+	}
+	row, err := q.GetMessageDeliveryForSend(ctx, store.UUID(delID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.DeliveryStatus != "filtered" {
+		t.Fatalf("want status filtered, got %q", row.DeliveryStatus)
+	}
+}
+
+// THE load-bearing test: the transform mutates the payload BEFORE signing, so
+// the webhook-signature the receiver gets verifies over the MUTATED bytes.
+func TestOutboundTransformSignedAfterMutation(t *testing.T) {
+	q := testPool(t)
+	dq, _, _ := testQueue(t)
+	ctx := context.Background()
+	var gotSig, gotID, gotTs string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSig = r.Header.Get("webhook-signature")
+		gotID = r.Header.Get("webhook-id")
+		gotTs = r.Header.Get("webhook-timestamp")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	secret, _ := GenerateSecret()
+	delID, msgID, orgID, epID, _ := seedDeliveryFull(t, q, srv.URL, secret)
+	// reshape: add {"tagged":true} to the object.
+	js := `function transform(payload, headers) { payload.tagged = true; return payload; }`
+	execRaw(t, `UPDATE endpoints SET transform_js=$1 WHERE id=$2`, js, store.UUID(epID))
+	enqueueDelivery(t, dq, delID, orgID)
+
+	h := Handler{Log: discardLog(), Queries: q, HTTP: deliver.NewSafeHTTPClient(10*time.Second, true)}
+	raw, p, ok, _ := dq.FairPick(ctx, 10000)
+	if !ok {
+		t.Fatal("fairpick")
+	}
+	if err := h.Process(ctx, p, raw, dq); err != nil {
+		t.Fatal(err)
+	}
+	if gotID != msgID.String() {
+		t.Fatalf("webhook-id: got %q want %q", gotID, msgID)
+	}
+	// (a) captured body is the MUTATED JSON, not the original {"x":1}.
+	var body map[string]any
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("body not JSON: %v (%s)", err, gotBody)
+	}
+	if body["tagged"] != true {
+		t.Fatalf("delivered body was not transformed: %s", gotBody)
+	}
+	// (b) the signature verifies over the transformed bytes.
+	var ts int64
+	_, _ = fmtSscan(gotTs, &ts)
+	want, _ := Sign(secret, msgID.String(), ts, gotBody)
+	if gotSig != want {
+		t.Fatalf("signature not over transformed bytes: got %q want %q", gotSig, want)
+	}
+}
+
 func TestOutboundInflightDefers(t *testing.T) {
 	q := testPool(t)
 	dq, rdb, prefix := testQueue(t)
