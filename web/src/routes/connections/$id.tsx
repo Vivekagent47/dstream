@@ -14,6 +14,7 @@ import { api, qk, type Connection, type EventsPage as EventsPageData } from '#/l
 import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
+import { PipelineFields } from '#/components/PipelineFields'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
 import { Button } from '#/components/ui/button'
@@ -81,6 +82,7 @@ const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant'
   failed: 'destructive',
   paused: 'warning',
   dead: 'destructive',
+  filtered: 'outline',
 }
 
 // "30000 ms" reads worse than "30s" in policy summaries.
@@ -343,6 +345,7 @@ function EventsTab({ connectionId }: { connectionId: string }) {
             <SelectItem value="in_flight">In flight</SelectItem>
             <SelectItem value="delivered">Delivered</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
+            <SelectItem value="filtered">Filtered</SelectItem>
             <SelectItem value="paused">Paused</SelectItem>
             <SelectItem value="dead">Dead</SelectItem>
           </SelectContent>
@@ -460,6 +463,8 @@ function SettingsTab({ conn }: { conn: Connection }) {
   const [capMs, setCapMs] = useState(String(conn.retry_cap_ms))
   const [jitter, setJitter] = useState(String(conn.retry_jitter_pct))
   const [schedule, setSchedule] = useState((conn.custom_retry_schedule ?? []).join(', '))
+  const [filterExpr, setFilterExpr] = useState(conn.filter_expr ?? '')
+  const [transformJs, setTransformJs] = useState(conn.transform_js ?? '')
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   // Seed the form once per connection (on mount / navigation to another id),
@@ -479,6 +484,8 @@ function SettingsTab({ conn }: { conn: Connection }) {
     setCapMs(String(conn.retry_cap_ms))
     setJitter(String(conn.retry_jitter_pct))
     setSchedule((conn.custom_retry_schedule ?? []).join(', '))
+    setFilterExpr(conn.filter_expr ?? '')
+    setTransformJs(conn.transform_js ?? '')
   }, [conn])
 
   const save = useMutation({
@@ -490,6 +497,9 @@ function SettingsTab({ conn }: { conn: Connection }) {
         retry_base_ms: Number(baseMs),
         retry_cap_ms: Number(capMs),
         retry_jitter_pct: Number(jitter),
+        // Always sent so clearing works: empty string clears on the backend.
+        filter_expr: filterExpr,
+        transform_js: transformJs,
         ...(strategy === 'custom'
           ? { custom_retry_schedule: parseSchedule(schedule) ?? undefined }
           : {}),
@@ -546,6 +556,8 @@ function SettingsTab({ conn }: { conn: Connection }) {
     Number(baseMs) !== conn.retry_base_ms ||
     Number(capMs) !== conn.retry_cap_ms ||
     Number(jitter) !== conn.retry_jitter_pct ||
+    filterExpr !== (conn.filter_expr ?? '') ||
+    transformJs !== (conn.transform_js ?? '') ||
     (strategy === 'custom' &&
       schedule !== (conn.custom_retry_schedule ?? []).join(', '))
 
@@ -649,6 +661,23 @@ function SettingsTab({ conn }: { conn: Connection }) {
             />
           </div>
         )}
+        <div className="space-y-4 border-t border-border pt-4">
+          <div>
+            <h3 className="text-sm font-semibold">Filter &amp; transform</h3>
+            <p className="text-sm text-muted-foreground">
+              Optional CEL filter and JS transform applied to each event at delivery.
+            </p>
+          </div>
+          <PipelineFields
+            filterExpr={filterExpr}
+            setFilterExpr={setFilterExpr}
+            transformJs={transformJs}
+            setTransformJs={setTransformJs}
+            outbound={false}
+            filterPreview={api.filterPreview}
+            transformPreview={api.transformPreview}
+          />
+        </div>
         <Button size="sm" onClick={onSave} disabled={!dirty || save.isPending}>
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>

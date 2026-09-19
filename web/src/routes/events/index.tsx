@@ -59,7 +59,7 @@ const RANGES = [
 ] as const
 type RangeKey = (typeof RANGES)[number]['key']
 
-const STATUSES = ['queued', 'in_flight', 'delivered', 'failed', 'paused', 'dead', 'discarded'] as const
+const STATUSES = ['queued', 'in_flight', 'delivered', 'failed', 'filtered', 'paused', 'dead', 'discarded'] as const
 
 const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant']> = {
   delivered: 'success',
@@ -69,6 +69,7 @@ const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant'
   paused: 'warning',
   dead: 'destructive',
   discarded: 'warning',
+  filtered: 'outline',
 }
 
 const connectionsQuery = queryOptions({

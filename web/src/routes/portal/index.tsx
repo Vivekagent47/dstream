@@ -6,6 +6,7 @@ import { MoreHorizontal, Plus, Trash2 } from 'lucide-react'
 
 import type { Endpoint } from '#/lib/api'
 import { portalApi, portalQk } from '#/lib/portal-api'
+import { PipelineFields } from '#/components/PipelineFields'
 import { RevealSecretDialog } from '#/components/outbound/RevealSecretDialog'
 import { Badge } from '#/components/ui/badge'
 import { Button } from '#/components/ui/button'
@@ -519,6 +520,8 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
   const [headers, setHeaders] = useState<HeaderRow[]>(
     Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })),
   )
+  const [filterExpr, setFilterExpr] = useState(ep.filter_expr ?? '')
+  const [transformJs, setTransformJs] = useState(ep.transform_js ?? '')
 
   // Reseed if the dialog is reused for a different endpoint.
   const seededId = useRef<string | null>(null)
@@ -531,6 +534,8 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
     setRateLimit(ep.rate_limit ? String(ep.rate_limit) : '')
     setChannels(ep.channels?.join(', ') ?? '')
     setHeaders(Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })))
+    setFilterExpr(ep.filter_expr ?? '')
+    setTransformJs(ep.transform_js ?? '')
   }, [ep])
 
   // Always-include (not conditional-spread like the create dialog): PATCH omit
@@ -549,6 +554,9 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
         rate_limit: rateLimitNum,
         channels: channelsArr,
         headers: headersObj,
+        // Always sent so clearing works: empty string clears on the backend.
+        filter_expr: filterExpr,
+        transform_js: transformJs,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: portalQk.endpoints })
@@ -573,7 +581,9 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
     !sameFilters(filters, ep.filter_event_types) ||
     rateLimitNum !== (ep.rate_limit ?? 0) ||
     !sameFilters(new Set(channelsArr), ep.channels) ||
-    !sameHeaders(headersObj, ep.headers)
+    !sameHeaders(headersObj, ep.headers) ||
+    filterExpr !== (ep.filter_expr ?? '') ||
+    transformJs !== (ep.transform_js ?? '')
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -621,6 +631,15 @@ function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onC
             setChannels={setChannels}
             headers={headers}
             setHeaders={setHeaders}
+          />
+          <PipelineFields
+            filterExpr={filterExpr}
+            setFilterExpr={setFilterExpr}
+            transformJs={transformJs}
+            setTransformJs={setTransformJs}
+            outbound={true}
+            filterPreview={portalApi.filterPreview}
+            transformPreview={portalApi.transformPreview}
           />
         </div>
         <DialogFooter>

@@ -47,6 +47,10 @@ export interface Connection {
   retry_cap_ms: number
   retry_jitter_pct: number
   custom_retry_schedule: number[] | null
+  // CEL filter + JS transform applied at delivery. null when unset. Empty
+  // string on write clears them.
+  filter_expr?: string | null
+  transform_js?: string | null
   created_at: string
 }
 
@@ -322,6 +326,10 @@ export interface Endpoint {
   headers: Record<string, string>
   rate_limit: number | null
   channels: string[] | null
+  // CEL filter + JS transform applied at delivery. null when unset. Empty
+  // string on write clears them.
+  filter_expr?: string | null
+  transform_js?: string | null
   disabled: boolean
   disabled_at?: string | null
   consecutive_failures: number
@@ -571,6 +579,8 @@ export const api = {
       headers?: Record<string, string>
       rate_limit?: number
       channels?: string[]
+      filter_expr?: string | null
+      transform_js?: string | null
     },
   ) => http.patch<Endpoint>(`/api/applications/${appId}/endpoints/${id}`, input).then((r) => r.data),
   deleteEndpoint: (appId: string, id: string) =>
@@ -630,6 +640,12 @@ export const api = {
         `/api/applications/${appId}/messages/${msgId}/endpoints/${endpointId}/replay`,
       )
       .then((r) => r.data),
+
+  // Filter/transform dev-time preview (stateless authed aids).
+  filterPreview: (input: { expr: string; payload: unknown; outbound?: boolean }) =>
+    http.post<{ match: boolean }>('/api/filter-preview', input).then((r) => r.data),
+  transformPreview: (input: { js: string; payload: unknown }) =>
+    http.post<{ result: unknown }>('/api/transform-preview', input).then((r) => r.data),
 
   // App Portal — mint a scoped, expiring link the application owner uses to
   // manage their own endpoints; revoke invalidates all outstanding links.

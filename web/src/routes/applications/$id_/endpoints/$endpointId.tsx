@@ -17,6 +17,7 @@ import {
 } from '#/lib/api'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
+import { PipelineFields } from '#/components/PipelineFields'
 import { PageHeader } from '#/components/TopBar'
 import { RevealSecretDialog } from '#/components/outbound/RevealSecretDialog'
 import { Badge } from '#/components/ui/badge'
@@ -612,6 +613,8 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
   const [headers, setHeaders] = useState<{ k: string; v: string }[]>(
     Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })),
   )
+  const [filterExpr, setFilterExpr] = useState(ep.filter_expr ?? '')
+  const [transformJs, setTransformJs] = useState(ep.transform_js ?? '')
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const active = (eventTypes ?? []).filter((et) => !et.archived)
@@ -630,6 +633,8 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
     setRateLimit(ep.rate_limit ? String(ep.rate_limit) : '')
     setChannels(ep.channels?.join(', ') ?? '')
     setHeaders(Object.entries(ep.headers ?? {}).map(([k, v]) => ({ k, v })))
+    setFilterExpr(ep.filter_expr ?? '')
+    setTransformJs(ep.transform_js ?? '')
   }, [ep])
 
   // Always-include (not conditional-spread like the create dialog): PATCH omit
@@ -651,6 +656,9 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
         rate_limit: rateLimitNum,
         channels: channelsArr,
         headers: headersObj,
+        // Always sent so clearing works: empty string clears on the backend.
+        filter_expr: filterExpr,
+        transform_js: transformJs,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.endpoint(appId, ep.id) })
@@ -689,7 +697,9 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
     !sameFilters(filters, ep.filter_event_types) ||
     rateLimitNum !== (ep.rate_limit ?? 0) ||
     !sameFilters(new Set(channelsArr), ep.channels) ||
-    !sameHeaders(headersObj, ep.headers)
+    !sameHeaders(headersObj, ep.headers) ||
+    filterExpr !== (ep.filter_expr ?? '') ||
+    transformJs !== (ep.transform_js ?? '')
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -824,6 +834,23 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
           />
           <span>Disabled</span>
         </label>
+        <div className="space-y-4 border-t border-border pt-4">
+          <div>
+            <h3 className="text-sm font-semibold">Filter &amp; transform</h3>
+            <p className="text-sm text-muted-foreground">
+              Optional CEL filter and JS transform applied to each message at delivery.
+            </p>
+          </div>
+          <PipelineFields
+            filterExpr={filterExpr}
+            setFilterExpr={setFilterExpr}
+            transformJs={transformJs}
+            setTransformJs={setTransformJs}
+            outbound={true}
+            filterPreview={api.filterPreview}
+            transformPreview={api.transformPreview}
+          />
+        </div>
         <Button size="sm" onClick={() => save.mutate()} disabled={!dirty || save.isPending || !url.trim()}>
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>

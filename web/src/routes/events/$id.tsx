@@ -26,6 +26,7 @@ const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant'
   paused: 'warning',
   dead: 'destructive',
   discarded: 'warning',
+  filtered: 'outline',
 }
 
 const eventQuery = (id: string) =>

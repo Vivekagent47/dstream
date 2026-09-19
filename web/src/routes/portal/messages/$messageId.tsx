@@ -26,6 +26,7 @@ const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant'
   in_flight: 'info',
   disabled: 'secondary',
   dead: 'destructive',
+  filtered: 'outline',
 }
 
 function statusBadge(status: number | null | undefined) {

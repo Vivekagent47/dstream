@@ -84,6 +84,8 @@ export const portalApi = {
       headers?: Record<string, string>
       rate_limit?: number
       channels?: string[]
+      filter_expr?: string | null
+      transform_js?: string | null
     },
   ) => http.patch<Endpoint>(`/api/portal/endpoints/${id}`, input).then((r) => r.data),
   deleteEndpoint: (id: string) =>
@@ -125,4 +127,10 @@ export const portalApi = {
       .then((r) => r.data),
 
   listEventTypes: () => http.get<EventType[]>('/api/portal/event-types').then((r) => r.data),
+
+  // Filter/transform dev-time preview (portal-scoped).
+  filterPreview: (input: { expr: string; payload: unknown; outbound?: boolean }) =>
+    http.post<{ match: boolean }>('/api/portal/filter-preview', input).then((r) => r.data),
+  transformPreview: (input: { js: string; payload: unknown }) =>
+    http.post<{ result: unknown }>('/api/portal/transform-preview', input).then((r) => r.data),
 }
