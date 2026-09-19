@@ -1,6 +1,6 @@
 -- name: CreateConnection :one
-INSERT INTO connections (source_id, destination_id, enabled, name)
-VALUES ($1, $2, $3, $4)
+INSERT INTO connections (source_id, destination_id, enabled, name, filter_expr, transform_js)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetConnectionByID :one
@@ -46,6 +46,8 @@ UPDATE connections AS c
        retry_cap_ms          = COALESCE(sqlc.narg('retry_cap_ms'),          c.retry_cap_ms),
        retry_jitter_pct      = COALESCE(sqlc.narg('retry_jitter_pct'),      c.retry_jitter_pct),
        custom_retry_schedule = COALESCE(sqlc.narg('custom_retry_schedule'), c.custom_retry_schedule),
+       filter_expr           = CASE WHEN sqlc.arg('set_filter_expr')::bool  THEN sqlc.narg('filter_expr')::text  ELSE c.filter_expr  END,
+       transform_js          = CASE WHEN sqlc.arg('set_transform_js')::bool THEN sqlc.narg('transform_js')::text ELSE c.transform_js END,
        updated_at            = now()
   FROM sources s
  WHERE c.id = sqlc.arg('id')

@@ -28,6 +28,8 @@ SELECT e.id              AS id,
        c.retry_cap_ms    AS retry_cap_ms,
        c.retry_jitter_pct AS retry_jitter_pct,
        c.custom_retry_schedule AS custom_retry_schedule,
+       c.filter_expr     AS filter_expr,
+       c.transform_js    AS transform_js,
        d.type            AS destination_type,
        d.url             AS destination_url,
        d.auth_config     AS destination_auth_config,
@@ -70,6 +72,11 @@ SET status        = 'discarded',
     next_retry_at = NULL,
     updated_at    = now()
 WHERE id = $1;
+
+-- name: MarkEventFiltered :exec
+-- Terminal state for an event dropped by its connection's filter expression.
+-- Never delivered, never retried; recorded so the dashboard can show the drop.
+UPDATE events SET status = 'filtered', updated_at = now() WHERE id = $1;
 
 -- name: MarkEventInFlight :exec
 -- The single attempt_count incrementer. recordAttempt derives attempt_num from

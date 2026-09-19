@@ -608,6 +608,8 @@ SELECT e.id              AS id,
        c.retry_cap_ms    AS retry_cap_ms,
        c.retry_jitter_pct AS retry_jitter_pct,
        c.custom_retry_schedule AS custom_retry_schedule,
+       c.filter_expr     AS filter_expr,
+       c.transform_js    AS transform_js,
        d.type            AS destination_type,
        d.url             AS destination_url,
        d.auth_config     AS destination_auth_config,
@@ -639,6 +641,8 @@ type GetEventForDeliveryRow struct {
 	RetryCapMs                int32              `json:"retry_cap_ms"`
 	RetryJitterPct            int32              `json:"retry_jitter_pct"`
 	CustomRetrySchedule       []byte             `json:"custom_retry_schedule"`
+	FilterExpr                *string            `json:"filter_expr"`
+	TransformJs               *string            `json:"transform_js"`
 	DestinationType           string             `json:"destination_type"`
 	DestinationUrl            *string            `json:"destination_url"`
 	DestinationAuthConfig     []byte             `json:"destination_auth_config"`
@@ -668,6 +672,8 @@ func (q *Queries) GetEventForDelivery(ctx context.Context, id pgtype.UUID) (GetE
 		&i.RetryCapMs,
 		&i.RetryJitterPct,
 		&i.CustomRetrySchedule,
+		&i.FilterExpr,
+		&i.TransformJs,
 		&i.DestinationType,
 		&i.DestinationUrl,
 		&i.DestinationAuthConfig,
@@ -879,6 +885,17 @@ WHERE id = $1
 
 func (q *Queries) MarkEventFailed(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markEventFailed, id)
+	return err
+}
+
+const markEventFiltered = `-- name: MarkEventFiltered :exec
+UPDATE events SET status = 'filtered', updated_at = now() WHERE id = $1
+`
+
+// Terminal state for an event dropped by its connection's filter expression.
+// Never delivered, never retried; recorded so the dashboard can show the drop.
+func (q *Queries) MarkEventFiltered(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markEventFiltered, id)
 	return err
 }
 

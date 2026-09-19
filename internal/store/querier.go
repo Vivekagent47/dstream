@@ -218,6 +218,8 @@ type Querier interface {
 	MarkDeliveryDead(ctx context.Context, id pgtype.UUID) error
 	MarkDeliveryDelivered(ctx context.Context, id pgtype.UUID) error
 	MarkDeliveryDisabled(ctx context.Context, id pgtype.UUID) error
+	// Terminal state for a delivery dropped by its endpoint's filter expression.
+	MarkDeliveryFiltered(ctx context.Context, id pgtype.UUID) error
 	MarkDeliveryForRetry(ctx context.Context, arg MarkDeliveryForRetryParams) error
 	MarkDeliveryInFlight(ctx context.Context, id pgtype.UUID) error
 	// attempt_count is bumped once per delivery cycle by MarkEventInFlight; the
@@ -229,6 +231,9 @@ type Querier interface {
 	// until a user manually retries (ResetEventForManualRetry re-queues it).
 	MarkEventDiscarded(ctx context.Context, id pgtype.UUID) error
 	MarkEventFailed(ctx context.Context, id pgtype.UUID) error
+	// Terminal state for an event dropped by its connection's filter expression.
+	// Never delivered, never retried; recorded so the dashboard can show the drop.
+	MarkEventFiltered(ctx context.Context, id pgtype.UUID) error
 	// The single attempt_count incrementer. recordAttempt derives attempt_num from
 	// the pre-increment count, so this keeps attempt_num monotonic and gap-free.
 	MarkEventInFlight(ctx context.Context, id pgtype.UUID) error

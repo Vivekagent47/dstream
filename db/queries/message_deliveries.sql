@@ -16,12 +16,14 @@ SELECT d.id AS delivery_id, d.endpoint_id, e.url AS endpoint_url,
 -- name: GetMessageDeliveryForSend :one
 SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_id,
        d.endpoint_id AS endpoint_id,
-       m.id AS message_id, m.event_type, m.payload, m.created_at AS message_created_at,
+       m.id AS message_id, m.event_type, m.payload, m.channels AS channels, m.created_at AS message_created_at,
        e.url AS endpoint_url, e.secret AS endpoint_secret, e.disabled AS endpoint_disabled,
        e.prev_secret            AS endpoint_secret_prev,
        e.prev_secret_expires_at AS endpoint_prev_expires_at,
        e.headers    AS endpoint_headers,
        e.rate_limit AS endpoint_rate_limit,
+       e.filter_expr  AS endpoint_filter_expr,
+       e.transform_js AS endpoint_transform_js,
        a.is_operational AS endpoint_app_is_operational
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
@@ -42,6 +44,10 @@ UPDATE message_deliveries SET status='dead', updated_at=now() WHERE id=$1;
 
 -- name: MarkDeliveryDisabled :exec
 UPDATE message_deliveries SET status='disabled', updated_at=now() WHERE id=$1;
+
+-- name: MarkDeliveryFiltered :exec
+-- Terminal state for a delivery dropped by its endpoint's filter expression.
+UPDATE message_deliveries SET status='filtered', updated_at=now() WHERE id=$1;
 
 -- name: MarkDeliveryForRetry :exec
 UPDATE message_deliveries SET status='queued', next_retry_at=$2, updated_at=now() WHERE id=$1;

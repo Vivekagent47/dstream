@@ -1,6 +1,6 @@
 -- name: CreateEndpoint :one
-INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types, headers, rate_limit, channels)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types, headers, rate_limit, channels, filter_expr, transform_js)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: ListEndpointsByApp :many
@@ -27,6 +27,10 @@ UPDATE endpoints
        rate_limit = COALESCE(sqlc.narg('rate_limit'), rate_limit),
        channels   = CASE WHEN sqlc.arg('set_channels')::bool
                          THEN sqlc.narg('channels')::text[] ELSE channels END,
+       filter_expr  = CASE WHEN sqlc.arg('set_filter_expr')::bool
+                           THEN sqlc.narg('filter_expr')::text ELSE filter_expr END,
+       transform_js = CASE WHEN sqlc.arg('set_transform_js')::bool
+                           THEN sqlc.narg('transform_js')::text ELSE transform_js END,
        updated_at  = now()
  WHERE id = sqlc.arg('id') AND app_id = sqlc.arg('app_id')
  RETURNING *;

@@ -84,6 +84,8 @@ type Connection struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	Name                *string            `json:"name"`
+	FilterExpr          *string            `json:"filter_expr"`
+	TransformJs         *string            `json:"transform_js"`
 }
 
 type Destination struct {
@@ -120,6 +122,8 @@ type Endpoint struct {
 	Headers             []byte             `json:"headers"`
 	RateLimit           *int32             `json:"rate_limit"`
 	Channels            []string           `json:"channels"`
+	FilterExpr          *string            `json:"filter_expr"`
+	TransformJs         *string            `json:"transform_js"`
 }
 
 type Event struct {

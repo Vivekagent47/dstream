@@ -193,6 +193,8 @@ CREATE TABLE connections (
     retry_cap_ms            INTEGER NOT NULL DEFAULT 3600000, -- upper bound on any computed delay (1h)
     retry_jitter_pct        INTEGER NOT NULL DEFAULT 20,      -- ± randomization applied to each delay, avoids thundering-herd retries
     custom_retry_schedule   JSONB,                            -- for strategy='custom': JSON array of delays in ms, one per attempt
+    filter_expr             TEXT,                             -- CEL expression; NULL = no filter (deliver all). Eval error = fail-open (deliver + log)
+    transform_js            TEXT,                             -- JS body transform; NULL = passthrough. Eval error = terminal fail (no retry)
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (source_id, destination_id)
@@ -242,7 +244,7 @@ CREATE TABLE events (
     connection_id   UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
     org_id          UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,  -- denormalized from the connection so org-scoped listing needs no joins
     status          TEXT NOT NULL DEFAULT 'queued'  -- queued: awaiting worker; in_flight: being delivered; delivered: 2xx; failed: retries exhausted; paused: CLI offline; dead: retries exhausted; discarded: CLI tunnel deadline passed with no listener (manual retry only)
-                      CHECK (status IN ('queued', 'in_flight', 'delivered', 'failed', 'paused', 'dead', 'discarded')),
+                      CHECK (status IN ('queued', 'in_flight', 'delivered', 'failed', 'paused', 'dead', 'discarded', 'filtered')),
     attempt_count   INTEGER NOT NULL DEFAULT 0,     -- deliveries tried so far; compared against connection.max_retries
     last_attempt_at TIMESTAMPTZ,
     next_retry_at   TIMESTAMPTZ,                    -- when the next retry is scheduled; NULL once terminal
@@ -351,6 +353,8 @@ CREATE TABLE endpoints (
   headers            JSONB NOT NULL DEFAULT '{}',   -- static headers sent on every delivery
   rate_limit         INTEGER,                        -- deliveries/sec; NULL/0 = unlimited
   channels           TEXT[],                         -- subscribed channels; NULL/empty = all
+  filter_expr        TEXT,                            -- CEL expression; NULL = no filter (deliver all). Eval error = fail-open (deliver + log)
+  transform_js       TEXT,                            -- JS body transform; NULL = passthrough. Eval error = terminal fail (no retry)
   disabled           BOOLEAN NOT NULL DEFAULT FALSE,
   prev_secret            TEXT,            -- previous secret kept live during rotation grace window
   prev_secret_expires_at TIMESTAMPTZ,    -- when prev_secret stops being accepted; NULL = no rotation pending
@@ -382,7 +386,7 @@ CREATE TABLE message_deliveries (
   endpoint_id   UUID NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
   org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   status        TEXT NOT NULL DEFAULT 'queued'
-                CHECK (status IN ('queued','in_flight','delivered','dead','disabled')),
+                CHECK (status IN ('queued','in_flight','delivered','dead','disabled','filtered')),
   attempt_count INTEGER NOT NULL DEFAULT 0,
   next_retry_at TIMESTAMPTZ,
   last_attempt_at TIMESTAMPTZ,

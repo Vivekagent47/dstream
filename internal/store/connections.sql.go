@@ -12,9 +12,9 @@ import (
 )
 
 const createConnection = `-- name: CreateConnection :one
-INSERT INTO connections (source_id, destination_id, enabled, name)
-VALUES ($1, $2, $3, $4)
-RETURNING id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name
+INSERT INTO connections (source_id, destination_id, enabled, name, filter_expr, transform_js)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name, filter_expr, transform_js
 `
 
 type CreateConnectionParams struct {
@@ -22,6 +22,8 @@ type CreateConnectionParams struct {
 	DestinationID pgtype.UUID `json:"destination_id"`
 	Enabled       bool        `json:"enabled"`
 	Name          *string     `json:"name"`
+	FilterExpr    *string     `json:"filter_expr"`
+	TransformJs   *string     `json:"transform_js"`
 }
 
 func (q *Queries) CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error) {
@@ -30,6 +32,8 @@ func (q *Queries) CreateConnection(ctx context.Context, arg CreateConnectionPara
 		arg.DestinationID,
 		arg.Enabled,
 		arg.Name,
+		arg.FilterExpr,
+		arg.TransformJs,
 	)
 	var i Connection
 	err := row.Scan(
@@ -46,6 +50,8 @@ func (q *Queries) CreateConnection(ctx context.Context, arg CreateConnectionPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Name,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
@@ -67,7 +73,7 @@ func (q *Queries) DeleteConnectionForOrg(ctx context.Context, arg DeleteConnecti
 }
 
 const getConnectionByID = `-- name: GetConnectionByID :one
-SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name FROM connections WHERE id = $1
+SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name, filter_expr, transform_js FROM connections WHERE id = $1
 `
 
 func (q *Queries) GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error) {
@@ -87,12 +93,14 @@ func (q *Queries) GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connec
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Name,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
 
 const getConnectionForOrg = `-- name: GetConnectionForOrg :one
-SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name
+SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name, c.filter_expr, c.transform_js
   FROM connections c
   JOIN sources s ON s.id = c.source_id
  WHERE c.id = $1
@@ -121,12 +129,14 @@ func (q *Queries) GetConnectionForOrg(ctx context.Context, arg GetConnectionForO
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Name,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
 
 const listConnectionsByOrg = `-- name: ListConnectionsByOrg :many
-SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name
+SELECT c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name, c.filter_expr, c.transform_js
   FROM connections c
   JOIN sources s ON s.id = c.source_id
  WHERE s.org_id = $1
@@ -161,6 +171,8 @@ func (q *Queries) ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) (
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Name,
+			&i.FilterExpr,
+			&i.TransformJs,
 		); err != nil {
 			return nil, err
 		}
@@ -173,7 +185,7 @@ func (q *Queries) ListConnectionsByOrg(ctx context.Context, orgID pgtype.UUID) (
 }
 
 const listEnabledConnectionsBySource = `-- name: ListEnabledConnectionsBySource :many
-SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name FROM connections
+SELECT id, source_id, destination_id, enabled, max_retries, retry_strategy, retry_base_ms, retry_cap_ms, retry_jitter_pct, custom_retry_schedule, created_at, updated_at, name, filter_expr, transform_js FROM connections
 WHERE source_id = $1 AND enabled = TRUE
 `
 
@@ -200,6 +212,8 @@ func (q *Queries) ListEnabledConnectionsBySource(ctx context.Context, sourceID p
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Name,
+			&i.FilterExpr,
+			&i.TransformJs,
 		); err != nil {
 			return nil, err
 		}
@@ -221,12 +235,14 @@ UPDATE connections AS c
        retry_cap_ms          = COALESCE($6,          c.retry_cap_ms),
        retry_jitter_pct      = COALESCE($7,      c.retry_jitter_pct),
        custom_retry_schedule = COALESCE($8, c.custom_retry_schedule),
+       filter_expr           = CASE WHEN $9::bool  THEN $10::text  ELSE c.filter_expr  END,
+       transform_js          = CASE WHEN $11::bool THEN $12::text ELSE c.transform_js END,
        updated_at            = now()
   FROM sources s
- WHERE c.id = $9
+ WHERE c.id = $13
    AND c.source_id = s.id
-   AND s.org_id = $10
- RETURNING c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name
+   AND s.org_id = $14
+ RETURNING c.id, c.source_id, c.destination_id, c.enabled, c.max_retries, c.retry_strategy, c.retry_base_ms, c.retry_cap_ms, c.retry_jitter_pct, c.custom_retry_schedule, c.created_at, c.updated_at, c.name, c.filter_expr, c.transform_js
 `
 
 type PatchConnectionForOrgParams struct {
@@ -238,6 +254,10 @@ type PatchConnectionForOrgParams struct {
 	RetryCapMs          *int32      `json:"retry_cap_ms"`
 	RetryJitterPct      *int32      `json:"retry_jitter_pct"`
 	CustomRetrySchedule []byte      `json:"custom_retry_schedule"`
+	SetFilterExpr       bool        `json:"set_filter_expr"`
+	FilterExpr          *string     `json:"filter_expr"`
+	SetTransformJs      bool        `json:"set_transform_js"`
+	TransformJs         *string     `json:"transform_js"`
 	ID                  pgtype.UUID `json:"id"`
 	OrgID               pgtype.UUID `json:"org_id"`
 }
@@ -254,6 +274,10 @@ func (q *Queries) PatchConnectionForOrg(ctx context.Context, arg PatchConnection
 		arg.RetryCapMs,
 		arg.RetryJitterPct,
 		arg.CustomRetrySchedule,
+		arg.SetFilterExpr,
+		arg.FilterExpr,
+		arg.SetTransformJs,
+		arg.TransformJs,
 		arg.ID,
 		arg.OrgID,
 	)
@@ -272,6 +296,8 @@ func (q *Queries) PatchConnectionForOrg(ctx context.Context, arg PatchConnection
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Name,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }

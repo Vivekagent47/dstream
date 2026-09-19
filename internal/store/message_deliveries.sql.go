@@ -116,12 +116,14 @@ func (q *Queries) GetDeliveryByMessageEndpoint(ctx context.Context, arg GetDeliv
 const getMessageDeliveryForSend = `-- name: GetMessageDeliveryForSend :one
 SELECT d.id AS delivery_id, d.status AS delivery_status, d.attempt_count, d.org_id,
        d.endpoint_id AS endpoint_id,
-       m.id AS message_id, m.event_type, m.payload, m.created_at AS message_created_at,
+       m.id AS message_id, m.event_type, m.payload, m.channels AS channels, m.created_at AS message_created_at,
        e.url AS endpoint_url, e.secret AS endpoint_secret, e.disabled AS endpoint_disabled,
        e.prev_secret            AS endpoint_secret_prev,
        e.prev_secret_expires_at AS endpoint_prev_expires_at,
        e.headers    AS endpoint_headers,
        e.rate_limit AS endpoint_rate_limit,
+       e.filter_expr  AS endpoint_filter_expr,
+       e.transform_js AS endpoint_transform_js,
        a.is_operational AS endpoint_app_is_operational
   FROM message_deliveries d
   JOIN messages m  ON m.id = d.message_id
@@ -139,6 +141,7 @@ type GetMessageDeliveryForSendRow struct {
 	MessageID                pgtype.UUID        `json:"message_id"`
 	EventType                string             `json:"event_type"`
 	Payload                  []byte             `json:"payload"`
+	Channels                 []string           `json:"channels"`
 	MessageCreatedAt         pgtype.Timestamptz `json:"message_created_at"`
 	EndpointUrl              string             `json:"endpoint_url"`
 	EndpointSecret           string             `json:"endpoint_secret"`
@@ -147,6 +150,8 @@ type GetMessageDeliveryForSendRow struct {
 	EndpointPrevExpiresAt    pgtype.Timestamptz `json:"endpoint_prev_expires_at"`
 	EndpointHeaders          []byte             `json:"endpoint_headers"`
 	EndpointRateLimit        *int32             `json:"endpoint_rate_limit"`
+	EndpointFilterExpr       *string            `json:"endpoint_filter_expr"`
+	EndpointTransformJs      *string            `json:"endpoint_transform_js"`
 	EndpointAppIsOperational bool               `json:"endpoint_app_is_operational"`
 }
 
@@ -162,6 +167,7 @@ func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID)
 		&i.MessageID,
 		&i.EventType,
 		&i.Payload,
+		&i.Channels,
 		&i.MessageCreatedAt,
 		&i.EndpointUrl,
 		&i.EndpointSecret,
@@ -170,6 +176,8 @@ func (q *Queries) GetMessageDeliveryForSend(ctx context.Context, id pgtype.UUID)
 		&i.EndpointPrevExpiresAt,
 		&i.EndpointHeaders,
 		&i.EndpointRateLimit,
+		&i.EndpointFilterExpr,
+		&i.EndpointTransformJs,
 		&i.EndpointAppIsOperational,
 	)
 	return i, err
@@ -279,6 +287,16 @@ UPDATE message_deliveries SET status='disabled', updated_at=now() WHERE id=$1
 
 func (q *Queries) MarkDeliveryDisabled(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markDeliveryDisabled, id)
+	return err
+}
+
+const markDeliveryFiltered = `-- name: MarkDeliveryFiltered :exec
+UPDATE message_deliveries SET status='filtered', updated_at=now() WHERE id=$1
+`
+
+// Terminal state for a delivery dropped by its endpoint's filter expression.
+func (q *Queries) MarkDeliveryFiltered(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markDeliveryFiltered, id)
 	return err
 }
 

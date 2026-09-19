@@ -12,9 +12,9 @@ import (
 )
 
 const createEndpoint = `-- name: CreateEndpoint :one
-INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types, headers, rate_limit, channels)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels
+INSERT INTO endpoints (app_id, org_id, uid, url, description, secret, filter_event_types, headers, rate_limit, channels, filter_expr, transform_js)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels, filter_expr, transform_js
 `
 
 type CreateEndpointParams struct {
@@ -28,6 +28,8 @@ type CreateEndpointParams struct {
 	Headers          []byte      `json:"headers"`
 	RateLimit        *int32      `json:"rate_limit"`
 	Channels         []string    `json:"channels"`
+	FilterExpr       *string     `json:"filter_expr"`
+	TransformJs      *string     `json:"transform_js"`
 }
 
 func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) (Endpoint, error) {
@@ -42,6 +44,8 @@ func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) 
 		arg.Headers,
 		arg.RateLimit,
 		arg.Channels,
+		arg.FilterExpr,
+		arg.TransformJs,
 	)
 	var i Endpoint
 	err := row.Scan(
@@ -63,6 +67,8 @@ func (q *Queries) CreateEndpoint(ctx context.Context, arg CreateEndpointParams) 
 		&i.Headers,
 		&i.RateLimit,
 		&i.Channels,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
@@ -84,7 +90,7 @@ func (q *Queries) DeleteEndpointForApp(ctx context.Context, arg DeleteEndpointFo
 }
 
 const getEndpointForApp = `-- name: GetEndpointForApp :one
-SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels FROM endpoints WHERE id = $1 AND app_id = $2
+SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels, filter_expr, transform_js FROM endpoints WHERE id = $1 AND app_id = $2
 `
 
 type GetEndpointForAppParams struct {
@@ -114,6 +120,8 @@ func (q *Queries) GetEndpointForApp(ctx context.Context, arg GetEndpointForAppPa
 		&i.Headers,
 		&i.RateLimit,
 		&i.Channels,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
@@ -179,7 +187,7 @@ func (q *Queries) IncrEndpointFailures(ctx context.Context, arg IncrEndpointFail
 }
 
 const listEndpointsByApp = `-- name: ListEndpointsByApp :many
-SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels FROM endpoints WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
+SELECT id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels, filter_expr, transform_js FROM endpoints WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2
 `
 
 type ListEndpointsByAppParams struct {
@@ -215,6 +223,8 @@ func (q *Queries) ListEndpointsByApp(ctx context.Context, arg ListEndpointsByApp
 			&i.Headers,
 			&i.RateLimit,
 			&i.Channels,
+			&i.FilterExpr,
+			&i.TransformJs,
 		); err != nil {
 			return nil, err
 		}
@@ -281,7 +291,7 @@ UPDATE endpoints
        secret                 = $2,
        updated_at             = now()
  WHERE id = $3 AND app_id = $4
- RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels
+ RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels, filter_expr, transform_js
 `
 
 type RotateEndpointSecretParams struct {
@@ -318,6 +328,8 @@ func (q *Queries) RotateEndpointSecret(ctx context.Context, arg RotateEndpointSe
 		&i.Headers,
 		&i.RateLimit,
 		&i.Channels,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
@@ -337,9 +349,13 @@ UPDATE endpoints
        rate_limit = COALESCE($8, rate_limit),
        channels   = CASE WHEN $9::bool
                          THEN $10::text[] ELSE channels END,
+       filter_expr  = CASE WHEN $11::bool
+                           THEN $12::text ELSE filter_expr END,
+       transform_js = CASE WHEN $13::bool
+                           THEN $14::text ELSE transform_js END,
        updated_at  = now()
- WHERE id = $11 AND app_id = $12
- RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels
+ WHERE id = $15 AND app_id = $16
+ RETURNING id, app_id, org_id, uid, url, description, secret, filter_event_types, disabled, created_at, updated_at, prev_secret, prev_secret_expires_at, consecutive_failures, disabled_at, headers, rate_limit, channels, filter_expr, transform_js
 `
 
 type UpdateEndpointParams struct {
@@ -353,6 +369,10 @@ type UpdateEndpointParams struct {
 	RateLimit        *int32      `json:"rate_limit"`
 	SetChannels      bool        `json:"set_channels"`
 	Channels         []string    `json:"channels"`
+	SetFilterExpr    bool        `json:"set_filter_expr"`
+	FilterExpr       *string     `json:"filter_expr"`
+	SetTransformJs   bool        `json:"set_transform_js"`
+	TransformJs      *string     `json:"transform_js"`
 	ID               pgtype.UUID `json:"id"`
 	AppID            pgtype.UUID `json:"app_id"`
 }
@@ -369,6 +389,10 @@ func (q *Queries) UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) 
 		arg.RateLimit,
 		arg.SetChannels,
 		arg.Channels,
+		arg.SetFilterExpr,
+		arg.FilterExpr,
+		arg.SetTransformJs,
+		arg.TransformJs,
 		arg.ID,
 		arg.AppID,
 	)
@@ -392,6 +416,8 @@ func (q *Queries) UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) 
 		&i.Headers,
 		&i.RateLimit,
 		&i.Channels,
+		&i.FilterExpr,
+		&i.TransformJs,
 	)
 	return i, err
 }
