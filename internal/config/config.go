@@ -62,6 +62,12 @@ type Config struct {
 	// attempt bodies. 0 / unset = keep forever.
 	PayloadRetention time.Duration `mapstructure:"payload_retention"`
 
+	// TransformTimeout bounds a single delivery-time JS transform's wall-clock
+	// run; TransformMaxOutput caps its output in bytes. Both flow into the
+	// outbound + deliver handlers.
+	TransformTimeout   time.Duration `mapstructure:"transform_timeout"`
+	TransformMaxOutput int           `mapstructure:"transform_max_output"`
+
 	DB     DBConfig     `mapstructure:"db"`
 	Redis  RedisConfig  `mapstructure:"redis"`
 	Worker WorkerConfig `mapstructure:"worker"`
@@ -134,6 +140,10 @@ func Load() (Config, error) {
 	// the key so viper's AutomaticEnv+Unmarshal actually reads
 	// DSTREAM_PAYLOAD_RETENTION (see the tracing.otlp_endpoint note below).
 	v.SetDefault("payload_retention", "0s")
+	// Defaults registered so viper's AutomaticEnv reads DSTREAM_TRANSFORM_*
+	// (same rationale as the payload_retention default above).
+	v.SetDefault("transform_timeout", "1s")
+	v.SetDefault("transform_max_output", 5242880)
 
 	v.SetDefault("db.url", "postgres://dstream:dstream@localhost:5432/dstream?sslmode=disable")
 	v.SetDefault("db.max_conns", 20)

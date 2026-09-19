@@ -156,6 +156,10 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 
 				r.Get("/audit", id.ListAudit)
 
+				// Filter/transform dev-time preview (stateless pipeline funcs).
+				r.Post("/filter-preview", pipeline.FilterPreview)
+				r.Post("/transform-preview", pipeline.TransformPreview)
+
 				r.Route("/sources", func(r chi.Router) {
 					r.Get("/", pl.ListSources)
 					r.Post("/", pl.CreateSource)
@@ -248,6 +252,10 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		r.Route("/portal", func(r chi.Router) {
 			r.Use(auth.RequirePortal(d.Queries, d.Portal))
 			r.Get("/app", ob.GetApplication)
+			// Same stateless preview funcs as the session surface; no app
+			// scoping needed (they only compile/eval the request body).
+			r.Post("/filter-preview", pipeline.FilterPreview)
+			r.Post("/transform-preview", pipeline.TransformPreview)
 			r.Route("/endpoints", func(r chi.Router) {
 				r.Get("/", ob.ListEndpoints)
 				r.Post("/", ob.CreateEndpoint)

@@ -18,14 +18,43 @@ import (
 	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/transform"
 )
+
+// compiledFilterExpr validates a filter expression from a connection/endpoint
+// write. A nil or empty pointer normalizes to nil (stored NULL / disabled); a
+// non-empty expr is compile-checked and returned unchanged. Compile errors are
+// meant to surface as HTTP 400.
+func compiledFilterExpr(p *string, outbound bool) (*string, error) {
+	if p == nil || *p == "" {
+		return nil, nil
+	}
+	if _, err := filter.Compile(*p, outbound); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// compiledTransformJs validates a transform script; nil/empty → nil (cleared).
+func compiledTransformJs(p *string) (*string, error) {
+	if p == nil || *p == "" {
+		return nil, nil
+	}
+	if _, err := transform.Compile(*p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
 
 type createConnectionReq struct {
 	SourceID      uuid.UUID `json:"source_id"`
 	DestinationID uuid.UUID `json:"destination_id"`
 	Enabled       *bool     `json:"enabled,omitempty"`
 	Name          *string   `json:"name,omitempty"`
+	FilterExpr    *string   `json:"filter_expr,omitempty"`
+	TransformJs   *string   `json:"transform_js,omitempty"`
 }
 
 func (d Handlers) CreateConnection(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +70,18 @@ func (d Handlers) CreateConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SourceID == uuid.Nil || body.DestinationID == uuid.Nil {
 		httpx.Err(w, http.StatusBadRequest, "source_id and destination_id required")
+		return
+	}
+	// Compile-validate filter/transform before any DB work (connections =
+	// inbound, outbound=false). Empty/absent → nil (stored NULL / disabled).
+	fe, err := compiledFilterExpr(body.FilterExpr, false)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tj, err := compiledTransformJs(body.TransformJs)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// Verify both source and destination belong to the caller's org.
@@ -67,6 +108,8 @@ func (d Handlers) CreateConnection(w http.ResponseWriter, r *http.Request) {
 		DestinationID: store.UUID(body.DestinationID),
 		Enabled:       enabled,
 		Name:          body.Name,
+		FilterExpr:    fe,
+		TransformJs:   tj,
 	})
 	if err != nil {
 		d.Log.Error("create connection", "err", err)
@@ -229,6 +272,8 @@ type patchConnectionReq struct {
 	RetryCapMs          *int32          `json:"retry_cap_ms,omitempty"`
 	RetryJitterPct      *int32          `json:"retry_jitter_pct,omitempty"`
 	CustomRetrySchedule json.RawMessage `json:"custom_retry_schedule,omitempty"`
+	FilterExpr          *string         `json:"filter_expr,omitempty"`
+	TransformJs         *string         `json:"transform_js,omitempty"`
 }
 
 func (d Handlers) PatchConnection(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +299,20 @@ func (d Handlers) PatchConnection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Compile-validate before DB work. Present (non-nil) → set behind the flag;
+	// empty string → cleared to NULL; absent (nil) → left unchanged.
+	setFE := body.FilterExpr != nil
+	fe, err := compiledFilterExpr(body.FilterExpr, false)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	setTJ := body.TransformJs != nil
+	tj, err := compiledTransformJs(body.TransformJs)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	old, err := d.Queries.GetConnectionForOrg(r.Context(), store.GetConnectionForOrgParams{
 		ID:    store.UUID(id),
 		OrgID: store.UUID(p.OrgID),
@@ -272,6 +331,10 @@ func (d Handlers) PatchConnection(w http.ResponseWriter, r *http.Request) {
 		RetryBaseMs:    body.RetryBaseMs,
 		RetryCapMs:     body.RetryCapMs,
 		RetryJitterPct: body.RetryJitterPct,
+		SetFilterExpr:  setFE,
+		FilterExpr:     fe,
+		SetTransformJs: setTJ,
+		TransformJs:    tj,
 	}
 	if len(body.CustomRetrySchedule) > 0 {
 		params.CustomRetrySchedule = body.CustomRetrySchedule
@@ -457,6 +520,8 @@ func connectionView(c store.Connection) map[string]any {
 		"retry_cap_ms":          c.RetryCapMs,
 		"retry_jitter_pct":      c.RetryJitterPct,
 		"custom_retry_schedule": json.RawMessage(c.CustomRetrySchedule),
+		"filter_expr":           c.FilterExpr,
+		"transform_js":          c.TransformJs,
 		"created_at":            c.CreatedAt.Time,
 		"updated_at":            c.UpdatedAt.Time,
 	}

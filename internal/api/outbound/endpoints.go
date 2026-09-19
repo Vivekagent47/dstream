@@ -19,9 +19,35 @@ import (
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/transform"
 	"github.com/Vivekagent47/dstream/internal/webhook"
 )
+
+// compiledFilterExpr validates a filter expression from an endpoint write. A
+// nil or empty pointer normalizes to nil (stored NULL / disabled); a non-empty
+// expr is compile-checked and returned unchanged. Errors surface as HTTP 400.
+func compiledFilterExpr(p *string, outbound bool) (*string, error) {
+	if p == nil || *p == "" {
+		return nil, nil
+	}
+	if _, err := filter.Compile(*p, outbound); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// compiledTransformJs validates a transform script; nil/empty → nil (cleared).
+func compiledTransformJs(p *string) (*string, error) {
+	if p == nil || *p == "" {
+		return nil, nil
+	}
+	if _, err := transform.Compile(*p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
 
 func endpointView(e store.Endpoint) map[string]any {
 	return map[string]any{
@@ -38,6 +64,8 @@ func endpointView(e store.Endpoint) map[string]any {
 		"disabled":             e.Disabled,
 		"disabled_at":          nullTime(e.DisabledAt),
 		"consecutive_failures": e.ConsecutiveFailures,
+		"filter_expr":          e.FilterExpr,
+		"transform_js":         e.TransformJs,
 		"created_at":           e.CreatedAt.Time,
 		"updated_at":           e.UpdatedAt.Time,
 	}
@@ -93,6 +121,8 @@ type createEndpointReq struct {
 	Headers          map[string]string `json:"headers,omitempty"`
 	RateLimit        *int              `json:"rate_limit,omitempty"`
 	Channels         []string          `json:"channels,omitempty"`
+	FilterExpr       *string           `json:"filter_expr,omitempty"`
+	TransformJs      *string           `json:"transform_js,omitempty"`
 }
 
 func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +168,17 @@ func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Endpoints deliver outbound, so filter vars include event_type/channels.
+	fe, err := compiledFilterExpr(body.FilterExpr, true)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tj, err := compiledTransformJs(body.TransformJs)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	hdrs, _ := json.Marshal(body.Headers)
 	row, err := d.Queries.CreateEndpoint(r.Context(), store.CreateEndpointParams{
 		AppID:            app.ID,
@@ -150,6 +191,8 @@ func (d Handlers) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		Headers:          hdrs,
 		RateLimit:        int32PtrFromInt(body.RateLimit),
 		Channels:         body.Channels,
+		FilterExpr:       fe,
+		TransformJs:      tj,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -338,6 +381,8 @@ type patchEndpointReq struct {
 	Headers          *map[string]string `json:"headers,omitempty"`
 	RateLimit        *int               `json:"rate_limit,omitempty"`
 	Channels         *[]string          `json:"channels,omitempty"`
+	FilterExpr       *string            `json:"filter_expr,omitempty"`
+	TransformJs      *string            `json:"transform_js,omitempty"`
 }
 
 func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -370,10 +415,10 @@ func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var filter []string
+	var filterTypes []string
 	setFilter := body.FilterEventTypes != nil
 	if setFilter {
-		filter = *body.FilterEventTypes
+		filterTypes = *body.FilterEventTypes
 	}
 	var hdrs []byte
 	setHeaders := body.Headers != nil
@@ -397,13 +442,29 @@ func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 		chans = *body.Channels
 	}
+	// Present (non-nil) → set behind flag; empty string → cleared to NULL;
+	// absent → unchanged. outbound=true (endpoint filters see event_type/channels).
+	setFE := body.FilterExpr != nil
+	fe, err := compiledFilterExpr(body.FilterExpr, true)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	setTJ := body.TransformJs != nil
+	tj, err := compiledTransformJs(body.TransformJs)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	row, err := d.Queries.UpdateEndpoint(r.Context(), store.UpdateEndpointParams{
 		ID: store.UUID(id), AppID: app.ID,
 		Url: body.URL, Description: body.Description, Disabled: body.Disabled,
-		SetFilter: setFilter, FilterEventTypes: filter,
+		SetFilter: setFilter, FilterEventTypes: filterTypes,
 		SetHeaders: setHeaders, Headers: hdrs,
 		RateLimit:   int32PtrFromInt(body.RateLimit),
 		SetChannels: setChannels, Channels: chans,
+		SetFilterExpr: setFE, FilterExpr: fe,
+		SetTransformJs: setTJ, TransformJs: tj,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

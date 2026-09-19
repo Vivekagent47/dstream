@@ -75,6 +75,8 @@ func workerCmd() *cobra.Command {
 			dq := dqueue.NewClient(rdb)
 			h := deliver.New(log, q, rdb, bs, dq, cfg.AllowPrivateDestinations)
 			h.PerOrgMaxInflight = cfg.Worker.PerOrgMaxInflight
+			h.TransformTimeout = cfg.TransformTimeout
+			h.TransformMaxOutput = cfg.TransformMaxOutput
 
 			sender, err := mailer.NewSender(cfg.SMTP)
 			if err != nil {
@@ -89,6 +91,8 @@ func workerCmd() *cobra.Command {
 				MaxConsecutiveFailures: cfg.EndpointMaxConsecutiveFailures,
 				PerOrgMaxInflight:      cfg.Worker.PerOrgMaxInflight,
 				Limiter:                redis_rate.NewLimiter(rdb),
+				TransformTimeout:       cfg.TransformTimeout,
+				TransformMaxOutput:     cfg.TransformMaxOutput,
 			}
 
 			// 5× the delivery timeout, matching the in-flight lease: long enough
