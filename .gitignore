@@ -32,3 +32,7 @@
 /.data/
 
 docs/
+
+# brag launch video — keep only the mp4, ignore the build artifacts
+/brag-output/*
+!/brag-output/brag.mp4

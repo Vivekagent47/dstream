@@ -9,6 +9,16 @@ dstream sits between webhook senders (Stripe, GitHub, Shopify, your own services
 
 ---
 
+## Demo
+
+https://github.com/Vivekagent47/dstream/raw/main/brag-output/brag.mp4
+
+<video src="brag-output/brag.mp4" controls width="100%"></video>
+
+[▶ Watch the launch video](brag-output/brag.mp4)
+
+---
+
 ## Run it (one command)
 
 You need **Docker** (Desktop / OrbStack / Colima). Nothing else.
