@@ -103,7 +103,7 @@ func signHeader(cur string, prev *string, prevExp pgtype.Timestamptz, msgID stri
 func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *dqueue.Client) error {
 	did, err := deliveryID(p)
 	if err != nil {
-		h.Log.Error("outbound: bad message task, dead-lettering", "err", err)
+		h.Log.ErrorContext(ctx, "outbound: bad message task, dead-lettering", "err", err)
 		return q.DeadLetter(ctx, raw)
 	}
 	row, err := h.Queries.GetMessageDeliveryForSend(ctx, store.UUID(did))
@@ -161,7 +161,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		ok, ferr := filter.Match(*row.EndpointFilterExpr, true, row.Payload, epHeaders,
 			filter.Meta{EventType: row.EventType, Channels: row.Channels})
 		if ferr != nil {
-			h.Log.Warn("filter eval error; failing open", "delivery_id", did, "err", ferr) // fail-open: deliver
+			h.Log.WarnContext(ctx, "filter eval error; failing open", "delivery_id", did, "err", ferr) // fail-open: deliver
 		} else if !ok {
 			_ = h.Queries.MarkDeliveryFiltered(ctx, store.UUID(did))
 			return q.Ack(ctx, raw) // terminal 'filtered': no HTTP, no sign

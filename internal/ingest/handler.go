@@ -21,11 +21,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
+
+// ingestTracer names spans for the ingest hot path. Bound to the global
+// provider's delegate at init, so it forwards to whatever tracing.Init sets.
+var ingestTracer = otel.Tracer("dstream/ingest")
 
 const (
 	MaxBodyBytes   = 5 << 20 // 5 MiB
@@ -95,13 +101,22 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	token := chi.URLParam(r, "token")
 
-	src, err := h.resolveSource(ctx, token)
+	src, err := func() (store.Source, error) {
+		ctx, span := ingestTracer.Start(ctx, "ingest.resolve_source")
+		defer span.End()
+		src, err := h.resolveSource(ctx, token)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		return src, err
+	}()
 	if err != nil {
 		if errors.Is(err, ErrSourceNotFound) {
 			http.Error(w, "unknown source", http.StatusNotFound)
 			return
 		}
-		h.Log.Error("ingest: resolve source", "err", err)
+		h.Log.ErrorContext(ctx, "ingest: resolve source", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -117,7 +132,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// Loop guard: refuse a request that has already bounced through dstream too
 	// many times (deliver→ingest→deliver…). No enqueue, before reading the body.
 	if h.MaxWebhookHops > 0 && hopCount(r) >= h.MaxWebhookHops {
-		h.Log.Warn("ingest: webhook loop guard tripped", "source_id", src.ID, "hops", hopCount(r))
+		h.Log.WarnContext(ctx, "ingest: webhook loop guard tripped", "source_id", src.ID, "hops", hopCount(r))
 		http.Error(w, "loop detected: Dstream-Webhook-Hops limit reached", http.StatusForbidden)
 		return
 	}
@@ -140,7 +155,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 			// swallowed error means a Redis limiter outage silently disables
 			// ingest rate limiting with zero signal (audit N6) — log so it's
 			// observable. Still proceed below.
-			h.Log.Warn("ingest: rate limiter error (fail-open)", "err", rlErr, "source_id", sourceID.String())
+			h.Log.WarnContext(ctx, "ingest: rate limiter error (fail-open)", "err", rlErr, "source_id", sourceID.String())
 		}
 		if rlErr == nil && res.Allowed == 0 {
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds())+1, 10))
@@ -149,7 +164,16 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	body, err := func() ([]byte, error) {
+		_, span := ingestTracer.Start(ctx, "ingest.read_body")
+		defer span.End()
+		b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		return b, err
+	}()
 	if err != nil {
 		http.Error(w, "body too large or unreadable", http.StatusRequestEntityTooLarge)
 		return
@@ -158,9 +182,13 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(body)
 	bodyHash := hex.EncodeToString(sum[:])
 
-	dup, err := h.checkDedup(ctx, sourceID, bodyHash)
+	dup, err := func() (bool, error) {
+		ctx, span := ingestTracer.Start(ctx, "ingest.dedup")
+		defer span.End()
+		return h.checkDedup(ctx, sourceID, bodyHash)
+	}()
 	if err != nil {
-		h.Log.Warn("ingest: dedup check failed (ignored)", "err", err)
+		h.Log.WarnContext(ctx, "ingest: dedup check failed (ignored)", "err", err)
 	}
 	metrics.IngestRequest(sourceID, dup)
 
@@ -187,29 +215,39 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	reqID := uuid.Must(uuid.NewV7())
 	bodyRef := "pg:" + reqID.String()
 
-	req, err := h.Queries.CreateRequest(ctx, store.CreateRequestParams{
-		ID:          store.UUID(reqID),
-		SourceID:    src.ID,
-		HTTPMethod:  r.Method,
-		HTTPPath:    r.URL.Path,
-		Headers:     captureHeaders(r.Header),
-		BodyHash:    bodyHash,
-		BodyRef:     bodyRef,
-		BodySize:    int32(len(body)),
-		ContentType: optStr(r.Header.Get("Content-Type")),
-		// Signature verification removed — auth is post-release scope (see
-		// PLAN.md ingest path). Column kept so no migration when it lands.
-		SigVerified: false,
-		IngestIP:    parseRemoteAddr(r),
-	})
+	req, err := func() (store.Request, error) {
+		ctx, span := ingestTracer.Start(ctx, "ingest.persist")
+		defer span.End()
+		req, err := h.Queries.CreateRequest(ctx, store.CreateRequestParams{
+			ID:          store.UUID(reqID),
+			SourceID:    src.ID,
+			HTTPMethod:  r.Method,
+			HTTPPath:    r.URL.Path,
+			Headers:     captureHeaders(r.Header),
+			BodyHash:    bodyHash,
+			BodyRef:     bodyRef,
+			BodySize:    int32(len(body)),
+			ContentType: optStr(r.Header.Get("Content-Type")),
+			// Signature verification removed — auth is post-release scope (see
+			// PLAN.md ingest path). Column kept so no migration when it lands.
+			SigVerified: false,
+			IngestIP:    parseRemoteAddr(r),
+		})
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			h.Log.ErrorContext(ctx, "ingest: create request", "err", err)
+			return req, err
+		}
+		if _, err := h.BodyStore.Put(ctx, store.GoUUID(req.ID), body); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			h.Log.ErrorContext(ctx, "ingest: store body", "err", err)
+			return req, err
+		}
+		return req, nil
+	}()
 	if err != nil {
-		h.Log.Error("ingest: create request", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if _, err := h.BodyStore.Put(ctx, store.GoUUID(req.ID), body); err != nil {
-		h.Log.Error("ingest: store body", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -224,7 +262,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	conns, err := h.Queries.ListEnabledConnectionsBySource(ctx, src.ID)
 	if err != nil {
-		h.Log.Error("ingest: list connections", "err", err)
+		h.Log.ErrorContext(ctx, "ingest: list connections", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -247,38 +285,52 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		connByID[store.GoUUID(c.ID)] = c
 	}
 
-	events, err := h.Queries.CreateEventsBatch(ctx, store.CreateEventsBatchParams{
-		RequestID:     req.ID,
-		OrgID:         src.OrgID,
-		ConnectionIds: connIDs,
-		IsTest:        false,
-	})
+	// Fan-out span covers the batch insert + the per-event enqueue loop. The
+	// enqueue MUST run while this span's ctx is current: dqueue.Enqueue injects
+	// the current trace context into each event's carrier, which is how the
+	// consumer's deliver span links back to ingest.fanout.
+	err = func() error {
+		ctx, span := ingestTracer.Start(ctx, "ingest.fanout")
+		defer span.End()
+		events, err := h.Queries.CreateEventsBatch(ctx, store.CreateEventsBatchParams{
+			RequestID:     req.ID,
+			OrgID:         src.OrgID,
+			ConnectionIds: connIDs,
+			IsTest:        false,
+		})
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			h.Log.ErrorContext(ctx, "ingest: create events batch", "err", err)
+			return err
+		}
+
+		// One enqueue per event — local-Redis roundtrips, not the per-connection
+		// Postgres roundtrips the batch insert above eliminated. A failed enqueue
+		// leaves the event 'queued' in Postgres; the worker's reaper re-queues it.
+		for _, ev := range events {
+			c := connByID[store.GoUUID(ev.ConnectionID)]
+			if err := h.Queue.Enqueue(ctx, dqueue.Payload{
+				EventID:             store.GoUUID(ev.ID),
+				OrgID:               store.GoUUID(ev.OrgID),
+				Attempt:             0,
+				EnqueuedAt:          time.Now().UnixMilli(),
+				RetryStrategy:       c.RetryStrategy,
+				RetryBaseMs:         c.RetryBaseMs,
+				RetryCapMs:          c.RetryCapMs,
+				RetryJitterPct:      c.RetryJitterPct,
+				CustomRetrySchedule: c.CustomRetrySchedule,
+			}); err != nil {
+				h.Log.ErrorContext(ctx, "ingest: enqueue delivery", "err", err, "event_id", store.GoUUID(ev.ID))
+				continue
+			}
+			resp.EventIDs = append(resp.EventIDs, store.GoUUID(ev.ID).String())
+		}
+		return nil
+	}()
 	if err != nil {
-		h.Log.Error("ingest: create events batch", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
-	}
-
-	// One enqueue per event — local-Redis roundtrips, not the per-connection
-	// Postgres roundtrips the batch insert above eliminated. A failed enqueue
-	// leaves the event 'queued' in Postgres; the worker's reaper re-queues it.
-	for _, ev := range events {
-		c := connByID[store.GoUUID(ev.ConnectionID)]
-		if err := h.Queue.Enqueue(ctx, dqueue.Payload{
-			EventID:             store.GoUUID(ev.ID),
-			OrgID:               store.GoUUID(ev.OrgID),
-			Attempt:             0,
-			EnqueuedAt:          time.Now().UnixMilli(),
-			RetryStrategy:       c.RetryStrategy,
-			RetryBaseMs:         c.RetryBaseMs,
-			RetryCapMs:          c.RetryCapMs,
-			RetryJitterPct:      c.RetryJitterPct,
-			CustomRetrySchedule: c.CustomRetrySchedule,
-		}); err != nil {
-			h.Log.Error("ingest: enqueue delivery", "err", err, "event_id", store.GoUUID(ev.ID))
-			continue
-		}
-		resp.EventIDs = append(resp.EventIDs, store.GoUUID(ev.ID).String())
 	}
 
 	// Events are durably in Postgres now (CreateEventsBatch committed); a failed

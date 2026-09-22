@@ -333,7 +333,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 			ok, ferr := filter.Match(*row.FilterExpr, false, body, flat, filter.Meta{})
 			if ferr != nil {
 				// Fail-open: an eval error must not silently swallow events.
-				h.Log.Warn("filter eval error; failing open", "event_id", p.EventID, "err", ferr)
+				h.Log.WarnContext(ctx, "filter eval error; failing open", "event_id", p.EventID, "err", ferr)
 			} else if !ok {
 				if err := h.Queries.MarkEventFiltered(ctx, row.ID); err != nil {
 					return fmt.Errorf("mark filtered: %w", err)

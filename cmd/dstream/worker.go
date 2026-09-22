@@ -165,7 +165,10 @@ func workerCmd() *cobra.Command {
 										}
 									}
 								}()
-								if err := outboundHandler.Process(procCtx, p, raw, dq); err != nil {
+								dctx := otel.GetTextMapPropagator().Extract(procCtx, propagation.MapCarrier(p.Trace))
+								dctx, span := otel.Tracer("dstream/webhook").Start(dctx, "webhook.deliver")
+								defer span.End()
+								if err := outboundHandler.Process(dctx, p, raw, dq); err != nil {
 									log.Error("outbound process", "err", err)
 								}
 								return
