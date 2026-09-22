@@ -1,4 +1,4 @@
-.PHONY: help dev build test lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset
+.PHONY: help dev build test lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
 
 BIN := bin/dstream
 PKG := github.com/Vivekagent47/dstream
@@ -11,6 +11,7 @@ help:
 	@echo "make build          - build binary into $(BIN)"
 	@echo "make test           - run all tests"
 	@echo "make lint           - run go vet"
+	@echo "make load           - ingest load test (URL=... [RATE DUR CONC DB])"
 	@echo "make tidy           - go mod tidy"
 	@echo "make sqlc           - regenerate sqlc code"
 	@echo "make schema-diff    - generate a new migration (NAME=add_foo)"
@@ -32,6 +33,18 @@ server:
 
 worker:
 	set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/dstream worker
+
+# Standalone ingest load-test harness (tools/loadtest). URL required.
+# Env overrides: RATE(100) DUR(60s) CONC(50) DB(local test DB). Always -sink.
+load:
+	@test -n "$(URL)" || (echo "usage: make load URL=http://localhost:8080/e/<token> [RATE=100 DUR=60s CONC=50 DB=...]"; exit 1)
+	set -a; [ -f .env ] && . ./.env; set +a; go run ./tools/loadtest \
+		-url "$(URL)" \
+		-rate $(or $(RATE),100) \
+		-dur $(or $(DUR),60s) \
+		-conc $(or $(CONC),50) \
+		-db "$(or $(DB),postgres://dstream:dstream@localhost:5433/dstream?sslmode=disable)" \
+		-sink
 
 build:
 	mkdir -p bin
