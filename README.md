@@ -5,7 +5,7 @@
 
 dstream sits between webhook senders (Stripe, GitHub, Shopify, your own services) and your app. It accepts inbound webhooks, persists every request, applies per-connection delivery + retry policy, and forwards to your endpoints — while you watch every attempt in a dashboard.
 
-**Status:** Phase 1 (core inbound gateway) is shipped and security-hardened. Later phases (outbound, transforms, record/replay, visual builder) are on the roadmap below. `PLAN.md` is the live design doc.
+**Status:** Phases 1–3 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), and transforms + filters (CEL filter + sandboxed `goja` transform on both the inbound and outbound pipelines). Later phases (record/replay, visual builder, full RBAC/SSO/billing, self-host packaging) are on the roadmap below. `PLAN.md` is the live design doc.
 
 ---
 
@@ -170,7 +170,8 @@ Combined positioning: **the dev IDE for webhooks** — OSS-first, self-hostable 
 | Per-connection retry + RPS policy | ✅ shipped    | ✅       | ✅     | ✅      | ❌           |
 | CLI tunnel                        | ✅ shipped    | basic    | ❌     | ❌      | view only    |
 | OSS + self-host                   | ✅            | ❌       | ✅     | partial | ❌           |
-| Outbound (publish)                | planned (P2)  | ✅       | ✅     | ✅      | ❌           |
+| Outbound (publish)                | ✅ shipped    | ✅       | ✅     | ✅      | ❌           |
+| Transforms + filters (per-edge)   | ✅ shipped    | ✅       | partial| ❌      | ❌           |
 | Record / replay fixtures          | planned (P4)  | ❌       | ❌     | ❌      | ❌           |
 | Visual workflow                   | planned (P5)  | ❌       | ❌     | ❌      | ❌           |
 
@@ -261,8 +262,8 @@ Secure by default:
 | # | Phase | Status |
 | - | ----- | ------ |
 | 1 | **Core inbound gateway** — ingest → dedup → deliver → retry → dashboard | ✅ shipped + hardened |
-| 2 | Outbound webhooks (publish + subscriber fan-out with signing) | planned |
-| 3 | Transformations + filters (per-connection JS via `goja`) | planned |
+| 2 | **Outbound webhooks** — Svix-style publish + signed subscriber fan-out, endpoint lifecycle, App Portal, delivery controls, operational webhooks | ✅ shipped |
+| 3 | **Transformations + filters** — CEL filter + sandboxed `goja` transform per connection/endpoint (both pipelines), `filtered` status, preview endpoints; tracing completion + load-test harness | ✅ shipped |
 | 4 | Record / replay + fixture library | planned |
 | 5 | Visual workflow builder | planned |
 | 6 | Multi-tenant hardening — full RBAC, SSO, audit, billing hooks | planned |
