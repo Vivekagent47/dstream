@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ChevronDown, ChevronRight, Copy, MoveRight, RotateCcw, Terminal } from 'lucide-react'
+import { Bookmark, ChevronDown, ChevronRight, Copy, MoveRight, RotateCcw, Terminal } from 'lucide-react'
 
 import { api, qk, type Attempt, type EventDetail } from '#/lib/api'
 import { capitalize } from '#/lib/utils'
@@ -64,6 +64,12 @@ function EventDetail() {
     onError: (e) => toast.error((e as Error).message),
   })
 
+  const saveFixture = useMutation({
+    mutationFn: (input: { request_id: string; name: string }) => api.createBookmark(input),
+    onSuccess: () => toast.success('Saved as fixture'),
+    onError: (e) => toast.error((e as Error).message),
+  })
+
   const conn = useMemo(() => {
     if (!ev) return null
     const src = (sources ?? []).find((s) => s.id === ev.source_id)?.name
@@ -95,6 +101,16 @@ function EventDetail() {
         </div>
         <div className="flex items-center gap-2">
           <ActionButton icon={Terminal} label="cURL" onClick={() => copyText(buildCurl(ev), 'cURL command')} />
+          <ActionButton
+            icon={Bookmark}
+            label={saveFixture.isPending ? 'Saving…' : 'Save as fixture'}
+            onClick={() => {
+              const name = window.prompt('Fixture name:')
+              if (!name) return
+              saveFixture.mutate({ request_id: ev.request_id, name })
+            }}
+            disabled={saveFixture.isPending}
+          />
           <ActionButton
             icon={RotateCcw}
             label={retry.isPending ? 'Retrying…' : 'Retry'}

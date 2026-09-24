@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   AppWindow,
+  Bookmark,
   Building2,
   ChevronsUpDown,
   Inbox,
@@ -49,6 +50,7 @@ const PLATFORM = [
   { label: 'Sources', to: '/sources', icon: Inbox, prefix: true },
   { label: 'Destinations', to: '/destinations', icon: Send, prefix: true },
   { label: 'Events', to: '/events', icon: Activity, prefix: true },
+  { label: 'Fixtures', to: '/fixtures', icon: Bookmark, prefix: true },
   { label: 'Applications', to: '/applications', icon: AppWindow, prefix: true },
   { label: 'Event Types', to: '/event-types', icon: Tag, prefix: true },
   { label: 'Operational Webhooks', to: '/operational-webhooks', icon: Siren, prefix: true },

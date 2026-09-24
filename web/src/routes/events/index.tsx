@@ -268,6 +268,11 @@ function EventsPage() {
                     <Badge variant={statusVariant[e.status] || 'secondary'}>
                       {capitalize(e.status.replace('_', ' '))}
                     </Badge>
+                    {e.is_test && (
+                      <Badge variant="outline" className="ml-1.5">
+                        Test
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell className="whitespace-nowrap font-mono text-xs">
                     {l ? (

@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
 import { Route as PortalIndexRouteImport } from './routes/portal/index'
 import { Route as OperationalWebhooksIndexRouteImport } from './routes/operational-webhooks/index'
+import { Route as FixturesIndexRouteImport } from './routes/fixtures/index'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventTypesIndexRouteImport } from './routes/event-types/index'
 import { Route as DestinationsIndexRouteImport } from './routes/destinations/index'
@@ -70,6 +71,11 @@ const OperationalWebhooksIndexRoute =
     path: '/operational-webhooks/',
     getParentRoute: () => rootRouteImport,
   } as any)
+const FixturesIndexRoute = FixturesIndexRouteImport.update({
+  id: '/fixtures/',
+  path: '/fixtures/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const EventsIndexRoute = EventsIndexRouteImport.update({
   id: '/events/',
   path: '/events/',
@@ -211,6 +217,7 @@ export interface FileRoutesByFullPath {
   '/destinations/': typeof DestinationsIndexRoute
   '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
+  '/fixtures/': typeof FixturesIndexRoute
   '/operational-webhooks/': typeof OperationalWebhooksIndexRoute
   '/portal/': typeof PortalIndexRoute
   '/sources/': typeof SourcesIndexRoute
@@ -241,6 +248,7 @@ export interface FileRoutesByTo {
   '/destinations': typeof DestinationsIndexRoute
   '/event-types': typeof EventTypesIndexRoute
   '/events': typeof EventsIndexRoute
+  '/fixtures': typeof FixturesIndexRoute
   '/operational-webhooks': typeof OperationalWebhooksIndexRoute
   '/portal': typeof PortalIndexRoute
   '/sources': typeof SourcesIndexRoute
@@ -273,6 +281,7 @@ export interface FileRoutesById {
   '/destinations/': typeof DestinationsIndexRoute
   '/event-types/': typeof EventTypesIndexRoute
   '/events/': typeof EventsIndexRoute
+  '/fixtures/': typeof FixturesIndexRoute
   '/operational-webhooks/': typeof OperationalWebhooksIndexRoute
   '/portal/': typeof PortalIndexRoute
   '/sources/': typeof SourcesIndexRoute
@@ -306,6 +315,7 @@ export interface FileRouteTypes {
     | '/destinations/'
     | '/event-types/'
     | '/events/'
+    | '/fixtures/'
     | '/operational-webhooks/'
     | '/portal/'
     | '/sources/'
@@ -336,6 +346,7 @@ export interface FileRouteTypes {
     | '/destinations'
     | '/event-types'
     | '/events'
+    | '/fixtures'
     | '/operational-webhooks'
     | '/portal'
     | '/sources'
@@ -367,6 +378,7 @@ export interface FileRouteTypes {
     | '/destinations/'
     | '/event-types/'
     | '/events/'
+    | '/fixtures/'
     | '/operational-webhooks/'
     | '/portal/'
     | '/sources/'
@@ -399,6 +411,7 @@ export interface RootRouteChildren {
   DestinationsIndexRoute: typeof DestinationsIndexRoute
   EventTypesIndexRoute: typeof EventTypesIndexRoute
   EventsIndexRoute: typeof EventsIndexRoute
+  FixturesIndexRoute: typeof FixturesIndexRoute
   OperationalWebhooksIndexRoute: typeof OperationalWebhooksIndexRoute
   SourcesIndexRoute: typeof SourcesIndexRoute
   ApplicationsIdEndpointsEndpointIdRoute: typeof ApplicationsIdEndpointsEndpointIdRoute
@@ -447,6 +460,13 @@ declare module '@tanstack/react-router' {
       path: '/operational-webhooks'
       fullPath: '/operational-webhooks/'
       preLoaderRoute: typeof OperationalWebhooksIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/fixtures/': {
+      id: '/fixtures/'
+      path: '/fixtures'
+      fullPath: '/fixtures/'
+      preLoaderRoute: typeof FixturesIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/events/': {
@@ -652,6 +672,7 @@ const rootRouteChildren: RootRouteChildren = {
   DestinationsIndexRoute: DestinationsIndexRoute,
   EventTypesIndexRoute: EventTypesIndexRoute,
   EventsIndexRoute: EventsIndexRoute,
+  FixturesIndexRoute: FixturesIndexRoute,
   OperationalWebhooksIndexRoute: OperationalWebhooksIndexRoute,
   SourcesIndexRoute: SourcesIndexRoute,
   ApplicationsIdEndpointsEndpointIdRoute:

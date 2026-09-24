@@ -380,6 +380,20 @@ export interface PortalAccess {
   expires_at: string
 }
 
+// Bookmarks (fixtures) — a saved captured request, replayable through its
+// source's connections or straight to an arbitrary URL.
+export interface Bookmark {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  created_at: string
+  source_id: string
+  http_method: string
+  http_path: string
+  captured_at: string
+}
+
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
 
@@ -655,6 +669,42 @@ export const api = {
       .then((r) => r.data),
   revokePortalAccess: (appId: string) =>
     http.post(`/api/applications/${appId}/portal-access/revoke`).then(() => undefined),
+
+  // Bookmarks (fixtures)
+  listBookmarks: (params?: { source_id?: string; tag?: string }) =>
+    http.get<Bookmark[]>('/api/bookmarks', { params }).then((r) => r.data),
+  createBookmark: (input: {
+    request_id: string
+    name: string
+    description?: string
+    tags?: string[]
+  }) =>
+    http
+      .post<{
+        id: string
+        name: string
+        description: string
+        tags: string[]
+        request_id: string
+        created_at: string
+      }>('/api/bookmarks', input)
+      .then((r) => r.data),
+  deleteBookmark: (id: string) => http.delete<void>(`/api/bookmarks/${id}`).then((r) => r.data),
+  replayBookmark: (id: string) =>
+    http.post<{ event_ids: string[] }>(`/api/bookmarks/${id}/replay`).then((r) => r.data),
+  replayBookmarkTo: (id: string, url: string) =>
+    http
+      .post<{ status: number; duration_ms: number; response_body: string }>(
+        `/api/bookmarks/${id}/replay-to`,
+        { url },
+      )
+      .then((r) => r.data),
+  // A plain browser navigation (anchor download) bypasses axios, so this
+  // builds the URL from the same base the axios instance targets.
+  exportBookmarkUrl: (id: string) => {
+    const base = http.defaults.baseURL || '/'
+    return `${base}${base.endsWith('/') ? '' : '/'}api/bookmarks/${id}/export`
+  },
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
@@ -714,4 +764,6 @@ export const qk = {
     ['applications', appId, 'messages', id, 'deliveries'] as const,
   messageAttempts: (appId: string, id: string) =>
     ['applications', appId, 'messages', id, 'attempts'] as const,
+  bookmarks: (params?: { source_id?: string; tag?: string }) =>
+    ['bookmarks', params ?? {}] as const,
 }
