@@ -8,4 +8,5 @@ SELECT body FROM request_bodies WHERE request_id = $1 AND body IS NOT NULL;
 
 -- name: ExpireOldRequestBodies :execrows
 UPDATE request_bodies SET body = NULL
- WHERE stored_at < sqlc.arg('cutoff') AND body IS NOT NULL;
+ WHERE stored_at < sqlc.arg('cutoff') AND body IS NOT NULL
+   AND request_id NOT IN (SELECT request_id FROM bookmarks);

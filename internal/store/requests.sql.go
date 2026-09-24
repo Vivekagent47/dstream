@@ -65,3 +65,43 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 	)
 	return i, err
 }
+
+const getRequestForReplay = `-- name: GetRequestForReplay :one
+SELECT r.id, r.source_id, r.http_method, r.http_path, r.headers, r.body_ref,
+       r.content_type, r.body_size
+FROM requests r
+JOIN sources s ON s.id = r.source_id
+WHERE r.id = $1 AND s.org_id = $2
+`
+
+type GetRequestForReplayParams struct {
+	ID    pgtype.UUID `json:"id"`
+	OrgID pgtype.UUID `json:"org_id"`
+}
+
+type GetRequestForReplayRow struct {
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	HTTPMethod  string      `json:"http_method"`
+	HTTPPath    string      `json:"http_path"`
+	Headers     []byte      `json:"headers"`
+	BodyRef     string      `json:"body_ref"`
+	ContentType *string     `json:"content_type"`
+	BodySize    int32       `json:"body_size"`
+}
+
+func (q *Queries) GetRequestForReplay(ctx context.Context, arg GetRequestForReplayParams) (GetRequestForReplayRow, error) {
+	row := q.db.QueryRow(ctx, getRequestForReplay, arg.ID, arg.OrgID)
+	var i GetRequestForReplayRow
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.HTTPMethod,
+		&i.HTTPPath,
+		&i.Headers,
+		&i.BodyRef,
+		&i.ContentType,
+		&i.BodySize,
+	)
+	return i, err
+}

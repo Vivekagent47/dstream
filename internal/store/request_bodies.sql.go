@@ -14,6 +14,7 @@ import (
 const expireOldRequestBodies = `-- name: ExpireOldRequestBodies :execrows
 UPDATE request_bodies SET body = NULL
  WHERE stored_at < $1 AND body IS NOT NULL
+   AND request_id NOT IN (SELECT request_id FROM bookmarks)
 `
 
 func (q *Queries) ExpireOldRequestBodies(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {

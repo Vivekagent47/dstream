@@ -61,6 +61,16 @@ type AuditLog struct {
 	OrgNameSnapshot    *string            `json:"org_name_snapshot"`
 }
 
+type Bookmark struct {
+	ID          pgtype.UUID        `json:"id"`
+	OrgID       pgtype.UUID        `json:"org_id"`
+	RequestID   pgtype.UUID        `json:"request_id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Tags        []string           `json:"tags"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type CliSession struct {
 	ID         pgtype.UUID        `json:"id"`
 	SourceID   pgtype.UUID        `json:"source_id"`

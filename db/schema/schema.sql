@@ -235,6 +235,19 @@ CREATE TABLE request_bodies (
     stored_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE bookmarks (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
+    org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    request_id  UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    tags        TEXT[] NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, name)
+);
+CREATE INDEX bookmarks_org_idx ON bookmarks (org_id, created_at DESC);
+CREATE INDEX bookmarks_request_idx ON bookmarks (request_id);
+
 -- events: the unit of delivery — one per (request × enabled connection) at
 -- ingest fan-out. Tracks the delivery lifecycle; each concrete try is an
 -- attempts row. The delivery worker drives state via the fair per-org queue.

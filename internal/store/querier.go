@@ -61,6 +61,7 @@ type Querier interface {
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateApplication(ctx context.Context, arg CreateApplicationParams) (Application, error)
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (Attempt, error)
+	CreateBookmark(ctx context.Context, arg CreateBookmarkParams) (Bookmark, error)
 	CreateConnection(ctx context.Context, arg CreateConnectionParams) (Connection, error)
 	CreateDestination(ctx context.Context, arg CreateDestinationParams) (Destination, error)
 	CreateEndpoint(ctx context.Context, arg CreateEndpointParams) (Endpoint, error)
@@ -81,6 +82,7 @@ type Querier interface {
 	CreateSource(ctx context.Context, arg CreateSourceParams) (Source, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteApplicationForOrg(ctx context.Context, arg DeleteApplicationForOrgParams) (pgtype.UUID, error)
+	DeleteBookmarkForOrg(ctx context.Context, arg DeleteBookmarkForOrgParams) (int64, error)
 	DeleteConnectionForOrg(ctx context.Context, arg DeleteConnectionForOrgParams) error
 	DeleteDestinationForOrg(ctx context.Context, arg DeleteDestinationForOrgParams) error
 	DeleteEndpointForApp(ctx context.Context, arg DeleteEndpointForAppParams) (pgtype.UUID, error)
@@ -135,6 +137,7 @@ type Querier interface {
 	GetActiveMagicLinkToken(ctx context.Context, tokenHash []byte) (MagicLinkToken, error)
 	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
 	GetApplicationForOrg(ctx context.Context, arg GetApplicationForOrgParams) (Application, error)
+	GetBookmarkForOrg(ctx context.Context, arg GetBookmarkForOrgParams) (Bookmark, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
 	GetDeliveryByMessageEndpoint(ctx context.Context, arg GetDeliveryByMessageEndpointParams) (MessageDelivery, error)
@@ -163,6 +166,7 @@ type Querier interface {
 	// Excludes a retention-expunged (NULL) body so it surfaces as ErrNoRows, taking
 	// the delivery worker's missing-body terminate path instead of sending empty.
 	GetRequestBody(ctx context.Context, requestID pgtype.UUID) ([]byte, error)
+	GetRequestForReplay(ctx context.Context, arg GetRequestForReplayParams) (GetRequestForReplayRow, error)
 	GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error)
 	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -183,6 +187,7 @@ type Querier interface {
 	// LEFT JOIN may yield NULL for u/k columns; COALESCE so sqlc generates
 	// non-nullable string fields (sqlc + LEFT JOIN nullability is awkward).
 	ListAuditLogsByOrg(ctx context.Context, arg ListAuditLogsByOrgParams) ([]ListAuditLogsByOrgRow, error)
+	ListBookmarksForOrg(ctx context.Context, arg ListBookmarksForOrgParams) ([]ListBookmarksForOrgRow, error)
 	ListConnectionInfo(ctx context.Context) ([]ListConnectionInfoRow, error)
 	// LIMIT is a safety bound against a pathological org, not paging: connections
 	// are inherently low-cardinality (≤ sources×destinations) and the dashboard
