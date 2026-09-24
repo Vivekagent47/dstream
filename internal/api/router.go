@@ -14,6 +14,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/api/outbound"
 	"github.com/Vivekagent47/dstream/internal/api/pipeline"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -45,6 +46,9 @@ type Deps struct {
 	// SelfHosts are dstream's own hostnames; a webhook endpoint/destination
 	// pointing at one is rejected at create/patch (loop guard).
 	SelfHosts []string
+	// AllowPrivateDestinations lets the bookmark replay-to client reach
+	// loopback/private targets (self-host only; default false).
+	AllowPrivateDestinations bool
 	// SecretGrace is how long a rotated endpoint's previous signing secret
 	// stays valid after a rotate.
 	SecretGrace time.Duration
@@ -73,6 +77,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		BodyStore:        d.BodyStore,
 		EvictSourceCache: d.EvictSourceCache,
 		SelfHosts:        d.SelfHosts,
+		Replayer:         deliver.NewSafeHTTPClient(30*time.Second, d.AllowPrivateDestinations),
 	}
 	cli := apicli.Handlers{
 		Log:           d.Log,
@@ -191,6 +196,15 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/histogram", pl.EventsHistogram)
 					r.Get("/{id}", pl.GetEvent)
 					r.Post("/{id}/retry", pl.RetryEvent)
+				})
+				r.Route("/bookmarks", func(r chi.Router) {
+					r.Get("/", pl.ListBookmarks)
+					r.Post("/", pl.CreateBookmark)
+					r.Get("/{id}", pl.GetBookmark)
+					r.Delete("/{id}", pl.DeleteBookmark)
+					r.Post("/{id}/replay", pl.ReplayBookmark)
+					r.Post("/{id}/replay-to", pl.ReplayBookmarkTo)
+					r.Get("/{id}/export", pl.ExportBookmark)
 				})
 
 				r.Get("/operational-app", ob.GetOperationalApp)

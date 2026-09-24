@@ -5,6 +5,7 @@ package pipeline
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
@@ -27,4 +28,7 @@ type Handlers struct {
 	// SelfHosts are dstream's own hostnames; a destination pointing at one is
 	// rejected at create/patch (loop guard).
 	SelfHosts []string
+	// Replayer is the SSRF-guarded HTTP client for server-side bookmark
+	// replay-to-URL (blocks loopback/private unless AllowPrivateDestinations).
+	Replayer *http.Client
 }

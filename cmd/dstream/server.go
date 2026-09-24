@@ -153,19 +153,20 @@ func serverCmd() *cobra.Command {
 			ih.Mount(r)
 
 			api.Mount(r, api.Deps{
-				Log:              log,
-				Queries:          q,
-				Pool:             pool,
-				Redis:            rdb,
-				Queue:            dq,
-				BodyStore:        bodyStore,
-				Signer:           signer,
-				PublicBaseURL:    cfg.PublicBaseURL,
-				AppBaseURL:       cfg.AppBaseURL,
-				EvictSourceCache: ih.InvalidateSource,
-				SelfHosts:        cfg.SelfHosts,
-				SecretGrace:      cfg.WebhookSecretGrace,
-				Portal:           portalSigner,
+				Log:                      log,
+				Queries:                  q,
+				Pool:                     pool,
+				Redis:                    rdb,
+				Queue:                    dq,
+				BodyStore:                bodyStore,
+				Signer:                   signer,
+				PublicBaseURL:            cfg.PublicBaseURL,
+				AppBaseURL:               cfg.AppBaseURL,
+				EvictSourceCache:         ih.InvalidateSource,
+				SelfHosts:                cfg.SelfHosts,
+				SecretGrace:              cfg.WebhookSecretGrace,
+				Portal:                   portalSigner,
+				AllowPrivateDestinations: cfg.AllowPrivateDestinations,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{
