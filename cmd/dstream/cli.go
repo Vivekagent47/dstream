@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ func cliCmd() *cobra.Command {
 		Use:   "cli",
 		Short: "Local development CLI (tunnel, replay, listen)",
 	}
-	c.AddCommand(listenCmd())
+	c.AddCommand(listenCmd(), fixturesCmd(), replayCmd())
 	return c
 }
 
@@ -217,4 +218,189 @@ func forward(ctx context.Context, conn *websocket.Conn, client *http.Client, for
 	resp.Headers = r.Header
 	resp.Body, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	_ = wsjson.Write(ctx, conn, resp)
+}
+
+// cliAuth resolves the API key + base URL the same way listen does.
+func cliAuth(baseFlag string) (apiKey, base string, err error) {
+	apiKey = os.Getenv("DSTREAM_API_KEY")
+	if apiKey == "" {
+		return "", "", errors.New("DSTREAM_API_KEY env var required")
+	}
+	base = baseFlag
+	if base == "" {
+		if env := os.Getenv("DSTREAM_API_URL"); env != "" {
+			base = env
+		} else {
+			base = "http://localhost:8080"
+		}
+	}
+	return apiKey, strings.TrimRight(base, "/"), nil
+}
+
+// cliGetJSON does an authed GET and decodes the JSON body into out.
+func cliGetJSON(url, apiKey string, out any) error {
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s: %d %s", url, resp.StatusCode, b)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+type cliFixture struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Tags       []string `json:"tags"`
+	SourceID   string   `json:"source_id"`
+	HTTPMethod string   `json:"http_method"`
+}
+
+type cliExport struct {
+	Method      string              `json:"method"`
+	Path        string              `json:"path"`
+	Headers     map[string][]string `json:"headers"`
+	ContentType string              `json:"content_type"`
+	Body        string              `json:"body_base64"`
+}
+
+// resolveFixtureID returns ref if it's already a UUID, else looks it up by name.
+func resolveFixtureID(base, apiKey, ref string) (string, error) {
+	if isUUID(ref) {
+		return ref, nil
+	}
+	var fixtures []cliFixture
+	if err := cliGetJSON(base+"/api/bookmarks", apiKey, &fixtures); err != nil {
+		return "", err
+	}
+	for _, f := range fixtures {
+		if f.Name == ref {
+			return f.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no fixture named %q", ref)
+}
+
+// cliSkipHeader drops headers that must not be forwarded on replay (mirrors the
+// server-side bookmark.skipHeader): reserved/hop-by-hop/forwarding headers and
+// any value stored redacted at rest.
+func cliSkipHeader(key string, vals []string) bool {
+	switch http.CanonicalHeaderKey(key) {
+	case "Host", "Content-Length", "Content-Type", "Dstream-Webhook-Hops",
+		"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+		"Te", "Trailer", "Transfer-Encoding", "Upgrade",
+		"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-Ip":
+		return true
+	}
+	for _, v := range vals {
+		if v == "[redacted]" {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+func fixturesCmd() *cobra.Command {
+	var baseURLFlag string
+	cmd := &cobra.Command{
+		Use:   "fixtures",
+		Short: "List saved webhook fixtures (bookmarks)",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			apiKey, base, err := cliAuth(baseURLFlag)
+			if err != nil {
+				return err
+			}
+			var fixtures []cliFixture
+			if err := cliGetJSON(base+"/api/bookmarks", apiKey, &fixtures); err != nil {
+				return err
+			}
+			if len(fixtures) == 0 {
+				fmt.Println("no fixtures")
+				return nil
+			}
+			fmt.Printf("%-28s %-8s %-38s %s\n", "NAME", "METHOD", "SOURCE", "TAGS")
+			for _, f := range fixtures {
+				fmt.Printf("%-28s %-8s %-38s %s\n", truncateStr(f.Name, 28), f.HTTPMethod, f.SourceID, strings.Join(f.Tags, ","))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&baseURLFlag, "url", "", "dstream API base URL (default: $DSTREAM_API_URL or http://localhost:8080)")
+	return cmd
+}
+
+func replayCmd() *cobra.Command {
+	var forwardFlag, baseURLFlag string
+	var count int
+	cmd := &cobra.Command{
+		Use:   "replay <fixture-name-or-id>",
+		Short: "Replay a saved fixture to a local URL",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			apiKey, base, err := cliAuth(baseURLFlag)
+			if err != nil {
+				return err
+			}
+			id, err := resolveFixtureID(base, apiKey, args[0])
+			if err != nil {
+				return err
+			}
+			var exp cliExport
+			if err := cliGetJSON(base+"/api/bookmarks/"+id+"/export", apiKey, &exp); err != nil {
+				return err
+			}
+			body, err := base64.StdEncoding.DecodeString(exp.Body)
+			if err != nil {
+				return fmt.Errorf("decode fixture body: %w", err)
+			}
+			method := exp.Method
+			if method == "" {
+				method = http.MethodPost
+			}
+			for i := 0; i < count; i++ {
+				req, err := http.NewRequest(method, forwardFlag, bytes.NewReader(body))
+				if err != nil {
+					return err
+				}
+				for k, vals := range exp.Headers {
+					if cliSkipHeader(k, vals) {
+						continue
+					}
+					for _, v := range vals {
+						req.Header.Add(k, v)
+					}
+				}
+				if exp.ContentType != "" {
+					req.Header.Set("Content-Type", exp.ContentType)
+				}
+				start := time.Now()
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "replay %d/%d: %v\n", i+1, count, err)
+					continue
+				}
+				rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+				resp.Body.Close()
+				fmt.Printf("%d/%d  %d  %dms  %s\n", i+1, count, resp.StatusCode, time.Since(start).Milliseconds(), truncateStr(string(rb), 200))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&forwardFlag, "forward", "", "Local URL to send the fixture to (required)")
+	cmd.Flags().IntVar(&count, "count", 1, "Number of times to replay")
+	cmd.Flags().StringVar(&baseURLFlag, "url", "", "dstream API base URL (default: $DSTREAM_API_URL or http://localhost:8080)")
+	_ = cmd.MarkFlagRequired("forward")
+	return cmd
 }
