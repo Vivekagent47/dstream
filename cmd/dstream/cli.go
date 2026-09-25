@@ -26,7 +26,7 @@ func cliCmd() *cobra.Command {
 		Use:   "cli",
 		Short: "Local development CLI (tunnel, replay, listen)",
 	}
-	c.AddCommand(listenCmd(), fixturesCmd(), replayCmd())
+	c.AddCommand(listenCmd(), fixturesCmd(), replayCmd(), importCmd(), scenarioCmd())
 	return c
 }
 
@@ -253,6 +253,32 @@ func cliGetJSON(url, apiKey string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// cliPostJSON does an authed POST of `in` (JSON) and decodes the JSON response
+// into out (out may be nil to ignore the body). Non-2xx is an error with the
+// server's status+body.
+func cliPostJSON(url, apiKey string, in any, out any) error {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s: %d %s", url, resp.StatusCode, b)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
 type cliFixture struct {
 	ID         string   `json:"id"`
 	Name       string   `json:"name"`
@@ -341,6 +367,42 @@ func fixturesCmd() *cobra.Command {
 	return cmd
 }
 
+// forwardExport decodes exp's body and POSTs (or exp.Method's verb) it to
+// target, honoring cliSkipHeader + Content-Type like replay/scenario both need.
+func forwardExport(exp cliExport, target string) (status int, dur time.Duration, body string, err error) {
+	b, err := base64.StdEncoding.DecodeString(exp.Body)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("decode fixture body: %w", err)
+	}
+	method := exp.Method
+	if method == "" {
+		method = http.MethodPost
+	}
+	req, err := http.NewRequest(method, target, bytes.NewReader(b))
+	if err != nil {
+		return 0, 0, "", err
+	}
+	for k, vals := range exp.Headers {
+		if cliSkipHeader(k, vals) {
+			continue
+		}
+		for _, v := range vals {
+			req.Header.Add(k, v)
+		}
+	}
+	if exp.ContentType != "" {
+		req.Header.Set("Content-Type", exp.ContentType)
+	}
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, time.Since(start), "", err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	return resp.StatusCode, time.Since(start), string(rb), nil
+}
+
 func replayCmd() *cobra.Command {
 	var forwardFlag, baseURLFlag string
 	var count int
@@ -361,45 +423,173 @@ func replayCmd() *cobra.Command {
 			if err := cliGetJSON(base+"/api/bookmarks/"+id+"/export", apiKey, &exp); err != nil {
 				return err
 			}
-			body, err := base64.StdEncoding.DecodeString(exp.Body)
-			if err != nil {
-				return fmt.Errorf("decode fixture body: %w", err)
-			}
-			method := exp.Method
-			if method == "" {
-				method = http.MethodPost
-			}
 			for i := 0; i < count; i++ {
-				req, err := http.NewRequest(method, forwardFlag, bytes.NewReader(body))
-				if err != nil {
-					return err
-				}
-				for k, vals := range exp.Headers {
-					if cliSkipHeader(k, vals) {
-						continue
-					}
-					for _, v := range vals {
-						req.Header.Add(k, v)
-					}
-				}
-				if exp.ContentType != "" {
-					req.Header.Set("Content-Type", exp.ContentType)
-				}
-				start := time.Now()
-				resp, err := http.DefaultClient.Do(req)
+				status, dur, body, err := forwardExport(exp, forwardFlag)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "replay %d/%d: %v\n", i+1, count, err)
 					continue
 				}
-				rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-				resp.Body.Close()
-				fmt.Printf("%d/%d  %d  %dms  %s\n", i+1, count, resp.StatusCode, time.Since(start).Milliseconds(), truncateStr(string(rb), 200))
+				fmt.Printf("%d/%d  %d  %dms  %s\n", i+1, count, status, dur.Milliseconds(), truncateStr(body, 200))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&forwardFlag, "forward", "", "Local URL to send the fixture to (required)")
 	cmd.Flags().IntVar(&count, "count", 1, "Number of times to replay")
+	cmd.Flags().StringVar(&baseURLFlag, "url", "", "dstream API base URL (default: $DSTREAM_API_URL or http://localhost:8080)")
+	_ = cmd.MarkFlagRequired("forward")
+	return cmd
+}
+
+func importCmd() *cobra.Command {
+	var sourceFlag, nameFlag, descFlag, tagsFlag, baseURLFlag string
+	cmd := &cobra.Command{
+		Use:   "import <file.json>",
+		Short: "Import an exported fixture JSON as a bookmark",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			apiKey, base, err := cliAuth(baseURLFlag)
+			if err != nil {
+				return err
+			}
+			if nameFlag == "" {
+				return errors.New("--name required")
+			}
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("read %s: %w", args[0], err)
+			}
+			// The exported fixture shape (from GET /api/bookmarks/{id}/export).
+			var exp struct {
+				Method      string              `json:"method"`
+				Path        string              `json:"path"`
+				Headers     map[string][]string `json:"headers"`
+				ContentType string              `json:"content_type"`
+				Body        string              `json:"body_base64"`
+			}
+			if err := json.Unmarshal(raw, &exp); err != nil {
+				return fmt.Errorf("parse fixture json: %w", err)
+			}
+			srcID, err := resolveSource(base, apiKey, sourceFlag)
+			if err != nil {
+				return err
+			}
+			var tags []string
+			if tagsFlag != "" {
+				tags = strings.Split(tagsFlag, ",")
+			}
+			reqBody := map[string]any{
+				"source_id":    srcID,
+				"name":         nameFlag,
+				"description":  descFlag,
+				"tags":         tags,
+				"method":       exp.Method,
+				"path":         exp.Path,
+				"headers":      exp.Headers,
+				"content_type": exp.ContentType,
+				"body_base64":  exp.Body,
+			}
+			var created struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}
+			if err := cliPostJSON(base+"/api/bookmarks/import", apiKey, reqBody, &created); err != nil {
+				return err
+			}
+			fmt.Printf("imported fixture %q (id %s)\n", created.Name, created.ID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&sourceFlag, "source", "", "Source ID or name to attach the imported request to (required)")
+	cmd.Flags().StringVar(&nameFlag, "name", "", "Fixture name (required)")
+	cmd.Flags().StringVar(&descFlag, "description", "", "Optional description")
+	cmd.Flags().StringVar(&tagsFlag, "tags", "", "Comma-separated tags")
+	cmd.Flags().StringVar(&baseURLFlag, "url", "", "dstream API base URL (default: $DSTREAM_API_URL or http://localhost:8080)")
+	_ = cmd.MarkFlagRequired("source")
+	_ = cmd.MarkFlagRequired("name")
+	return cmd
+}
+
+type cliScenario struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type cliScenarioStep struct {
+	Position     int    `json:"position"`
+	BookmarkID   string `json:"bookmark_id"`
+	BookmarkName string `json:"bookmark_name"`
+	DelayMs      int    `json:"delay_ms"`
+}
+
+type cliScenarioDetail struct {
+	cliScenario
+	Steps []cliScenarioStep `json:"steps"`
+}
+
+// resolveScenarioID returns ref if it's already a UUID, else looks it up by name.
+func resolveScenarioID(base, apiKey, ref string) (string, error) {
+	if isUUID(ref) {
+		return ref, nil
+	}
+	var scenarios []cliScenario
+	if err := cliGetJSON(base+"/api/scenarios", apiKey, &scenarios); err != nil {
+		return "", err
+	}
+	for _, s := range scenarios {
+		if s.Name == ref {
+			return s.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no scenario named %q", ref)
+}
+
+func scenarioCmd() *cobra.Command {
+	c := &cobra.Command{Use: "scenario", Short: "Run saved scenarios (ordered fixture sequences)"}
+	c.AddCommand(scenarioRunCmd())
+	return c
+}
+
+func scenarioRunCmd() *cobra.Command {
+	var forwardFlag, baseURLFlag string
+	cmd := &cobra.Command{
+		Use:   "run <scenario-name-or-id>",
+		Short: "Run a saved scenario, forwarding each step's fixture in order",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			apiKey, base, err := cliAuth(baseURLFlag)
+			if err != nil {
+				return err
+			}
+			id, err := resolveScenarioID(base, apiKey, args[0])
+			if err != nil {
+				return err
+			}
+			var sc cliScenarioDetail
+			if err := cliGetJSON(base+"/api/scenarios/"+id, apiKey, &sc); err != nil {
+				return err
+			}
+			for _, step := range sc.Steps {
+				if step.DelayMs > 0 {
+					time.Sleep(time.Duration(step.DelayMs) * time.Millisecond)
+				}
+				var exp cliExport
+				if err := cliGetJSON(base+"/api/bookmarks/"+step.BookmarkID+"/export", apiKey, &exp); err != nil {
+					fmt.Fprintf(os.Stderr, "step %d %s: %v\n", step.Position, step.BookmarkName, err)
+					return err
+				}
+				status, dur, _, err := forwardExport(exp, forwardFlag)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "step %d %s: %v\n", step.Position, step.BookmarkName, err)
+					return err
+				}
+				fmt.Printf("step %d %s: %d %dms\n", step.Position, step.BookmarkName, status, dur.Milliseconds())
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&forwardFlag, "forward", "", "Local URL to forward each step's fixture to (required)")
 	cmd.Flags().StringVar(&baseURLFlag, "url", "", "dstream API base URL (default: $DSTREAM_API_URL or http://localhost:8080)")
 	_ = cmd.MarkFlagRequired("forward")
 	return cmd

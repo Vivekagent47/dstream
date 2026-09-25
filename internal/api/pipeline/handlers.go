@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -31,4 +33,10 @@ type Handlers struct {
 	// Replayer is the SSRF-guarded HTTP client for server-side bookmark
 	// replay-to-URL (blocks loopback/private unless AllowPrivateDestinations).
 	Replayer *http.Client
+	// Pool begins transactions for multi-row writes (scenario step-replace).
+	Pool *pgxpool.Pool
+	// PublicBaseURL is the API's externally-visible scheme://host[:port], used
+	// to build the source ingest URL server-side (it lives on the API host, not
+	// the dashboard origin, so the client can't derive it from window.origin).
+	PublicBaseURL string
 }

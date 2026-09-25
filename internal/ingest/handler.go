@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
+	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
@@ -79,8 +80,19 @@ type Handler struct {
 
 type sourceCacheEntry struct {
 	src      store.Source
+	rules    []compiledRule
 	expires  time.Time
 	notFound bool // negative entry: token resolved to ErrSourceNotFound
+}
+
+// compiledRule is a source's enabled capture rule with its filter pre-compiled
+// at cache-load time, so the ingest hot path never compiles CEL per request.
+// prg == nil means the rule has no filter (match every request).
+type compiledRule struct {
+	id   uuid.UUID
+	cap  int32
+	name string
+	prg  *filter.Program
 }
 
 func (h *Handler) Mount(r chi.Router) {
@@ -101,15 +113,15 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	token := chi.URLParam(r, "token")
 
-	src, err := func() (store.Source, error) {
+	src, rules, err := func() (store.Source, []compiledRule, error) {
 		ctx, span := ingestTracer.Start(ctx, "ingest.resolve_source")
 		defer span.End()
-		src, err := h.resolveSource(ctx, token)
+		src, rules, err := h.resolveSource(ctx, token)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
-		return src, err
+		return src, rules, err
 	}()
 	if err != nil {
 		if errors.Is(err, ErrSourceNotFound) {
@@ -254,6 +266,17 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	resp := ingestResponse{RequestID: reqID.String()}
 
+	// Flatten headers once, only if this source has rules — capture is the
+	// only consumer, and a no-rule source (the common case) must do zero
+	// extra work per request.
+	var captureHdr map[string]string
+	if len(rules) > 0 {
+		captureHdr = make(map[string]string, len(r.Header))
+		for k := range r.Header {
+			captureHdr[k] = r.Header.Get(k)
+		}
+	}
+
 	if dup {
 		resp.Deduped = true
 		writeJSON(w, http.StatusAccepted, resp)
@@ -271,6 +294,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		// successful ingest (the request + body are persisted for replay), and
 		// a retry would produce the same zero-event result, so keep the dedup key.
 		committed = true
+		if len(rules) > 0 {
+			h.capture(ctx, rules, src.OrgID, reqID, body, captureHdr)
+		}
 		writeJSON(w, http.StatusAccepted, resp)
 		return
 	}
@@ -336,7 +362,60 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// Events are durably in Postgres now (CreateEventsBatch committed); a failed
 	// enqueue leaves them 'queued' for the reaper. Keep the dedup key.
 	committed = true
+	if len(rules) > 0 {
+		h.capture(ctx, rules, src.OrgID, reqID, body, captureHdr)
+	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// capture runs a source's compiled capture rules against one committed
+// request, best-effort: a match auto-bookmarks the request and evicts past
+// the rule's cap. Called only when len(rules) > 0, so a no-rule source pays
+// nothing here. Every failure (eval, create, evict) is logged and swallowed,
+// and a panic is recovered — capture must never fail or change the ingest
+// response, which has already been decided by the caller.
+func (h *Handler) capture(ctx context.Context, rules []compiledRule, orgID pgtype.UUID, reqID uuid.UUID, body []byte, hdr map[string]string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			h.Log.ErrorContext(ctx, "capture panic (ignored)", "panic", rec)
+		}
+	}()
+	for _, rule := range rules {
+		if rule.prg != nil {
+			ok, err := rule.prg.Eval(body, hdr, filter.Meta{})
+			if err != nil {
+				// Fail-CLOSED: skip capture on eval error. Opposite of the
+				// delivery filter's fail-open — a spurious capture is noise,
+				// not a lost event.
+				h.Log.WarnContext(ctx, "capture filter eval error (skipping)", "rule", rule.id, "err", err)
+				continue
+			}
+			if !ok {
+				continue
+			}
+		}
+		// Full reqID, not a truncated prefix: a UUIDv7's first 8 hex chars are
+		// only the high 32 bits of its 48-bit millisecond timestamp, so two
+		// requests within the same ~65s window share it — a truncated suffix
+		// collided against bookmarks' UNIQUE(org_id, name) under any request
+		// burst on one rule, silently dropping the capture.
+		autoName := rule.name + "-" + reqID.String()
+		if _, err := h.Queries.CreateAutoBookmark(ctx, store.CreateAutoBookmarkParams{
+			OrgID:         orgID,
+			RequestID:     store.UUID(reqID),
+			Name:          autoName,
+			CaptureRuleID: store.UUID(rule.id),
+		}); err != nil {
+			h.Log.WarnContext(ctx, "capture: create bookmark (ignored)", "rule", rule.id, "err", err)
+			continue
+		}
+		if err := h.Queries.EvictCaptureBookmarks(ctx, store.EvictCaptureBookmarksParams{
+			CaptureRuleID: store.UUID(rule.id),
+			Limit:         rule.cap,
+		}); err != nil {
+			h.Log.WarnContext(ctx, "capture: evict (ignored)", "rule", rule.id, "err", err)
+		}
+	}
 }
 
 // InvalidateSource drops a source from the in-process cache so enable/disable
@@ -348,15 +427,15 @@ func (h *Handler) InvalidateSource(token string) {
 	h.sourceCache.Delete(token)
 }
 
-func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source, error) {
+func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source, []compiledRule, error) {
 	// Cache hit? (positive or negative)
 	if v, ok := h.sourceCache.Load(token); ok {
 		entry := v.(sourceCacheEntry)
 		if time.Now().Before(entry.expires) {
 			if entry.notFound {
-				return store.Source{}, ErrSourceNotFound
+				return store.Source{}, nil, ErrSourceNotFound
 			}
-			return entry.src, nil
+			return entry.src, entry.rules, nil
 		}
 		// Expired — fall through to a fresh lookup. We delete eagerly to
 		// keep the map size bounded even for tokens that stop being
@@ -375,15 +454,41 @@ func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source
 				expires:  time.Now().Add(NegativeSourceCacheTTL),
 				notFound: true,
 			})
-			return store.Source{}, ErrSourceNotFound
+			return store.Source{}, nil, ErrSourceNotFound
 		}
-		return store.Source{}, err
+		return store.Source{}, nil, err
 	}
+
+	// Load + compile this source's enabled capture rules ONCE per cache entry
+	// (not per request). A source with no rules gets a nil slice, so the
+	// per-request capture check below is a single len()==0 branch — no extra
+	// DB work on the no-rule path. Best-effort: a failure here never fails
+	// source resolution, it just means capture is (temporarily) disabled for
+	// this source until the entry expires and reloads.
+	var rules []compiledRule
+	rows, err := h.Queries.ListEnabledCaptureRulesBySource(ctx, src.ID)
+	if err != nil {
+		h.Log.WarnContext(ctx, "ingest: list capture rules (treating as none)", "source_id", store.GoUUID(src.ID), "err", err)
+	}
+	for _, r := range rows {
+		var prg *filter.Program
+		if r.FilterExpr != nil && *r.FilterExpr != "" {
+			p, err := filter.Compile(*r.FilterExpr, false)
+			if err != nil {
+				h.Log.WarnContext(ctx, "capture rule: bad filter, skipping", "rule", store.GoUUID(r.ID), "err", err)
+				continue
+			}
+			prg = p
+		}
+		rules = append(rules, compiledRule{id: store.GoUUID(r.ID), cap: r.Cap, name: r.Name, prg: prg})
+	}
+
 	h.sourceCache.Store(token, sourceCacheEntry{
 		src:     src,
+		rules:   rules,
 		expires: time.Now().Add(SourceCacheTTL),
 	})
-	return src, nil
+	return src, rules, nil
 }
 
 // checkDedup returns true if the body is a duplicate of one seen within the

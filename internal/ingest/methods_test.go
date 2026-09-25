@@ -108,7 +108,7 @@ func TestResolveSourceNegativeCache(t *testing.T) {
 	// A flood of the same unknown token: every call returns ErrSourceNotFound,
 	// but only the first touches Postgres — the rest are negative-cache hits.
 	for i := 0; i < 5; i++ {
-		if _, err := h.resolveSource(context.Background(), tok); !errors.Is(err, ErrSourceNotFound) {
+		if _, _, err := h.resolveSource(context.Background(), tok); !errors.Is(err, ErrSourceNotFound) {
 			t.Fatalf("resolveSource #%d: err=%v, want ErrSourceNotFound", i, err)
 		}
 	}
@@ -123,7 +123,7 @@ func TestResolveSourceNegativeCache(t *testing.T) {
 	entry.expires = time.Now().Add(-time.Second)
 	h.sourceCache.Store(tok, entry)
 
-	if _, err := h.resolveSource(context.Background(), tok); !errors.Is(err, ErrSourceNotFound) {
+	if _, _, err := h.resolveSource(context.Background(), tok); !errors.Is(err, ErrSourceNotFound) {
 		t.Fatalf("post-expiry resolveSource: err=%v, want ErrSourceNotFound", err)
 	}
 	if db.queryRows != 2 {

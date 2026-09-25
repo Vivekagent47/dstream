@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -73,7 +74,7 @@ func (d Handlers) CreateSource(w http.ResponseWriter, r *http.Request) {
 			"type": row.Type,
 		},
 	})
-	httpx.WriteJSON(w, http.StatusCreated, sourceView(row))
+	httpx.WriteJSON(w, http.StatusCreated, sourceView(row, d.PublicBaseURL))
 }
 
 func (d Handlers) ListSources(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +90,7 @@ func (d Handlers) ListSources(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, sourceView(s))
+		out = append(out, sourceView(s, d.PublicBaseURL))
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
@@ -113,7 +114,7 @@ func (d Handlers) GetSource(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, sourceView(row))
+	httpx.WriteJSON(w, http.StatusOK, sourceView(row, d.PublicBaseURL))
 }
 
 type patchSourceReq struct {
@@ -190,7 +191,7 @@ func (d Handlers) PatchSource(w http.ResponseWriter, r *http.Request) {
 			"enabled":         row.Enabled,
 		},
 	})
-	httpx.WriteJSON(w, http.StatusOK, sourceView(row))
+	httpx.WriteJSON(w, http.StatusOK, sourceView(row, d.PublicBaseURL))
 }
 
 func (d Handlers) DeleteSource(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +230,10 @@ func (d Handlers) DeleteSource(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func sourceView(s store.Source) map[string]any {
+// sourceView renders a source. ingest_url is built from the API's public base
+// (the ingest endpoint lives on the API host, which differs from the dashboard
+// origin in split-host deployments) so the client never has to guess it.
+func sourceView(s store.Source, baseURL string) map[string]any {
 	return map[string]any{
 		"id":              store.GoUUID(s.ID).String(),
 		"org_id":          store.GoUUID(s.OrgID).String(),
@@ -239,6 +243,7 @@ func sourceView(s store.Source) map[string]any {
 		"allowed_methods": s.AllowedMethods,
 		"enabled":         s.Enabled,
 		"ingest_token":    s.IngestToken,
+		"ingest_url":      strings.TrimSuffix(baseURL, "/") + "/e/" + s.IngestToken,
 		"signing_config":  json.RawMessage(s.SigningConfig),
 		"created_at":      s.CreatedAt.Time,
 		"updated_at":      s.UpdatedAt.Time,

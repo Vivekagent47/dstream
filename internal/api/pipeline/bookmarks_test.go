@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -275,6 +276,7 @@ func newReplayToRouter(q *store.Queries, allowPrivate bool) *chi.Mux {
 		r.Use(auth.Authenticate(q, testSigner))
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireOrg(q))
+			r.Post("/bookmarks/import", h.ImportBookmark)
 			r.Post("/bookmarks/{id}/replay-to", h.ReplayBookmarkTo)
 			r.Get("/bookmarks/{id}/export", h.ExportBookmark)
 		})
@@ -433,5 +435,144 @@ func TestExportBookmarkNameSanitizedInFilename(t *testing.T) {
 	got := rec.Header().Get("Content-Disposition")
 	if got != `attachment; filename="he_llo.json"` {
 		t.Fatalf("Content-Disposition not sanitized: %q", got)
+	}
+}
+
+func TestImportBookmark(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	_, srcID := seedRequest(t, q, oid) // just need a source in this org
+	r := newReplayToRouter(q, true)
+
+	body := map[string]any{
+		"source_id":    srcID.String(),
+		"name":         "imported-1",
+		"method":       "POST",
+		"content_type": "application/json",
+		"body_base64":  base64.StdEncoding.EncodeToString([]byte(`{"k":"v"}`)),
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("import: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	id := created["id"].(string)
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodGet, "/api/bookmarks/"+id+"/export", uid, oid, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export after import: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var exp struct {
+		Body string `json:"body_base64"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &exp)
+	dec, _ := base64.StdEncoding.DecodeString(exp.Body)
+	if string(dec) != `{"k":"v"}` {
+		t.Fatalf("roundtrip body: %s", dec)
+	}
+}
+
+func TestImportBookmarkForeignSource(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	_, otherOrg := seedOrg(t, q)
+	_, otherSrc := seedRequest(t, q, otherOrg)
+	r := newReplayToRouter(q, true)
+
+	body := map[string]any{
+		"source_id":   otherSrc.String(),
+		"name":        "x",
+		"method":      "POST",
+		"body_base64": base64.StdEncoding.EncodeToString([]byte(`{}`)),
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign source: got %d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImportBookmarkBadBase64(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	_, srcID := seedRequest(t, q, oid)
+	r := newReplayToRouter(q, true)
+
+	body := map[string]any{
+		"source_id":   srcID.String(),
+		"name":        "bad-b64",
+		"method":      "POST",
+		"body_base64": "@@@notbase64",
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad base64: got %d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImportBookmarkOversizeRequest(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	_, srcID := seedRequest(t, q, oid)
+	r := newReplayToRouter(q, true)
+
+	body := map[string]any{
+		"source_id":   srcID.String(),
+		"name":        "too-big",
+		"method":      "POST",
+		"body_base64": strings.Repeat("A", 13<<20), // 13 MiB, over the 12 MiB request cap
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversize import: got %d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImportBookmarkMissingFields(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	_, srcID := seedRequest(t, q, oid)
+	r := newReplayToRouter(q, true)
+
+	cases := []map[string]any{
+		{"name": "n", "method": "POST"},                 // missing source_id
+		{"source_id": srcID.String(), "method": "POST"}, // missing name
+		{"source_id": srcID.String(), "name": "n"},      // missing method
+	}
+	for i, body := range cases {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("case %d: got %d want 400 body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestImportBookmarkDupName(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	_, srcID := seedRequest(t, q, oid)
+	r := newReplayToRouter(q, true)
+
+	body := map[string]any{
+		"source_id":   srcID.String(),
+		"name":        "dup-import",
+		"method":      "POST",
+		"body_base64": base64.StdEncoding.EncodeToString([]byte(`{}`)),
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first import: got %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks/import", uid, oid, body))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("dup import: got %d want 409", rec.Code)
 	}
 }

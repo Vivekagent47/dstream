@@ -78,6 +78,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		EvictSourceCache: d.EvictSourceCache,
 		SelfHosts:        d.SelfHosts,
 		Replayer:         deliver.NewSafeHTTPClient(30*time.Second, d.AllowPrivateDestinations),
+		Pool:             d.Pool,
+		PublicBaseURL:    d.PublicBaseURL,
 	}
 	cli := apicli.Handlers{
 		Log:           d.Log,
@@ -200,11 +202,27 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 				r.Route("/bookmarks", func(r chi.Router) {
 					r.Get("/", pl.ListBookmarks)
 					r.Post("/", pl.CreateBookmark)
+					r.Post("/import", pl.ImportBookmark)
 					r.Get("/{id}", pl.GetBookmark)
 					r.Delete("/{id}", pl.DeleteBookmark)
 					r.Post("/{id}/replay", pl.ReplayBookmark)
 					r.Post("/{id}/replay-to", pl.ReplayBookmarkTo)
 					r.Get("/{id}/export", pl.ExportBookmark)
+				})
+				r.Route("/capture-rules", func(r chi.Router) {
+					r.Get("/", pl.ListCaptureRules)
+					r.Post("/", pl.CreateCaptureRule)
+					r.Get("/{id}", pl.GetCaptureRule)
+					r.Patch("/{id}", pl.PatchCaptureRule)
+					r.Delete("/{id}", pl.DeleteCaptureRule)
+				})
+				r.Route("/scenarios", func(r chi.Router) {
+					r.Get("/", pl.ListScenarios)
+					r.Post("/", pl.CreateScenario)
+					r.Get("/{id}", pl.GetScenario)
+					r.Patch("/{id}", pl.PatchScenario)
+					r.Delete("/{id}", pl.DeleteScenario)
+					r.Post("/{id}/replay-to", pl.ReplayScenarioTo)
 				})
 
 				r.Get("/operational-app", ob.GetOperationalApp)

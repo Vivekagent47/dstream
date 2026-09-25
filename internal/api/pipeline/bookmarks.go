@@ -1,8 +1,13 @@
 package pipeline
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -252,28 +257,25 @@ func (d Handlers) ReplayBookmark(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"event_ids": out})
 }
 
-// loadBookmarkRequest reconstructs the captured request (headers + body) behind
-// a bookmark. Writes the error response and returns ok=false on 404 (request
-// gone) or 410 (body expunged).
-func (d Handlers) loadBookmarkRequest(w http.ResponseWriter, r *http.Request, requestID pgtype.UUID, orgID uuid.UUID) (bookmark.Request, bool) {
-	req, err := d.Queries.GetRequestForReplay(r.Context(), store.GetRequestForReplayParams{
+// loadBookmarkRequestCore reconstructs the captured request behind a bookmark's
+// request_id. Returns an HTTP status + error instead of writing, so callers that
+// aren't 1:1 with a response (scenario replay) can handle each step.
+func (d Handlers) loadBookmarkRequestCore(ctx context.Context, requestID pgtype.UUID, orgID uuid.UUID) (bookmark.Request, int, error) {
+	req, err := d.Queries.GetRequestForReplay(ctx, store.GetRequestForReplayParams{
 		ID: requestID, OrgID: store.UUID(orgID),
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.Err(w, http.StatusNotFound, "captured request no longer exists")
-			return bookmark.Request{}, false
+			return bookmark.Request{}, http.StatusNotFound, fmt.Errorf("captured request no longer exists")
 		}
 		d.Log.Error("bookmark: load request", "err", err)
-		httpx.Err(w, http.StatusInternalServerError, "load request")
-		return bookmark.Request{}, false
+		return bookmark.Request{}, http.StatusInternalServerError, fmt.Errorf("load request")
 	}
-	body, err := d.BodyStore.Get(r.Context(), req.BodyRef)
+	body, err := d.BodyStore.Get(ctx, req.BodyRef)
 	if err != nil {
 		// Body was expunged by the retention sweep (a pre-pin bookmark) or is
 		// otherwise unavailable — cannot replay/export.
-		httpx.Err(w, http.StatusGone, "captured payload no longer stored")
-		return bookmark.Request{}, false
+		return bookmark.Request{}, http.StatusGone, fmt.Errorf("captured payload no longer stored")
 	}
 	var hdrs map[string][]string
 	if len(req.Headers) > 0 {
@@ -290,7 +292,19 @@ func (d Handlers) loadBookmarkRequest(w http.ResponseWriter, r *http.Request, re
 		Headers:     hdrs,
 		Body:        body,
 		ContentType: ct,
-	}, true
+	}, http.StatusOK, nil
+}
+
+// loadBookmarkRequest reconstructs the captured request (headers + body) behind
+// a bookmark. Writes the error response and returns ok=false on 404 (request
+// gone) or 410 (body expunged).
+func (d Handlers) loadBookmarkRequest(w http.ResponseWriter, r *http.Request, requestID pgtype.UUID, orgID uuid.UUID) (bookmark.Request, bool) {
+	req, status, err := d.loadBookmarkRequestCore(r.Context(), requestID, orgID)
+	if err != nil {
+		httpx.Err(w, status, err.Error())
+		return bookmark.Request{}, false
+	}
+	return req, true
 }
 
 type replayToReq struct {
@@ -407,4 +421,124 @@ func (d Handlers) ExportBookmark(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(bm.Name)+`.json"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+type importBookmarkReq struct {
+	SourceID    string              `json:"source_id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Tags        []string            `json:"tags"`
+	Method      string              `json:"method"`
+	Path        string              `json:"path"`
+	Headers     map[string][]string `json:"headers"`
+	ContentType string              `json:"content_type"`
+	Body        string              `json:"body_base64"`
+}
+
+const maxImportBody = 5 << 20 // 5 MiB, matches the ingest body cap
+
+// maxImportRequest bounds the whole import request body read into memory.
+// Headroom over maxImportBody for base64 (~1.33x) + JSON structure + headers/tags.
+const maxImportRequest = 12 << 20 // 12 MiB
+
+// ImportBookmark materializes an exported fixture JSON as a real
+// request+body+bookmark, closing the export→import→replay loop. Every 4a
+// path (replay/replay-to/export/retention-pin) then works on it unchanged.
+func (d Handlers) ImportBookmark(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportRequest)
+	var body importBookmarkReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid or oversized json")
+		return
+	}
+	if body.Name == "" || body.SourceID == "" || body.Method == "" {
+		httpx.Err(w, http.StatusBadRequest, "source_id, name, and method are required")
+		return
+	}
+	srcID, err := uuid.Parse(body.SourceID)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid source_id")
+		return
+	}
+	// SECURITY: the source must belong to the caller's org.
+	if _, err := d.Queries.GetSourceForOrg(r.Context(), store.GetSourceForOrgParams{
+		ID: store.UUID(srcID), OrgID: store.UUID(p.OrgID),
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Err(w, http.StatusNotFound, "source not found")
+			return
+		}
+		d.Log.Error("import: get source", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "import")
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(body.Body)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "body_base64 is not valid base64")
+		return
+	}
+	if len(raw) > maxImportBody {
+		httpx.Err(w, http.StatusBadRequest, "body exceeds 5MiB")
+		return
+	}
+	hdrs := body.Headers
+	if hdrs == nil {
+		hdrs = map[string][]string{}
+	}
+	hdrJSON, err := json.Marshal(hdrs)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid headers")
+		return
+	}
+	reqID := uuid.New()
+	sum := sha256.Sum256(raw)
+	var ct *string
+	if body.ContentType != "" {
+		ct = &body.ContentType
+	}
+	if _, err := d.Queries.CreateRequest(r.Context(), store.CreateRequestParams{
+		ID:          store.UUID(reqID),
+		SourceID:    store.UUID(srcID),
+		HTTPMethod:  body.Method,
+		HTTPPath:    body.Path,
+		Headers:     hdrJSON,
+		BodyHash:    hex.EncodeToString(sum[:]),
+		BodyRef:     "pg:" + reqID.String(),
+		BodySize:    int32(len(raw)),
+		ContentType: ct,
+		SigVerified: false,
+		IngestIP:    nil,
+	}); err != nil {
+		d.Log.Error("import: create request", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "import")
+		return
+	}
+	if _, err := d.BodyStore.Put(r.Context(), reqID, raw); err != nil {
+		d.Log.Error("import: store body", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "import")
+		return
+	}
+	tags := body.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	bm, err := d.Queries.CreateBookmark(r.Context(), store.CreateBookmarkParams{
+		OrgID: store.UUID(p.OrgID), RequestID: store.UUID(reqID),
+		Name: body.Name, Description: body.Description, Tags: tags,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			httpx.Err(w, http.StatusConflict, "bookmark name already in use")
+			return
+		}
+		d.Log.Error("import: create bookmark", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "import")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, bookmarkView(bm))
 }
