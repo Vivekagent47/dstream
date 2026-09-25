@@ -57,11 +57,6 @@ export const Route = createFileRoute('/sources/')({
   errorComponent: AuthErrorBoundary,
 })
 
-function ingestUrl(token: string): string {
-  const origin = typeof window === 'undefined' ? '' : window.location.origin
-  return `${origin}/e/${token}`
-}
-
 function SourcesPage() {
   const qc = useQueryClient()
   const { data: sources } = useQuery(sourcesQuery)
@@ -102,9 +97,9 @@ function SourcesPage() {
     onError: (e) => toast.error((e as Error).message),
   })
 
-  function copyUrl(token: string) {
+  function copyUrl(url: string) {
     navigator.clipboard
-      .writeText(ingestUrl(token))
+      .writeText(url)
       .then(() => toast.success('Ingest URL copied'))
       .catch(() => toast.error('Couldn’t copy — select the URL manually'))
   }
@@ -113,6 +108,7 @@ function SourcesPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="Sources"
+        help="Inbound webhook endpoints — each has a unique ingest URL that receives and records events."
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" /> New source
@@ -184,7 +180,7 @@ function SourcesPage() {
                 <TableCell>
                   <button
                     type="button"
-                    onClick={() => copyUrl(s.ingest_token)}
+                    onClick={() => copyUrl(s.ingest_url)}
                     className="group inline-flex max-w-[280px] items-center gap-1.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
                     title="Copy ingest URL"
                   >
@@ -205,7 +201,7 @@ function SourcesPage() {
                 <TableCell className="pr-6 text-right">
                   <SourceRowMenu
                     source={s}
-                    onCopy={() => copyUrl(s.ingest_token)}
+                    onCopy={() => copyUrl(s.ingest_url)}
                     onToggle={() => patch.mutate({ id: s.id, enabled: !s.enabled })}
                     onDelete={() => setDeleteTarget(s)}
                     pending={patch.isPending}

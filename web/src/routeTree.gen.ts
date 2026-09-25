@@ -13,6 +13,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as PortalRouteRouteImport } from './routes/portal/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesIndexRouteImport } from './routes/sources/index'
+import { Route as ScenariosIndexRouteImport } from './routes/scenarios/index'
 import { Route as PortalIndexRouteImport } from './routes/portal/index'
 import { Route as OperationalWebhooksIndexRouteImport } from './routes/operational-webhooks/index'
 import { Route as FixturesIndexRouteImport } from './routes/fixtures/index'
@@ -58,6 +59,11 @@ const IndexRoute = IndexRouteImport.update({
 const SourcesIndexRoute = SourcesIndexRouteImport.update({
   id: '/sources/',
   path: '/sources/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ScenariosIndexRoute = ScenariosIndexRouteImport.update({
+  id: '/scenarios/',
+  path: '/scenarios/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PortalIndexRoute = PortalIndexRouteImport.update({
@@ -220,6 +226,7 @@ export interface FileRoutesByFullPath {
   '/fixtures/': typeof FixturesIndexRoute
   '/operational-webhooks/': typeof OperationalWebhooksIndexRoute
   '/portal/': typeof PortalIndexRoute
+  '/scenarios/': typeof ScenariosIndexRoute
   '/sources/': typeof SourcesIndexRoute
   '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
   '/portal/messages/': typeof PortalMessagesIndexRoute
@@ -251,6 +258,7 @@ export interface FileRoutesByTo {
   '/fixtures': typeof FixturesIndexRoute
   '/operational-webhooks': typeof OperationalWebhooksIndexRoute
   '/portal': typeof PortalIndexRoute
+  '/scenarios': typeof ScenariosIndexRoute
   '/sources': typeof SourcesIndexRoute
   '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
   '/portal/messages': typeof PortalMessagesIndexRoute
@@ -284,6 +292,7 @@ export interface FileRoutesById {
   '/fixtures/': typeof FixturesIndexRoute
   '/operational-webhooks/': typeof OperationalWebhooksIndexRoute
   '/portal/': typeof PortalIndexRoute
+  '/scenarios/': typeof ScenariosIndexRoute
   '/sources/': typeof SourcesIndexRoute
   '/portal/messages/$messageId': typeof PortalMessagesMessageIdRoute
   '/portal/messages/': typeof PortalMessagesIndexRoute
@@ -318,6 +327,7 @@ export interface FileRouteTypes {
     | '/fixtures/'
     | '/operational-webhooks/'
     | '/portal/'
+    | '/scenarios/'
     | '/sources/'
     | '/portal/messages/$messageId'
     | '/portal/messages/'
@@ -349,6 +359,7 @@ export interface FileRouteTypes {
     | '/fixtures'
     | '/operational-webhooks'
     | '/portal'
+    | '/scenarios'
     | '/sources'
     | '/portal/messages/$messageId'
     | '/portal/messages'
@@ -381,6 +392,7 @@ export interface FileRouteTypes {
     | '/fixtures/'
     | '/operational-webhooks/'
     | '/portal/'
+    | '/scenarios/'
     | '/sources/'
     | '/portal/messages/$messageId'
     | '/portal/messages/'
@@ -413,6 +425,7 @@ export interface RootRouteChildren {
   EventsIndexRoute: typeof EventsIndexRoute
   FixturesIndexRoute: typeof FixturesIndexRoute
   OperationalWebhooksIndexRoute: typeof OperationalWebhooksIndexRoute
+  ScenariosIndexRoute: typeof ScenariosIndexRoute
   SourcesIndexRoute: typeof SourcesIndexRoute
   ApplicationsIdEndpointsEndpointIdRoute: typeof ApplicationsIdEndpointsEndpointIdRoute
   ApplicationsIdMessagesMessageIdRoute: typeof ApplicationsIdMessagesMessageIdRoute
@@ -446,6 +459,13 @@ declare module '@tanstack/react-router' {
       path: '/sources'
       fullPath: '/sources/'
       preLoaderRoute: typeof SourcesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/scenarios/': {
+      id: '/scenarios/'
+      path: '/scenarios'
+      fullPath: '/scenarios/'
+      preLoaderRoute: typeof ScenariosIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/portal/': {
@@ -674,6 +694,7 @@ const rootRouteChildren: RootRouteChildren = {
   EventsIndexRoute: EventsIndexRoute,
   FixturesIndexRoute: FixturesIndexRoute,
   OperationalWebhooksIndexRoute: OperationalWebhooksIndexRoute,
+  ScenariosIndexRoute: ScenariosIndexRoute,
   SourcesIndexRoute: SourcesIndexRoute,
   ApplicationsIdEndpointsEndpointIdRoute:
     ApplicationsIdEndpointsEndpointIdRoute,

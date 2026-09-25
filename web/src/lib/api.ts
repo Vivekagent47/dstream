@@ -13,6 +13,9 @@ export interface Source {
   allowed_methods: string[]
   enabled: boolean
   ingest_token: string
+  // Full ingest URL, built server-side from the API's public base (the ingest
+  // endpoint is on the API host, not the dashboard origin).
+  ingest_url: string
   created_at: string
   updated_at: string
 }
@@ -394,6 +397,42 @@ export interface Bookmark {
   captured_at: string
 }
 
+// Capture rules — auto-capture bookmarks matching a source + CEL filter, up
+// to a cap. filter_expr is null when unset.
+export interface CaptureRule {
+  id: string
+  source_id: string
+  name: string
+  filter_expr: string | null
+  cap: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+// Scenarios — an ordered sequence of bookmark replays with per-step delays.
+// List responses omit steps (empty array); fetch the detail GET for them.
+export interface ScenarioStep {
+  position: number
+  bookmark_id: string
+  bookmark_name: string
+  delay_ms: number
+}
+export interface Scenario {
+  id: string
+  name: string
+  description: string
+  created_at: string
+  updated_at: string
+  steps: ScenarioStep[]
+}
+export interface ScenarioReplayResult {
+  position: number
+  status?: number
+  duration_ms?: number
+  error?: string
+}
+
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
 
@@ -689,6 +728,17 @@ export const api = {
         created_at: string
       }>('/api/bookmarks', input)
       .then((r) => r.data),
+  importBookmark: (body: {
+    source_id: string
+    name: string
+    description?: string
+    tags?: string[]
+    method: string
+    path: string
+    headers: Record<string, string[]>
+    content_type: string
+    body_base64: string
+  }) => http.post<Bookmark>('/api/bookmarks/import', body).then((r) => r.data),
   deleteBookmark: (id: string) => http.delete<void>(`/api/bookmarks/${id}`).then((r) => r.data),
   replayBookmark: (id: string) =>
     http.post<{ event_ids: string[] }>(`/api/bookmarks/${id}/replay`).then((r) => r.data),
@@ -705,6 +755,44 @@ export const api = {
     const base = http.defaults.baseURL || '/'
     return `${base}${base.endsWith('/') ? '' : '/'}api/bookmarks/${id}/export`
   },
+
+  // Capture rules
+  listCaptureRules: (params?: { source_id?: string }) =>
+    http.get<CaptureRule[]>('/api/capture-rules', { params }).then((r) => r.data),
+  createCaptureRule: (input: {
+    source_id: string
+    name: string
+    filter_expr?: string
+    cap?: number
+  }) => http.post<CaptureRule>('/api/capture-rules', input).then((r) => r.data),
+  updateCaptureRule: (
+    id: string,
+    input: { name?: string; filter_expr?: string | null; cap?: number; enabled?: boolean },
+  ) => http.patch<CaptureRule>(`/api/capture-rules/${id}`, input).then((r) => r.data),
+  deleteCaptureRule: (id: string) =>
+    http.delete<void>(`/api/capture-rules/${id}`).then((r) => r.data),
+
+  // Scenarios
+  listScenarios: () => http.get<Scenario[]>('/api/scenarios').then((r) => r.data),
+  getScenario: (id: string) => http.get<Scenario>(`/api/scenarios/${id}`).then((r) => r.data),
+  createScenario: (input: {
+    name: string
+    description?: string
+    steps: { bookmark_id: string; delay_ms: number }[]
+  }) => http.post<Scenario>('/api/scenarios', input).then((r) => r.data),
+  updateScenario: (
+    id: string,
+    input: {
+      name?: string
+      description?: string
+      steps?: { bookmark_id: string; delay_ms: number }[]
+    },
+  ) => http.patch<Scenario>(`/api/scenarios/${id}`, input).then((r) => r.data),
+  deleteScenario: (id: string) => http.delete<void>(`/api/scenarios/${id}`).then((r) => r.data),
+  replayScenarioTo: (id: string, url: string) =>
+    http
+      .post<{ results: ScenarioReplayResult[] }>(`/api/scenarios/${id}/replay-to`, { url })
+      .then((r) => r.data),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
@@ -766,4 +854,8 @@ export const qk = {
     ['applications', appId, 'messages', id, 'attempts'] as const,
   bookmarks: (params?: { source_id?: string; tag?: string }) =>
     ['bookmarks', params ?? {}] as const,
+  captureRules: (params?: { source_id?: string }) =>
+    ['capture-rules', params ?? {}] as const,
+  scenarios: () => ['scenarios'] as const,
+  scenario: (id: string) => ['scenarios', id] as const,
 }

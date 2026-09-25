@@ -65,11 +65,6 @@ export const Route = createFileRoute('/sources/$id')({
   errorComponent: AuthErrorBoundary,
 })
 
-function ingestUrl(token: string): string {
-  const origin = typeof window === 'undefined' ? '' : window.location.origin
-  return `${origin}/e/${token}`
-}
-
 function SourceDetail() {
   const { id } = Route.useParams()
   const { tab = 'overview' } = Route.useSearch()
@@ -88,6 +83,7 @@ function SourceDetail() {
   return (
     <div className="flex flex-1 flex-col">
       <PageHeader
+        help="This source's ingest URL, allowed methods, signing config, and recent activity."
         title={
           <span className="flex min-w-0 items-center gap-1.5">
             <Link
@@ -193,7 +189,7 @@ function OverviewTab({ src }: { src: Source }) {
             </Badge>
           </DetailRow>
           <DetailRow label="URL">
-            <CopyValue value={ingestUrl(src.ingest_token)} what="Ingest URL" mono />
+            <CopyValue value={src.ingest_url} what="Ingest URL" mono />
           </DetailRow>
           <DetailRow label="HTTP methods">
             <span className="flex flex-wrap gap-1.5">
@@ -344,11 +340,11 @@ function SettingsTab({ src }: { src: Source }) {
           <Label className="mb-2 block">Ingest URL</Label>
           <button
             type="button"
-            onClick={() => copyText(ingestUrl(src.ingest_token), 'Ingest URL')}
+            onClick={() => copyText(src.ingest_url, 'Ingest URL')}
             className="group flex w-full items-center justify-between gap-2 rounded-md border border-border px-3 py-2 font-mono text-xs text-muted-foreground hover:text-foreground"
             title="Copy ingest URL"
           >
-            <span className="truncate">{ingestUrl(src.ingest_token)}</span>
+            <span className="truncate">{src.ingest_url}</span>
             <Copy className="h-3.5 w-3.5 shrink-0 opacity-60 group-hover:opacity-100" />
           </button>
         </div>
