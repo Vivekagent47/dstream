@@ -81,6 +81,7 @@ function APIKeysPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="API keys"
+        help="Programmatic access tokens for the dstream API, scoped to this organization."
         actions={
           canManage ? (
             <Button size="sm" onClick={() => setCreateOpen(true)}>

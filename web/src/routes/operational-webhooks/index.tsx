@@ -19,7 +19,9 @@ function OperationalWebhooksPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Operational webhooks" />
+      <PageHeader title="Operational webhooks"
+        help="Platform notifications about your own account — delivery failures and endpoint health."
+      />
       <div className="flex-1 overflow-y-auto px-6 py-4">
         <p className="mb-6 max-w-2xl text-sm text-muted-foreground">
           dstream delivers <code className="font-mono text-xs">endpoint.disabled</code> and{' '}

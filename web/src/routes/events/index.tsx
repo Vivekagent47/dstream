@@ -167,7 +167,9 @@ function EventsPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Events" />
+      <PageHeader title="Events"
+        help="Every received webhook and its delivery status — inspect payloads, retry, or replay."
+      />
 
       {/* filter toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-6 py-3">

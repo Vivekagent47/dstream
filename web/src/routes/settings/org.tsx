@@ -85,7 +85,9 @@ function OrgSettingsPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Organization settings" />
+      <PageHeader title="Organization settings"
+        help="Your organization's name and profile."
+      />
       <div className="flex-1 overflow-y-auto px-6 py-8">
         <div className="mx-auto max-w-3xl space-y-6">
 

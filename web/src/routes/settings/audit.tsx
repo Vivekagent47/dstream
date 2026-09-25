@@ -83,7 +83,9 @@ function AuditPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Audit log" />
+      <PageHeader title="Audit log"
+        help="A record of security-relevant actions taken in this organization."
+      />
 
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3">
         <Select value={actorId || 'all'} onValueChange={(v) => setActorId(v === 'all' || !v ? '' : v)}>

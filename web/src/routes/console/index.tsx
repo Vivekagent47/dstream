@@ -69,7 +69,9 @@ function ConsoleOverview() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Admin overview" />
+      <PageHeader title="Admin overview"
+        help="Platform-wide health across all tenants — orgs, users, event volume, and queue depth (super-admin)."
+      />
 
       <div className="grid gap-4 p-6 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Organizations" value={data?.organizations} />

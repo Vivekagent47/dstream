@@ -105,6 +105,7 @@ function DestinationsPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="Destinations"
+        help="Where events are delivered (an HTTP URL or the CLI relay), with rate limits and auth."
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" /> New destination

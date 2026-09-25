@@ -81,6 +81,7 @@ function DestinationDetail() {
   return (
     <div className="flex flex-1 flex-col">
       <PageHeader
+        help="This destination's delivery config, rate limits, auth, and status."
         title={
           <span className="flex min-w-0 items-center gap-1.5">
             <Link

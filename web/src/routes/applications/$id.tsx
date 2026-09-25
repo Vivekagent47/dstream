@@ -112,6 +112,7 @@ function ApplicationDetail() {
   return (
     <div className="flex flex-1 flex-col">
       <PageHeader
+        help="This application's endpoints and recent message deliveries."
         title={
           <span className="flex min-w-0 items-center gap-1.5">
             <Link

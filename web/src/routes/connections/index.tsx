@@ -187,6 +187,7 @@ function ConnectionsPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="Connections"
+        help="Routes that forward events from a source to a destination, with retries, filters, and transforms."
         actions={
           <div className="flex items-center gap-2">
             <div className="flex rounded-md border border-border p-0.5">

@@ -67,6 +67,7 @@ function MessageDetail() {
   return (
     <div className="flex flex-1 flex-col">
       <PageHeader
+        help="This message's payload and its delivery attempts across endpoints."
         title={
           <span className="flex min-w-0 items-center gap-1.5">
             <Link

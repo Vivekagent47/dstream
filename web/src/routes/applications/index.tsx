@@ -53,6 +53,7 @@ function ApplicationsPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="Applications"
+        help="Customer-facing apps in the portal — each with its own endpoints and message history."
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" /> New application

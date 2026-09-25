@@ -84,6 +84,7 @@ function EventTypesPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="Event Types"
+        help="The catalog of event types your webhooks emit, used to filter and document deliveries."
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" /> New event type

@@ -87,6 +87,7 @@ function MembersPage() {
     <div className="flex flex-1 flex-col">
       <PageHeader
         title="Members"
+        help="People in this organization and their roles."
         actions={
           canManage ? (
             <Button size="sm" onClick={() => setInviteOpen(true)}>

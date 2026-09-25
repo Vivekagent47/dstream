@@ -112,6 +112,7 @@ function EndpointDetail() {
   return (
     <div className="flex flex-1 flex-col">
       <PageHeader
+        help="This endpoint's subscription, signing secret, and delivery attempts."
         title={
           <span className="flex min-w-0 items-center gap-1.5">
             <Link
