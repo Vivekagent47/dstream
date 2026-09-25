@@ -11,10 +11,43 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createAutoBookmark = `-- name: CreateAutoBookmark :one
+INSERT INTO bookmarks (org_id, request_id, name, description, tags, capture_rule_id)
+VALUES ($1, $2, $3, '', '{}', $4) RETURNING id, org_id, request_id, name, description, tags, created_at, capture_rule_id
+`
+
+type CreateAutoBookmarkParams struct {
+	OrgID         pgtype.UUID `json:"org_id"`
+	RequestID     pgtype.UUID `json:"request_id"`
+	Name          string      `json:"name"`
+	CaptureRuleID pgtype.UUID `json:"capture_rule_id"`
+}
+
+func (q *Queries) CreateAutoBookmark(ctx context.Context, arg CreateAutoBookmarkParams) (Bookmark, error) {
+	row := q.db.QueryRow(ctx, createAutoBookmark,
+		arg.OrgID,
+		arg.RequestID,
+		arg.Name,
+		arg.CaptureRuleID,
+	)
+	var i Bookmark
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.RequestID,
+		&i.Name,
+		&i.Description,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.CaptureRuleID,
+	)
+	return i, err
+}
+
 const createBookmark = `-- name: CreateBookmark :one
 INSERT INTO bookmarks (org_id, request_id, name, description, tags)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, org_id, request_id, name, description, tags, created_at
+RETURNING id, org_id, request_id, name, description, tags, created_at, capture_rule_id
 `
 
 type CreateBookmarkParams struct {
@@ -42,6 +75,7 @@ func (q *Queries) CreateBookmark(ctx context.Context, arg CreateBookmarkParams) 
 		&i.Description,
 		&i.Tags,
 		&i.CreatedAt,
+		&i.CaptureRuleID,
 	)
 	return i, err
 }
@@ -63,8 +97,26 @@ func (q *Queries) DeleteBookmarkForOrg(ctx context.Context, arg DeleteBookmarkFo
 	return result.RowsAffected(), nil
 }
 
+const evictCaptureBookmarks = `-- name: EvictCaptureBookmarks :exec
+DELETE FROM bookmarks b
+WHERE b.capture_rule_id = $1
+  AND b.id NOT IN (
+    SELECT id FROM bookmarks WHERE capture_rule_id = $1 ORDER BY created_at DESC LIMIT $2
+  )
+`
+
+type EvictCaptureBookmarksParams struct {
+	CaptureRuleID pgtype.UUID `json:"capture_rule_id"`
+	Limit         int32       `json:"limit"`
+}
+
+func (q *Queries) EvictCaptureBookmarks(ctx context.Context, arg EvictCaptureBookmarksParams) error {
+	_, err := q.db.Exec(ctx, evictCaptureBookmarks, arg.CaptureRuleID, arg.Limit)
+	return err
+}
+
 const getBookmarkForOrg = `-- name: GetBookmarkForOrg :one
-SELECT id, org_id, request_id, name, description, tags, created_at FROM bookmarks WHERE id = $1 AND org_id = $2
+SELECT id, org_id, request_id, name, description, tags, created_at, capture_rule_id FROM bookmarks WHERE id = $1 AND org_id = $2
 `
 
 type GetBookmarkForOrgParams struct {
@@ -83,12 +135,13 @@ func (q *Queries) GetBookmarkForOrg(ctx context.Context, arg GetBookmarkForOrgPa
 		&i.Description,
 		&i.Tags,
 		&i.CreatedAt,
+		&i.CaptureRuleID,
 	)
 	return i, err
 }
 
 const listBookmarksForOrg = `-- name: ListBookmarksForOrg :many
-SELECT b.id, b.org_id, b.request_id, b.name, b.description, b.tags, b.created_at, r.source_id, r.http_method, r.http_path, r.received_at AS captured_at
+SELECT b.id, b.org_id, b.request_id, b.name, b.description, b.tags, b.created_at, b.capture_rule_id, r.source_id, r.http_method, r.http_path, r.received_at AS captured_at
 FROM bookmarks b
 JOIN requests r ON r.id = b.request_id
 WHERE b.org_id = $1
@@ -104,17 +157,18 @@ type ListBookmarksForOrgParams struct {
 }
 
 type ListBookmarksForOrgRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	OrgID       pgtype.UUID        `json:"org_id"`
-	RequestID   pgtype.UUID        `json:"request_id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Tags        []string           `json:"tags"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	SourceID    pgtype.UUID        `json:"source_id"`
-	HTTPMethod  string             `json:"http_method"`
-	HTTPPath    string             `json:"http_path"`
-	CapturedAt  pgtype.Timestamptz `json:"captured_at"`
+	ID            pgtype.UUID        `json:"id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	RequestID     pgtype.UUID        `json:"request_id"`
+	Name          string             `json:"name"`
+	Description   string             `json:"description"`
+	Tags          []string           `json:"tags"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	CaptureRuleID pgtype.UUID        `json:"capture_rule_id"`
+	SourceID      pgtype.UUID        `json:"source_id"`
+	HTTPMethod    string             `json:"http_method"`
+	HTTPPath      string             `json:"http_path"`
+	CapturedAt    pgtype.Timestamptz `json:"captured_at"`
 }
 
 func (q *Queries) ListBookmarksForOrg(ctx context.Context, arg ListBookmarksForOrgParams) ([]ListBookmarksForOrgRow, error) {
@@ -134,6 +188,7 @@ func (q *Queries) ListBookmarksForOrg(ctx context.Context, arg ListBookmarksForO
 			&i.Description,
 			&i.Tags,
 			&i.CreatedAt,
+			&i.CaptureRuleID,
 			&i.SourceID,
 			&i.HTTPMethod,
 			&i.HTTPPath,

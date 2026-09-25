@@ -62,13 +62,26 @@ type AuditLog struct {
 }
 
 type Bookmark struct {
-	ID          pgtype.UUID        `json:"id"`
-	OrgID       pgtype.UUID        `json:"org_id"`
-	RequestID   pgtype.UUID        `json:"request_id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Tags        []string           `json:"tags"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ID            pgtype.UUID        `json:"id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	RequestID     pgtype.UUID        `json:"request_id"`
+	Name          string             `json:"name"`
+	Description   string             `json:"description"`
+	Tags          []string           `json:"tags"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	CaptureRuleID pgtype.UUID        `json:"capture_rule_id"`
+}
+
+type CaptureRule struct {
+	ID         pgtype.UUID        `json:"id"`
+	OrgID      pgtype.UUID        `json:"org_id"`
+	SourceID   pgtype.UUID        `json:"source_id"`
+	Name       string             `json:"name"`
+	FilterExpr *string            `json:"filter_expr"`
+	Cap        int32              `json:"cap"`
+	Enabled    bool               `json:"enabled"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
 type CliSession struct {
@@ -253,6 +266,23 @@ type RequestBody struct {
 	RequestID pgtype.UUID        `json:"request_id"`
 	Body      []byte             `json:"body"`
 	StoredAt  pgtype.Timestamptz `json:"stored_at"`
+}
+
+type Scenario struct {
+	ID          pgtype.UUID        `json:"id"`
+	OrgID       pgtype.UUID        `json:"org_id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ScenarioStep struct {
+	ID         pgtype.UUID `json:"id"`
+	ScenarioID pgtype.UUID `json:"scenario_id"`
+	Position   int32       `json:"position"`
+	BookmarkID pgtype.UUID `json:"bookmark_id"`
+	DelayMs    int32       `json:"delay_ms"`
 }
 
 type Source struct {

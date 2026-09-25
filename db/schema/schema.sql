@@ -235,18 +235,58 @@ CREATE TABLE request_bodies (
     stored_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE bookmarks (
+CREATE TABLE capture_rules (
     id          UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    request_id  UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    source_id   UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    tags        TEXT[] NOT NULL DEFAULT '{}',
+    filter_expr TEXT,
+    cap         INTEGER NOT NULL DEFAULT 50 CHECK (cap > 0 AND cap <= 1000),
+    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, name)
+);
+CREATE INDEX capture_rules_source_idx ON capture_rules (source_id) WHERE enabled;
+
+CREATE TABLE bookmarks (
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    org_id          UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    request_id      UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    tags            TEXT[] NOT NULL DEFAULT '{}',
+    capture_rule_id UUID REFERENCES capture_rules(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (org_id, name)
 );
 CREATE INDEX bookmarks_org_idx ON bookmarks (org_id, created_at DESC);
 CREATE INDEX bookmarks_request_idx ON bookmarks (request_id);
+CREATE INDEX bookmarks_rule_idx ON bookmarks (capture_rule_id, created_at) WHERE capture_rule_id IS NOT NULL;
+
+-- scenarios: a named, ordered sequence of bookmarks (scenario_steps),
+-- replayed in order to a URL to drive a stateful multi-step flow.
+CREATE TABLE scenarios (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
+    org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, name)
+);
+
+-- scenario_steps: ordered steps of a scenario, each replaying one bookmark
+-- after an optional pre-delay (capped at 60s so a run can't hold forever).
+CREATE TABLE scenario_steps (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
+    scenario_id UUID NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL,
+    bookmark_id UUID NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
+    delay_ms    INTEGER NOT NULL DEFAULT 0 CHECK (delay_ms >= 0 AND delay_ms <= 60000),
+    UNIQUE (scenario_id, position)
+);
+CREATE INDEX scenario_steps_scenario_idx ON scenario_steps (scenario_id, position);
 
 -- events: the unit of delivery — one per (request × enabled connection) at
 -- ingest fan-out. Tracks the delivery lifecycle; each concrete try is an

@@ -17,3 +17,14 @@ ORDER BY b.created_at DESC;
 
 -- name: DeleteBookmarkForOrg :execrows
 DELETE FROM bookmarks WHERE id = $1 AND org_id = $2;
+
+-- name: CreateAutoBookmark :one
+INSERT INTO bookmarks (org_id, request_id, name, description, tags, capture_rule_id)
+VALUES ($1, $2, $3, '', '{}', $4) RETURNING *;
+
+-- name: EvictCaptureBookmarks :exec
+DELETE FROM bookmarks b
+WHERE b.capture_rule_id = $1
+  AND b.id NOT IN (
+    SELECT id FROM bookmarks WHERE capture_rule_id = $1 ORDER BY created_at DESC LIMIT $2
+  );
