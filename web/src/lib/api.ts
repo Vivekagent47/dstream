@@ -272,6 +272,22 @@ export interface AdminQueueStats {
   top_orgs: { org_id: string; pending: number }[]
 }
 
+export interface QueueItem {
+  raw: string
+  event_id: string
+  org_id: string
+  attempt: number
+  enqueued_at_unix_ms: number
+  next_run_ms?: number
+  lease_deadline_ms?: number
+  decode_error?: string
+}
+export interface QueueOrgPending {
+  org_id: string
+  org_name: string
+  pending: number
+}
+
 export interface AdminHotDestination {
   destination_id: string
   destination_name: string
@@ -435,6 +451,8 @@ export interface ScenarioReplayResult {
 
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
+  updateMe: (input: { name: string }) =>
+    http.patch<MeUser>('/api/me', input).then((r) => r.data),
 
   requestMagicLink: (email: string) =>
     http.post<void>('/api/auth/magic-link/request', { email }).then((r) => r.data),
@@ -497,6 +515,22 @@ export const api = {
   adminHotDestinations: () =>
     http.get<AdminHotDestination[]>('/admin/destinations/hot').then((r) => r.data),
   adminSystem: () => http.get<AdminSystem>('/admin/system').then((r) => r.data),
+  adminQueueItems: (lane: string, opts?: { org?: string; limit?: number }) =>
+    http
+      .get<{ items: QueueItem[]; truncated: boolean }>('/admin/queues/items', {
+        params: { lane, org: opts?.org, limit: opts?.limit },
+      })
+      .then((r) => r.data),
+  adminQueueOrgs: () =>
+    http.get<QueueOrgPending[]>('/admin/queues/orgs').then((r) => r.data),
+  adminRequeueDead: (raw: string) =>
+    http.post<{ requeued: boolean }>('/admin/queues/dead/requeue', { raw }).then((r) => r.data),
+  adminPromoteScheduled: (raw: string) =>
+    http
+      .post<{ promoted: boolean }>('/admin/queues/scheduled/promote', { raw })
+      .then((r) => r.data),
+  adminDrainDead: () =>
+    http.post<{ drained: number }>('/admin/queues/dead/drain').then((r) => r.data),
 
   // Sources
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
@@ -728,6 +762,10 @@ export const api = {
         created_at: string
       }>('/api/bookmarks', input)
       .then((r) => r.data),
+  updateBookmark: (
+    id: string,
+    input: { name?: string; description?: string; tags?: string[] },
+  ) => http.patch<Bookmark>(`/api/bookmarks/${id}`, input).then((r) => r.data),
   importBookmark: (body: {
     source_id: string
     name: string
@@ -802,6 +840,8 @@ export const qk = {
   adminOverview: () => ['admin', 'overview'] as const,
   adminOrgs: () => ['admin', 'orgs'] as const,
   adminQueues: () => ['admin', 'queues'] as const,
+  adminQueueItems: (lane: string, org?: string) => ['admin', 'queue-items', lane, org ?? ''] as const,
+  adminQueueOrgs: () => ['admin', 'queue-orgs'] as const,
   adminHotDestinations: () => ['admin', 'destinations', 'hot'] as const,
   adminSystem: () => ['admin', 'system'] as const,
   orgs: () => ['orgs'] as const,

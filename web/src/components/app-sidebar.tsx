@@ -18,6 +18,7 @@ import {
   Send,
   Siren,
   Tag,
+  UserRound,
   Users,
 } from 'lucide-react'
 
@@ -59,6 +60,7 @@ const PLATFORM = [
 ] as const
 
 const SETTINGS = [
+  { label: 'Profile', to: '/settings/profile', icon: UserRound },
   { label: 'Organization', to: '/settings/org', icon: Building2 },
   { label: 'Members', to: '/settings/members', icon: Users },
   { label: 'Invites', to: '/settings/invites', icon: Mail },

@@ -84,6 +84,7 @@ function FixturesPage() {
   const [sourceId, setSourceId] = useState('all')
   const [tag, setTag] = useState('')
   const [importOpen, setImportOpen] = useState(false)
+  const [editBookmark, setEditBookmark] = useState<Bookmark | null>(null)
 
   const params = {
     source_id: sourceId === 'all' ? undefined : sourceId,
@@ -234,6 +235,9 @@ function FixturesPage() {
                     >
                       Export
                     </a>
+                    <Button size="sm" variant="outline" onClick={() => setEditBookmark(b)}>
+                      Edit
+                    </Button>
                     <ConfirmDialog
                       title={`Delete ${b.name}?`}
                       description="This removes the saved fixture. It doesn't affect past events."
@@ -272,7 +276,115 @@ function FixturesPage() {
       <CaptureRulesSection sources={sources ?? []} />
 
       <ImportFixtureDialog sources={sources ?? []} open={importOpen} onOpenChange={setImportOpen} />
+      <BookmarkEditDialog
+        bookmark={editBookmark}
+        open={!!editBookmark}
+        onOpenChange={(o) => !o && setEditBookmark(null)}
+      />
     </div>
+  )
+}
+
+function BookmarkEditDialog({
+  bookmark,
+  open,
+  onOpenChange,
+}: {
+  bookmark: Bookmark | null
+  open: boolean
+  onOpenChange: (o: boolean) => void
+}) {
+  const qc = useQueryClient()
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [tags, setTags] = useState('')
+
+  // Repopulate whenever the dialog opens, from the selected bookmark.
+  useEffect(() => {
+    if (!open || !bookmark) return
+    setName(bookmark.name)
+    setDescription(bookmark.description ?? '')
+    setTags((bookmark.tags ?? []).join(', '))
+  }, [open, bookmark])
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.updateBookmark(bookmark!.id, {
+        name: name.trim(),
+        description: description.trim(),
+        tags: tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['bookmarks'] })
+      toast.success('Fixture updated')
+      onOpenChange(false)
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit fixture</DialogTitle>
+          <DialogDescription>Rename this fixture or update its description and tags.</DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            save.mutate()
+          }}
+          className="space-y-4"
+        >
+          <div>
+            <Label htmlFor="bm-name" className="mb-2 block">
+              Name
+            </Label>
+            <Input
+              id="bm-name"
+              className="w-full"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div>
+            <Label htmlFor="bm-description" className="mb-2 block">
+              Description <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="bm-description"
+              className="w-full"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label htmlFor="bm-tags" className="mb-2 block">
+              Tags <span className="text-muted-foreground">(comma-separated)</span>
+            </Label>
+            <Input
+              id="bm-tags"
+              className="w-full"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="stripe, charge, golden"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={save.isPending || !name.trim()}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

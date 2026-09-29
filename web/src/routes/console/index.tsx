@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { api, qk } from '#/lib/api'
@@ -112,7 +112,12 @@ function ConsoleOverview() {
         </div>
       </div>
 
-      <h2 className="px-6 pb-3 text-sm font-semibold">Delivery queue</h2>
+      <div className="flex items-baseline justify-between px-6 pb-3">
+        <h2 className="text-sm font-semibold">Delivery queue</h2>
+        <Link to="/console/queues" className="text-sm text-muted-foreground hover:text-foreground">
+          Inspect queue →
+        </Link>
+      </div>
       <div className="grid gap-4 px-6 pb-6 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Pending" value={queues?.pending} />
         <StatCard label="Scheduled" value={queues?.scheduled} />
