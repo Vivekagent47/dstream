@@ -28,6 +28,7 @@ func bookmarkRoutes(r chi.Router, h Handlers) {
 		r.Get("/", h.ListBookmarks)
 		r.Post("/", h.CreateBookmark)
 		r.Get("/{id}", h.GetBookmark)
+		r.Patch("/{id}", h.PatchBookmark)
 		r.Delete("/{id}", h.DeleteBookmark)
 	})
 }
@@ -105,6 +106,71 @@ func TestCreateBookmarkDuplicateName(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks", uid, oid, body))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("dup name: got %d want 409", rec.Code)
+	}
+}
+
+func TestPatchBookmark(t *testing.T) {
+	q := store.New(testPool(t))
+	uid, oid := seedOrg(t, q)
+	reqID, _ := seedRequest(t, q, oid)
+	r := newRouter(q, bookmarkRoutes)
+
+	// create one to rename
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks", uid, oid,
+		map[string]any{"request_id": reqID.String(), "name": "old-name", "tags": []string{"keep"}}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d", rec.Code)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	id := created["id"].(string)
+
+	// rename only — tags must be preserved (field omitted)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPatch, "/api/bookmarks/"+id, uid, oid,
+		map[string]any{"name": "new-name"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["name"] != "new-name" {
+		t.Fatalf("name not updated: %v", got)
+	}
+	if tags, _ := got["tags"].([]any); len(tags) != 1 || tags[0] != "keep" {
+		t.Fatalf("tags not preserved on name-only patch: %v", got["tags"])
+	}
+
+	// empty name -> 400
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPatch, "/api/bookmarks/"+id, uid, oid,
+		map[string]any{"name": "  "}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty name: got %d want 400", rec.Code)
+	}
+
+	// unknown id -> 404
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPatch, "/api/bookmarks/"+uuid.NewString(), uid, oid,
+		map[string]any{"name": "x"}))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown id: got %d want 404", rec.Code)
+	}
+
+	// duplicate name -> 409
+	reqID2, _ := seedRequest(t, q, oid)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPost, "/api/bookmarks", uid, oid,
+		map[string]any{"request_id": reqID2.String(), "name": "other"}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create 2nd: %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, sessionReq(t, http.MethodPatch, "/api/bookmarks/"+id, uid, oid,
+		map[string]any{"name": "other"}))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("dup name: got %d want 409", rec.Code)
 	}

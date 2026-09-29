@@ -122,6 +122,75 @@ func (d Handlers) CreateBookmark(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, bookmarkView(row))
 }
 
+type patchBookmarkReq struct {
+	Name        *string   `json:"name,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	Tags        *[]string `json:"tags,omitempty"`
+}
+
+// PatchBookmark renames / re-describes / re-tags a fixture. Load-merge: only
+// the provided fields change; the rest are preserved from the current row.
+func (d Handlers) PatchBookmark(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.OrgID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "active org required")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid bookmark id")
+		return
+	}
+	var body patchBookmarkReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	cur, err := d.Queries.GetBookmarkForOrg(r.Context(), store.GetBookmarkForOrgParams{
+		ID: store.UUID(id), OrgID: store.UUID(p.OrgID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Err(w, http.StatusNotFound, "bookmark not found")
+			return
+		}
+		d.Log.Error("patch bookmark: load", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "update bookmark")
+		return
+	}
+	name, description, tags := cur.Name, cur.Description, cur.Tags
+	if body.Name != nil {
+		name = strings.TrimSpace(*body.Name)
+		if name == "" {
+			httpx.Err(w, http.StatusBadRequest, "name cannot be empty")
+			return
+		}
+	}
+	if body.Description != nil {
+		description = *body.Description
+	}
+	if body.Tags != nil {
+		tags = *body.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+	}
+	row, err := d.Queries.UpdateBookmarkForOrg(r.Context(), store.UpdateBookmarkForOrgParams{
+		ID: store.UUID(id), OrgID: store.UUID(p.OrgID),
+		Name: name, Description: description, Tags: tags,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			httpx.Err(w, http.StatusConflict, "bookmark name already in use")
+			return
+		}
+		d.Log.Error("patch bookmark", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "update bookmark")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, bookmarkView(row))
+}
+
 func (d Handlers) ListBookmarks(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {

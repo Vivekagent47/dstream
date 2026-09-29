@@ -1,11 +1,14 @@
 package admin
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -33,6 +36,11 @@ func Mount(parent chi.Router, d Deps) {
 
 		// Delivery-queue depth snapshot (JSON) for the /console stats card.
 		r.Get("/queues", d.handleQueues)
+		r.Get("/queues/items", d.handleQueueItems)
+		r.Get("/queues/orgs", d.handleQueueOrgs)
+		r.Post("/queues/dead/requeue", d.handleRequeueDead)
+		r.Post("/queues/scheduled/promote", d.handlePromoteScheduled)
+		r.Post("/queues/dead/drain", d.handleDrainDead)
 
 		// Custom admin pages (Phase 1.4 scope).
 		r.Get("/overview", d.handleOverview)
@@ -160,4 +168,109 @@ func (d Deps) handleSystem(w http.ResponseWriter, r *http.Request) {
 		"redis_info":            info,
 		"queue_deliveries_name": "deliveries",
 	})
+}
+
+func (d Deps) handleQueueItems(w http.ResponseWriter, r *http.Request) {
+	lane := r.URL.Query().Get("lane")
+	switch lane {
+	case "dead", "scheduled", "processing", "pending":
+	default:
+		http.Error(w, "unknown lane", http.StatusBadRequest)
+		return
+	}
+	org := r.URL.Query().Get("org")
+	if lane == "pending" && org == "" {
+		http.Error(w, "pending lane requires org", http.StatusBadRequest)
+		return
+	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	items, truncated, err := d.Queue.Items(r.Context(), lane, org, limit)
+	if err != nil {
+		d.Log.Error("admin queue items", "err", err)
+		http.Error(w, "items", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "truncated": truncated})
+}
+
+func (d Deps) handleQueueOrgs(w http.ResponseWriter, r *http.Request) {
+	rows, err := d.Queue.AllOrgPending(r.Context())
+	if err != nil {
+		d.Log.Error("admin queue orgs", "err", err)
+		http.Error(w, "orgs", http.StatusInternalServerError)
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	// ponytail: N+1 org-name lookups, uncapped — admin-only + infrequent; batch the
+	// name lookup (one WHERE id = ANY query) if org counts grow large.
+	for _, row := range rows {
+		name := ""
+		if id, err := uuid.Parse(row.OrgID); err == nil {
+			if o, err := d.Queries.GetOrganizationByID(r.Context(), store.UUID(id)); err == nil {
+				name = o.Name
+			}
+		}
+		out = append(out, map[string]any{"org_id": row.OrgID, "org_name": name, "pending": row.Pending})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type rawReq struct {
+	Raw string `json:"raw"`
+}
+
+func (d Deps) handleRequeueDead(w http.ResponseWriter, r *http.Request) {
+	var body rawReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Raw == "" {
+		http.Error(w, "raw required", http.StatusBadRequest)
+		return
+	}
+	ok, err := d.Queue.RequeueDead(r.Context(), body.Raw)
+	if err != nil {
+		d.Log.Error("admin requeue dead", "err", err)
+		http.Error(w, "requeue", http.StatusInternalServerError)
+		return
+	}
+	if ok {
+		// Best-effort: flip the event row back to queued so DB agrees with the
+		// resurrected queue item. A miss here isn't fatal — the worker's pickup
+		// would transition it anyway.
+		var p dqueue.Payload
+		if json.Unmarshal([]byte(body.Raw), &p) == nil {
+			if err := d.Queries.MarkEventQueued(r.Context(), store.UUID(p.EventID)); err != nil {
+				d.Log.Warn("admin requeue: mark event queued", "err", err, "event_id", p.EventID)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requeued": ok})
+}
+
+func (d Deps) handlePromoteScheduled(w http.ResponseWriter, r *http.Request) {
+	var body rawReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Raw == "" {
+		http.Error(w, "raw required", http.StatusBadRequest)
+		return
+	}
+	ok, err := d.Queue.PromoteScheduled(r.Context(), body.Raw)
+	if err != nil {
+		d.Log.Error("admin promote scheduled", "err", err)
+		http.Error(w, "promote", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"promoted": ok})
+}
+
+func (d Deps) handleDrainDead(w http.ResponseWriter, r *http.Request) {
+	n, err := d.Queue.DrainDead(r.Context())
+	if err != nil {
+		d.Log.Error("admin drain dead", "err", err)
+		http.Error(w, "drain", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"drained": n})
 }

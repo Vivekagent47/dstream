@@ -19,6 +19,7 @@ package dqueue
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -292,4 +293,189 @@ func (c *Client) Stats(ctx context.Context) (Stats, error) {
 		return s, err
 	}
 	return s, nil
+}
+
+// Item is one inspectable queue entry for the admin console. Raw is the exact
+// Redis member (the identity ops act on). Score-derived fields are 0 when the
+// lane has no score (dead/pending). DecodeError is set (and the payload fields
+// left zero) when the stored member isn't valid Payload JSON.
+type Item struct {
+	Raw         string    `json:"raw"`
+	EventID     uuid.UUID `json:"event_id"`
+	OrgID       uuid.UUID `json:"org_id"`
+	Attempt     int       `json:"attempt"`
+	EnqueuedAt  int64     `json:"enqueued_at_unix_ms"`
+	NextRunMs   int64     `json:"next_run_ms,omitempty"`
+	LeaseMs     int64     `json:"lease_deadline_ms,omitempty"`
+	DecodeError string    `json:"decode_error,omitempty"`
+}
+
+func (c *Client) decodeItem(raw string) Item {
+	it := Item{Raw: raw}
+	var p Payload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		it.DecodeError = err.Error()
+		return it
+	}
+	it.EventID, it.OrgID, it.Attempt, it.EnqueuedAt = p.EventID, p.OrgID, p.Attempt, p.EnqueuedAt
+	return it
+}
+
+// Items lists up to `limit` entries in a lane. lane ∈ {dead,scheduled,processing,
+// pending}; pending requires org. Returns items + whether more exist beyond limit.
+func (c *Client) Items(ctx context.Context, lane, org string, limit int) ([]Item, bool, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	probe := int64(limit) // fetch limit+1 to detect truncation
+	switch lane {
+	case "dead", "pending":
+		key := c.prefix + ":dead"
+		if lane == "pending" {
+			if org == "" {
+				return nil, false, fmt.Errorf("pending lane requires org")
+			}
+			key = c.prefix + ":pending:" + org
+		}
+		raws, err := c.rdb.LRange(ctx, key, 0, probe).Result() // 0..limit inclusive = limit+1
+		if err != nil {
+			return nil, false, err
+		}
+		trunc := len(raws) > limit
+		if trunc {
+			raws = raws[:limit]
+		}
+		items := make([]Item, 0, len(raws))
+		for _, r := range raws {
+			items = append(items, c.decodeItem(r))
+		}
+		return items, trunc, nil
+	case "scheduled", "processing":
+		key := c.prefix + ":scheduled"
+		if lane == "processing" {
+			key = c.prefix + ":processing"
+		}
+		zs, err := c.rdb.ZRangeWithScores(ctx, key, 0, probe).Result()
+		if err != nil {
+			return nil, false, err
+		}
+		trunc := len(zs) > limit
+		if trunc {
+			zs = zs[:limit]
+		}
+		items := make([]Item, 0, len(zs))
+		for _, z := range zs {
+			it := c.decodeItem(z.Member.(string))
+			if lane == "scheduled" {
+				it.NextRunMs = int64(z.Score)
+			} else {
+				it.LeaseMs = int64(z.Score)
+			}
+			items = append(items, it)
+		}
+		return items, trunc, nil
+	default:
+		return nil, false, fmt.Errorf("unknown lane %q", lane)
+	}
+}
+
+// AllOrgPending returns every org's pending depth (Stats caps at top-10).
+func (c *Client) AllOrgPending(ctx context.Context) ([]OrgPending, error) {
+	prefix := c.prefix + ":pending:"
+	keys, err := c.rdb.Keys(ctx, prefix+"*").Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OrgPending, 0, len(keys))
+	for _, k := range keys {
+		n, err := c.rdb.LLen(ctx, k).Result()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, OrgPending{OrgID: strings.TrimPrefix(k, prefix), Pending: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Pending > out[j].Pending })
+	return out, nil
+}
+
+// requeueDeadScript: remove the exact member from the dead list; if it was there,
+// enqueue the (attempt-reset) payload onto its org's pending list with the same
+// ring/notify rules as enqueueScript. ARGV: prefix, oldRaw, newRaw. Returns the
+// LREM count (0 = the item had already moved).
+var requeueDeadScript = redis.NewScript(`
+local p = ARGV[1]
+local removed = redis.call('LREM', p..':dead', 1, ARGV[2])
+if removed > 0 then
+  local org = cjson.decode(ARGV[3])['org_id']
+  local n = redis.call('RPUSH', p..':pending:'..org, ARGV[3])
+  if tonumber(n) == 1 then redis.call('RPUSH', p..':orgs', org) end
+  redis.call('LPUSH', p..':notify', '1')
+  redis.call('LTRIM', p..':notify', 0, 1024)
+end
+return removed
+`)
+
+// promoteScheduledScript: remove the member from the scheduled ZSET; if present,
+// enqueue it now (attempt unchanged). ARGV: prefix, raw. Returns ZREM count.
+var promoteScheduledScript = redis.NewScript(`
+local p = ARGV[1]
+local removed = redis.call('ZREM', p..':scheduled', ARGV[2])
+if removed > 0 then
+  local org = cjson.decode(ARGV[2])['org_id']
+  local n = redis.call('RPUSH', p..':pending:'..org, ARGV[2])
+  if tonumber(n) == 1 then redis.call('RPUSH', p..':orgs', org) end
+  redis.call('LPUSH', p..':notify', '1')
+  redis.call('LTRIM', p..':notify', 0, 1024)
+end
+return removed
+`)
+
+// drainDeadScript: clear the dead list atomically, returning how many it held.
+var drainDeadScript = redis.NewScript(`
+local p = ARGV[1]
+local n = redis.call('LLEN', p..':dead')
+redis.call('DEL', p..':dead')
+return n
+`)
+
+// RequeueDead moves a dead item back to its org's pending list with attempt
+// reset to 0. Returns false if the item was no longer in the dead list.
+func (c *Client) RequeueDead(ctx context.Context, raw string) (bool, error) {
+	var p Payload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return false, fmt.Errorf("decode dead payload: %w", err)
+	}
+	p.Attempt = 0
+	p.EnqueuedAt = time.Now().UnixMilli()
+	newRaw, err := json.Marshal(p)
+	if err != nil {
+		return false, err
+	}
+	n, err := requeueDeadScript.Run(ctx, c.rdb, nil, c.prefix, raw, string(newRaw)).Int64()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// PromoteScheduled moves a scheduled item into pending now (attempt unchanged).
+// Returns false if it was no longer scheduled.
+func (c *Client) PromoteScheduled(ctx context.Context, raw string) (bool, error) {
+	var p Payload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return false, fmt.Errorf("decode scheduled payload: %w", err)
+	}
+	n, err := promoteScheduledScript.Run(ctx, c.rdb, nil, c.prefix, raw).Int64()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DrainDead clears the dead list, returning the number of entries removed.
+func (c *Client) DrainDead(ctx context.Context) (int64, error) {
+	return drainDeadScript.Run(ctx, c.rdb, nil, c.prefix).Int64()
 }

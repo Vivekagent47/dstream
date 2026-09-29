@@ -218,3 +218,45 @@ func (d Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
+
+type patchMeReq struct {
+	Name *string `json:"name"`
+}
+
+// PatchMe updates the calling user's own profile (currently just the display
+// name). Session-only: an API-key principal has no user to update. An empty
+// name clears it back to null.
+func (d Handlers) PatchMe(w http.ResponseWriter, r *http.Request) {
+	p, err := auth.FromContext(r.Context())
+	if err != nil || p.Source != auth.SourceSession || p.UserID == uuid.Nil {
+		httpx.Err(w, http.StatusUnauthorized, "session required")
+		return
+	}
+	var body patchMeReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.Err(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Name == nil {
+		httpx.Err(w, http.StatusBadRequest, "name required")
+		return
+	}
+	var namePtr *string
+	if n := strings.TrimSpace(*body.Name); n != "" {
+		namePtr = &n
+	}
+	u, err := d.Queries.UpdateUserName(r.Context(), store.UpdateUserNameParams{
+		ID: store.UUID(p.UserID), Name: namePtr,
+	})
+	if err != nil {
+		d.Log.Error("patch me: update name", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "update profile")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"id":             store.GoUUID(u.ID).String(),
+		"email":          u.Email,
+		"name":           u.Name,
+		"is_super_admin": u.IsSuperAdmin,
+	})
+}
