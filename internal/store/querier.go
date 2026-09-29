@@ -145,6 +145,7 @@ type Querier interface {
 	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
 	GetApplicationForOrg(ctx context.Context, arg GetApplicationForOrgParams) (Application, error)
 	GetBookmarkForOrg(ctx context.Context, arg GetBookmarkForOrgParams) (Bookmark, error)
+	UpdateBookmarkForOrg(ctx context.Context, arg UpdateBookmarkForOrgParams) (Bookmark, error)
 	GetCaptureRuleForOrg(ctx context.Context, arg GetCaptureRuleForOrgParams) (CaptureRule, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
@@ -180,6 +181,7 @@ type Querier interface {
 	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (User, error)
 	// Cross-tenant (super-admin console): destinations with delivery failures in the
 	// last 24h, worst first. total/failed let the handler compute a failure rate.
 	// Only destinations that actually failed are returned (HAVING).
@@ -256,6 +258,7 @@ type Querier interface {
 	// The single attempt_count incrementer. recordAttempt derives attempt_num from
 	// the pre-increment count, so this keeps attempt_num monotonic and gap-free.
 	MarkEventInFlight(ctx context.Context, id pgtype.UUID) error
+	MarkEventQueued(ctx context.Context, id pgtype.UUID) error
 	MarkMagicLinkUsed(ctx context.Context, id pgtype.UUID) error
 	MarkOrgInviteAccepted(ctx context.Context, id pgtype.UUID) error
 	// COALESCE pattern so unspecified fields keep current values.

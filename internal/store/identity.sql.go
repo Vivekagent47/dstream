@@ -261,6 +261,31 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
+const updateUserName = `-- name: UpdateUserName :one
+UPDATE users SET name = $2, updated_at = now() WHERE id = $1
+RETURNING id, email, name, is_super_admin, created_at, updated_at, session_epoch
+`
+
+type UpdateUserNameParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Name *string     `json:"name"`
+}
+
+func (q *Queries) UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserName, arg.ID, arg.Name)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.IsSuperAdmin,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SessionEpoch,
+	)
+	return i, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT id, email, name, is_super_admin, created_at, updated_at, session_epoch FROM users WHERE id = $1
 `

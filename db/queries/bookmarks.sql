@@ -6,6 +6,11 @@ RETURNING *;
 -- name: GetBookmarkForOrg :one
 SELECT * FROM bookmarks WHERE id = $1 AND org_id = $2;
 
+-- name: UpdateBookmarkForOrg :one
+UPDATE bookmarks SET name = $3, description = $4, tags = $5
+WHERE id = $1 AND org_id = $2
+RETURNING *;
+
 -- name: ListBookmarksForOrg :many
 SELECT b.*, r.source_id, r.http_method, r.http_path, r.received_at AS captured_at
 FROM bookmarks b

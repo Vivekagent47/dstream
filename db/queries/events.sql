@@ -63,6 +63,12 @@ SET status          = 'failed',
     updated_at      = now()
 WHERE id = $1;
 
+-- name: MarkEventQueued :exec
+UPDATE events
+SET status     = 'queued',
+    updated_at = now()
+WHERE id = $1;
+
 -- name: MarkEventDiscarded :exec
 -- Terminal state for a CLI event that waited past the tunnel deadline with no
 -- live listener. Unlike 'failed' it never got a delivery attempt; it's dropped

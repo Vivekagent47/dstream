@@ -115,6 +115,42 @@ func (q *Queries) EvictCaptureBookmarks(ctx context.Context, arg EvictCaptureBoo
 	return err
 }
 
+const updateBookmarkForOrg = `-- name: UpdateBookmarkForOrg :one
+UPDATE bookmarks SET name = $3, description = $4, tags = $5
+WHERE id = $1 AND org_id = $2
+RETURNING id, org_id, request_id, name, description, tags, created_at, capture_rule_id
+`
+
+type UpdateBookmarkForOrgParams struct {
+	ID          pgtype.UUID `json:"id"`
+	OrgID       pgtype.UUID `json:"org_id"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Tags        []string    `json:"tags"`
+}
+
+func (q *Queries) UpdateBookmarkForOrg(ctx context.Context, arg UpdateBookmarkForOrgParams) (Bookmark, error) {
+	row := q.db.QueryRow(ctx, updateBookmarkForOrg,
+		arg.ID,
+		arg.OrgID,
+		arg.Name,
+		arg.Description,
+		arg.Tags,
+	)
+	var i Bookmark
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.RequestID,
+		&i.Name,
+		&i.Description,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.CaptureRuleID,
+	)
+	return i, err
+}
+
 const getBookmarkForOrg = `-- name: GetBookmarkForOrg :one
 SELECT id, org_id, request_id, name, description, tags, created_at, capture_rule_id FROM bookmarks WHERE id = $1 AND org_id = $2
 `
