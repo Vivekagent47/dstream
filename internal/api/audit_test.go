@@ -167,6 +167,7 @@ func TestListAudit_APIKeyForbidden(t *testing.T) {
 		Name:    "t",
 		Prefix:  prefix,
 		KeyHash: hash,
+		Role:    string(auth.RoleAdmin),
 	}); err != nil {
 		t.Fatalf("create key: %v", err)
 	}

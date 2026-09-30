@@ -258,6 +258,7 @@ func TestIsolation_ListAPIKeysByOrg_DoesNotLeak(t *testing.T) {
 		Name:    "kA",
 		Prefix:  "dsk_" + uuid.NewString()[:8],
 		KeyHash: []byte("hashA"),
+		Role:    "admin",
 	})
 	if err != nil {
 		t.Fatalf("create key A: %v", err)
@@ -267,6 +268,7 @@ func TestIsolation_ListAPIKeysByOrg_DoesNotLeak(t *testing.T) {
 		Name:    "kB",
 		Prefix:  "dsk_" + uuid.NewString()[:8],
 		KeyHash: []byte("hashB"),
+		Role:    "admin",
 	}); err != nil {
 		t.Fatalf("create key B: %v", err)
 	}

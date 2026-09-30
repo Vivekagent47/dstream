@@ -20,6 +20,7 @@ type ApiKey struct {
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
+	Role       string             `json:"role"`
 }
 
 type Application struct {

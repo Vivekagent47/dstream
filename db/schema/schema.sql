@@ -54,6 +54,13 @@ CREATE TABLE api_keys (
     id            UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,          -- human label ("CI deploy key")
+    -- Role this key authenticates as, using the same ladder as org_members.
+    -- 'owner' is deliberately not allowed: owner-gated actions are org
+    -- deletion and ownership transfer, which a machine credential must never
+    -- reach. Defaults to 'admin' so keys minted before this column keep
+    -- exactly the access they had.
+    role          TEXT NOT NULL DEFAULT 'admin'
+                    CHECK (role IN ('admin', 'member')),
     prefix        TEXT NOT NULL,          -- public, indexed part of the key; identifies the row without exposing the secret
     key_hash      BYTEA NOT NULL,         -- hash of the full secret; raw key shown once at creation, never stored
     last_used_at  TIMESTAMPTZ,            -- updated on successful auth; stale keys are candidates for cleanup

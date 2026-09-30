@@ -20,9 +20,9 @@ import (
 // who has no memberships yet — RequireOrg will reject those for
 // tenant-scoped routes).
 //
-// Role is NOT populated here; only RequireOrg looks up the membership row
-// and assigns Role to session principals (API-key principals get
-// RoleAdmin as a pass-through sentinel).
+// Role is populated here for API-key principals, from the key's own role
+// column. Session principals get their role later, in RequireOrg, which is
+// the only place that reads the membership row.
 //
 // Missing or invalid credentials → 401.
 func Authenticate(q *store.Queries, s *SessionSigner) func(http.Handler) http.Handler {
@@ -37,6 +37,7 @@ func Authenticate(q *store.Queries, s *SessionSigner) func(http.Handler) http.Ha
 						APIKeyID:   store.GoUUID(row.ID),
 						OrgID:      store.GoUUID(row.OrgID),
 						APIKeyName: row.Name,
+						Role:       Role(row.Role),
 					}
 					next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 					return
@@ -87,9 +88,8 @@ func Authenticate(q *store.Queries, s *SessionSigner) func(http.Handler) http.Ha
 //     must force the user to pick an org).
 //   - For session principals, looks up org_members(org_id, user_id) and
 //     assigns Principal.Role. Returns 403 if no membership row exists.
-//   - For API-key principals, assigns RoleAdmin as a sentinel and passes
-//     through (the API key implicitly authorizes traffic CRUD; admin-only
-//     endpoints add RequireSession on top).
+//   - For API-key principals, passes through: the key carries its own role,
+//     assigned by Authenticate. Session-only endpoints add RequireSession.
 func RequireOrg(q *store.Queries) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -103,8 +103,9 @@ func RequireOrg(q *store.Queries) func(http.Handler) http.Handler {
 				return
 			}
 			if p.Source == SourceAPIKey {
-				p.Role = RoleAdmin
-				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
+				// The key's role was assigned in Authenticate from its own
+				// row; there is no membership row to consult.
+				next.ServeHTTP(w, r)
 				return
 			}
 			m, err := q.GetOrgMember(r.Context(), store.GetOrgMemberParams{

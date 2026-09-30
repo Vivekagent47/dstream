@@ -262,6 +262,7 @@ func TestRoleMatrix(t *testing.T) {
 					Name:    "matrix",
 					Prefix:  prefix,
 					KeyHash: hash,
+					Role:    "admin",
 				}); err != nil {
 					t.Fatalf("persist api key: %v", err)
 				}

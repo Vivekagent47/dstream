@@ -48,6 +48,7 @@ func (d Handlers) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{
 			"id":           store.GoUUID(k.ID).String(),
 			"name":         k.Name,
+			"role":         k.Role,
 			"prefix":       k.Prefix,
 			"last_used_at": k.LastUsedAt,
 			"expires_at":   k.ExpiresAt,
@@ -85,6 +86,10 @@ func (d Handlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Name string `json:"name"`
+		// Role the key authenticates as: "admin" (default) or "member".
+		// "owner" is refused — a machine credential must not reach
+		// owner-gated actions. The DB CHECK constraint refuses it too.
+		Role string `json:"role,omitempty"`
 		// Optional: key auto-expires after this many days. Omit / <=0 for a
 		// non-expiring key (NULL). Bounds a leaked key's exposure window.
 		ExpiresInDays *int `json:"expires_in_days,omitempty"`
@@ -96,6 +101,13 @@ func (d Handlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {
 		httpx.Err(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if body.Role == "" {
+		body.Role = string(auth.RoleAdmin)
+	}
+	if body.Role != string(auth.RoleAdmin) && body.Role != string(auth.RoleMember) {
+		httpx.Err(w, http.StatusBadRequest, "role must be admin or member")
 		return
 	}
 
@@ -110,6 +122,7 @@ func (d Handlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Name:    body.Name,
 		Prefix:  prefix,
 		KeyHash: hash,
+		Role:    body.Role,
 	}
 	if body.ExpiresInDays != nil && *body.ExpiresInDays > 0 {
 		params.ExpiresAt = pgtype.Timestamptz{
@@ -131,12 +144,14 @@ func (d Handlers) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		OrgID:      orgID,
 		Metadata: map[string]any{
 			"name":   body.Name,
+			"role":   body.Role,
 			"prefix": prefix,
 		},
 	})
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 		"id":     rid.String(),
 		"name":   body.Name,
+		"role":   body.Role,
 		"key":    full, // only time the plaintext secret is returned
 		"prefix": prefix,
 	})

@@ -144,6 +144,7 @@ func bootstrapCmd() *cobra.Command {
 				Name:    label,
 				Prefix:  prefix,
 				KeyHash: hash,
+				Role:    string(auth.RoleAdmin), // bootstrap key drives setup
 			}); err != nil {
 				return fmt.Errorf("create api key: %w", err)
 			}
@@ -350,6 +351,7 @@ func keyCreateCmd() *cobra.Command {
 				Name:    name,
 				Prefix:  prefix,
 				KeyHash: hash,
+				Role:    string(auth.RoleAdmin),
 			})
 			if err != nil {
 				return fmt.Errorf("create key: %w", err)
