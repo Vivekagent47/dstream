@@ -1,273 +1,191 @@
-# Plan: dstream — Hookdeck-style Webhook Platform (Vision Doc + Phase 1 Spec)
+# dstream — Design & Roadmap
 
-## Context
+Live design doc: what dstream is, how it's built, what has shipped, what's next.
 
-User is starting a new project (`/Users/apple/Work/dstream` — empty directory). Goal: build an open-source webhook management + monitoring + testing platform comparable to Hookdeck, with three positioning bets:
+- **Per-phase designs:** `docs/superpowers/specs/` (25 design docs, one per slice)
+- **User-facing overview:** `README.md`
 
-1. **Best local dev loop** — first-class CLI with tunnel, replay, fixture library, scenario scripts.
-2. **Visual workflow builder** — node-based UI for source → filter → transform → destination.
-3. **Record/replay 3rd-party providers** — VCR-style fixture capture for deterministic CI tests.
+**Status:** Phases 1–4 shipped. Phase 5 (visual workflow builder) was dropped. Phases 6–7 remain.
 
-Combined positioning: **"the dev IDE for webhooks"**.
+---
 
-Deploy model: single codebase serves SaaS (multi-tenant) + self-host (Docker Compose / Helm / single-binary). Like PostHog or Convoy.
+## 1. What it is
 
-This planning session produces **two documents**, not code:
+An open-source webhook management, monitoring and testing platform, comparable to Hookdeck. It sits between webhook senders (Stripe, GitHub, Shopify, your own services) and your app: it accepts inbound webhooks, persists every request, applies per-connection filter/transform/retry policy, and forwards to your endpoints — while every attempt stays inspectable in a dashboard. It also publishes outbound webhooks to your own customers (Svix-style signed fan-out).
 
-- `docs/vision/dstream-platform.md` — long-horizon vision + architecture overview across all 7 sub-projects.
-- `docs/specs/2026-06-15-phase-1-core-inbound-gateway.md` — detailed implementation spec for the first executable slice.
+**Positioning:** *the dev IDE for webhooks.* Two differentiator bets:
 
-The repo is greenfield; no constraints to respect.
+1. **Best local dev loop** — a first-class CLI: tunnel to localhost, replay, fixture library, ordered scenarios. Test webhook handlers like unit tests.
+2. **Record/replay third-party providers** — VCR-style capture of live provider traffic for deterministic CI.
 
-## Decisions Already Locked (from clarifying Qs)
+**Deploy model:** one codebase serves SaaS (multi-tenant) and self-host (Docker Compose / Helm / single binary), like PostHog or Convoy.
 
-| Topic          | Choice                                                                      |
-| -------------- | --------------------------------------------------------------------------- |
-| MVP scope      | Inbound + Outbound (full Hookdeck parity, phased)                           |
-| Distribution   | OSS-first, SaaS-able, self-hostable from single codebase                    |
-| Backend        | Go                                                                          |
-| Frontend       | Tanstack Start (React + Vinxi SSR)                                          |
-| Queue          | Redis queues via `asynq` (Lists + sorted sets) + Postgres (state of record) |
-| Differentiator | Dev-first webhook IDE (CLI + visual builder + record/replay)                |
+---
 
-## Architecture (Modular Monolith)
+## 2. Architecture
 
-One Go binary with subcommands. Self-hosters run one container + Postgres + Redis. SaaS runs N replicas of the same binary, optionally split by subcommand for horizontal scale.
+A **modular monolith**: one Go binary with subcommands. Self-hosters run one container plus Postgres and Redis. SaaS runs N replicas of the same binary, optionally split by subcommand to scale horizontally. Splitting further later is mechanical; microservices up front would punish the self-host UX.
 
 ```
-/cmd/dstream            main entry — subcommands: server | worker | cli | migrate
-/internal/
-  ingest/               HTTP receiver, signature verify, dedup, enqueue
-  queue/                asynq client + server wrapper (Redis-backed task queue)
-  deliver/              outbound HTTP delivery, retries, backoff
-  transform/            JS sandbox (goja) for per-connection transforms (Phase 3)
-  filter/               JSONPath/CEL filter eval (Phase 3)
-  source/               provider plugins: Stripe, GitHub, Shopify, generic
-  destination/          destination types: HTTP, CLI-tunnel
-  bookmark/             capture + replay (Phase 4)
-  store/                Postgres data access (sqlc-generated)
-  api/                  REST API for dashboard + CLI control plane
-  tenant/               org/project scoping, isolation
-  auth/                 API keys, sessions, RBAC (RBAC stub now, full Phase 6)
-/web/                   Tanstack Start dashboard
-/deploy/
-  docker/               Dockerfile, docker-compose.yml
-  helm/                 Helm chart for k8s self-host
-/docs/
-  vision/               vision doc
-  specs/                phase specs
+cmd/dstream/          subcommands: server | worker | cli | migrate | admin | maintenance
+internal/
+  ingest/             HTTP receiver, dedup, body persistence, fan-out to events
+  dqueue/             Redis per-org fair delivery queue (Lua-atomic; replaced asynq)
+  deliver/            outbound HTTP delivery, retry policy, rate/in-flight gates
+  webhook/            outbound (Svix-style) publish + signed subscriber fan-out
+  opevents/           operational webhooks (per-org app, lifecycle triggers)
+  filter/             CEL filter evaluation (cost-bounded)
+  transform/          JS sandbox (goja) for per-connection/endpoint transforms
+  bookmark/           fixture capture, replay, reinject, export
+  store/              Postgres data access (sqlc-generated)
+  api/                REST API for dashboard + CLI control plane
+  admin/              super-admin console endpoints (cross-tenant, queue ops)
+  auth/               API keys, sessions, magic links, portal tokens, RBAC stub
+  audit/              audit-log writes
+  config/             Viper env config
+  logging/  metrics/  tracing/  middleware/  mailer/
+web/                  TanStack Start dashboard (+ customer-facing App Portal)
+db/                   schema.sql (source of truth), migrations (Atlas), sqlc queries
+deploy/docker/        Dockerfile + docker-compose.yml (dev stack)
+deploy/helm/          empty — Phase 7
+tools/loadtest/       ingest load harness (`make load`)
 ```
 
-**Why modular monolith over microservices:** self-host UX wins. Splitting later by extracting subcommands is mechanical. Microservices upfront punishes the OSS community.
+### Inbound flow
 
-## Phased Roadmap
+`POST /e/{ingest_token}` → resolve source (in-process cache) → read body (5 MB cap) → dedup (`SETNX dedup:{source_id}:{body_hash} EX 60`) → persist request + body → fan out one `events` row per enabled connection → enqueue each onto `dqueue`. Responds `202 {request_id, event_ids[]}` without waiting on delivery.
 
-| #   | Phase                                               | Why it's in this position                           |
-| --- | --------------------------------------------------- | --------------------------------------------------- |
-| 1   | Core inbound gateway                                | Foundation; everything else reuses queue + delivery |
-| 2   | Outbound webhooks (subscriptions)                   | Reuses delivery worker; adds publish API + signing  |
-| 3   | Transformations + filters                           | Needs `transform/` + `filter/` packages built out   |
-| 4   | Record/replay + fixture library                     | Moat #1 (test better); needs Phase 1 data           |
-| 5   | Visual workflow builder                             | Moat #2; UI-heavy, no infra change                  |
-| 6   | Multi-tenant hardening + RBAC + SSO + billing hooks | Required before SaaS launch                         |
-| 7   | Self-host packaging (Helm, single-binary)           | Hardening + distribution                            |
+A worker pool drains `dqueue`, and per event: applies the per-destination rate-limit and max-in-flight gates (deferring rather than burning retry budget), evaluates the connection's CEL filter (a miss is terminal `filtered`), runs its goja transform, then POSTs to the destination with `Dstream-Event-Id` / `Dstream-Event-Attempt` headers. Non-2xx retries on the connection's policy (`exponential` | `linear` | `fixed` | `custom` schedule, with jitter and a cap) until the budget is exhausted, then dead-letters.
 
-## Documents To Write
+### Fair queueing
 
-### Document 1: `docs/vision/dstream-platform.md`
+`dqueue` replaced asynq (commit 61b9c20) to get **absolute per-org fairness**: pending events sit in one Redis LIST per org with a round-robin ring of org ids, so one org's backlog can never delay another's. Every multi-key mutation is a single Lua script, making it correct across worker nodes without locks. At-least-once: a picked event holds a lease in a processing ZSET, and a recoverer reinjects anything whose lease expires. See `docs/superpowers/specs/2026-07-18-fair-delivery-queue-design.md`.
 
-Cover at high level (target ~1500 words):
+### Outbound flow
 
-- Problem statement, target user (dev teams shipping webhook integrations)
-- Positioning vs Hookdeck / Convoy / Svix / webhook.site
-- Three differentiator bets (CLI, visual builder, record/replay) with concrete examples
-- Architecture diagram (text/Mermaid): ingress → queue → workers → destinations, with control plane and dashboard
-- Data model overview: Org, Project, Source, Destination, Connection, Request, Event, Attempt, Bookmark, Subscription
-- 7-phase roadmap with one paragraph per phase: scope, exit criteria, non-goals
-- Self-host vs SaaS architecture differences (none expected at code level; only config)
-- Out-of-scope (don't promise): managed cloud signup, mobile apps, alerting beyond email/webhook, enterprise audit logs beyond basic
+Applications own endpoints and subscribe to event types. Publishing a message validates it against the event type's JSON schema, fans out to every matching endpoint (event-type filter ∧ channel overlap), signs the post-transform bytes, and delivers through the same queue and retry machinery. Endpoints auto-disable after sustained failure and can be recovered; secrets rotate. Customers manage their own endpoints through the App Portal (scoped token, epoch kill-switch).
 
-### Document 2: `docs/specs/2026-06-15-phase-1-core-inbound-gateway.md`
+---
 
-Detailed enough to execute. Target ~2500 words. Sections:
+## 3. Tech stack
 
-**1. Goals & non-goals**
+| Concern | Choice |
+| --- | --- |
+| Backend | Go (one binary, subcommands) |
+| Frontend | TanStack Start (React 19, Router + Query), bun |
+| Database | Postgres via `pgx/v5`; `sqlc` for compile-time-safe queries |
+| Migrations | **Atlas** (`schema.sql` is the source of truth; migrations generated by diff) |
+| Queue | **`internal/dqueue`** — Redis lists/ZSETs + Lua (no asynq) |
+| Redis | `redis/go-redis/v9` — dedup, source cache, in-flight counters, CLI sessions |
+| Rate limiting | `go-redis/redis_rate/v10` (token bucket) |
+| Filters | `google/cel-go` (compile on write, evaluate on delivery) |
+| Transforms | `dop251/goja` (locked-down sandbox, interrupt + output cap) |
+| Payload storage | Postgres (`request_bodies`) behind a `BodyStore` interface |
+| CLI tunnel | `coder/websocket` |
+| Config | `spf13/viper` (env vars, documented in `.env.example`) |
+| Observability | slog, Prometheus `/metrics`, OpenTelemetry → Jaeger (`otelpgx` for DB spans) |
+| Router | `go-chi/chi/v5` |
 
-- Goal: receive webhook → durably store → reliably deliver to one destination → observable in dashboard → forwardable to localhost via CLI.
-- Non-goals (defer): transformations, filters, outbound publish, record/replay, visual builder, billing, SSO.
+---
 
-**2. User stories**
+## 4. Data model
 
-- "As a dev, I create a Source for Stripe, get an ingest URL, point Stripe at it, see events in dashboard."
-- "As a dev, I run `dstream listen --source stripe-prod` and incoming events forward to my localhost:3000/webhook."
-- "As a dev, my destination 500s; dstream retries with exponential backoff; I can manually retry from dashboard."
+Tenancy is **org-scoped** (`organizations` + `org_members`; there is no separate project layer). Every row is owned by an org, and every query scopes by it — middleware resolves the org from an API key or session.
 
-**3. Data model (Postgres)**
+**Identity / tenancy:** `organizations`, `org_members`, `users`, `api_keys`, `org_invites`, `magic_link_tokens`, `audit_logs`
 
-- `organizations`, `projects`, `users`, `api_keys`
-- `sources` (id, project_id, type, ingest_token, signing_config, created_at)
-- `destinations` (id, project_id, type [http|cli], url, auth_config, rate_limit_rps int null, rate_limit_burst int null, max_inflight int null)
-- `connections` (id, source_id, destination_id, enabled, max_retries int default 8, retry_strategy enum [exponential|linear|fixed|custom], retry_base_ms int default 30000, retry_cap_ms int default 3600000, retry_jitter_pct int default 20, custom_retry_schedule jsonb null)
-- `requests` (id, source_id, headers, body_hash, body_ref [object-store ref], received_at, sig_verified bool)
-- `events` (id, request_id, connection_id, status [queued|delivered|failed|paused], next_retry_at)
-- `attempts` (id, event_id, attempt_num, response_status, response_headers, response_body, duration_ms, attempted_at, error)
-- `cli_sessions` (id, source_id, token, last_seen_at) — for tunnel
+**Inbound pipeline:** `sources` (ingest token, signing config, allowed methods) → `requests` + `request_bodies` → `events` (status: queued | in_flight | delivered | failed | dead | discarded | filtered) → `attempts`; routed by `connections` (retry policy, `filter_expr`, `transform_js`) to `destinations` (http | cli, rate limits, max in-flight). `cli_sessions` backs the tunnel.
 
-**4. Ingest path**
+**Outbound pipeline:** `applications` → `endpoints` (secret, event-type filter, channels, headers, rate limit) and `event_types` (JSON schema) → `messages` → `message_deliveries` → `message_delivery_attempts`.
 
-- `POST /e/{ingest_token}` — accept any method/headers/body up to 5MB.
-- Resolve source by token (cached in Redis, 60s TTL).
-- Compute body hash; store request row + body (start: Postgres LO or `bytea`; later: S3/MinIO via interface).
-- **Auth scope decision (2026-07-06):** no inbound signature verification and no outbound delivery auth until the last phase / post-release. Plain forwarding only. Inbound HMAC-verify code removed from ingest (`requests.sig_verified` always false); `destinations.auth_config` stored-but-unused (delivery worker attaches no auth). Columns + API fields kept so no migration needed when auth lands.
-- Dedup window: `SETNX dedup:{source_id}:{body_hash} 1 EX 60`. Skip enqueue if dup, still record request.
-- For each enabled connection on source: create `events` row + `asynq.Enqueue("deliver", {event_id})` onto the `deliveries` queue.
-- Respond `200 {request_id, event_ids:[]}` within 50ms p99 (no synchronous delivery).
+**Testing / fixtures:** `bookmarks` (a retention-pinned pointer to a stored request), `capture_rules` (auto-capture by CEL filter, capped), `scenarios` + `scenario_steps` (ordered replay with per-step delay).
 
-**5. Delivery worker**
+---
 
-- `asynq.Server` consuming `deliveries` queue, configurable concurrency (default 50).
-- Handler steps per task:
-  1. Load event + connection + destination from Postgres.
-  2. **Rate-limit gate** (if destination has limits): token bucket via `go-redis/redis_rate/v10` keyed on `dest:{destination_id}`. If denied, return `asynq.SkipRetry` and re-enqueue with `ProcessIn(retryAfter)` (where `retryAfter` = time until bucket refill). Does NOT count toward retry budget.
-  3. **Max in-flight gate** (optional, per destination): Redis `INCR inflight:{destination_id}` with `EXPIRE` slot; if over `max_inflight`, defer like rate-limit miss.
-  4. HTTP POST destination.url with original headers + `Dstream-Event-Id`, `Dstream-Event-Attempt` headers. Timeout 30s.
-  5. Treat 2xx as success → write attempt row, status=`delivered`, decrement in-flight.
-  6. On failure (non-2xx / network / timeout): write attempt row with error, decrement in-flight, return error.
-- `asynq.RetryDelayFunc` is global and per-task consults policy:
-  - Read `connections.retry_strategy` + params from task payload (cache snapshot at enqueue time).
-  - `exponential` → `min(retry_base_ms * 2^attempt, retry_cap_ms)` ± jitter
-  - `linear` → `min(retry_base_ms * attempt, retry_cap_ms)` ± jitter
-  - `fixed` → `retry_base_ms` ± jitter
-  - `custom` → next value from `custom_retry_schedule` jsonb array (e.g., `[10s, 30s, 1m, 5m, 30m]`)
-- `MaxRetry` from policy (snapshotted into task options at enqueue). Dead-letter after exhaustion; event row flipped `status=failed`.
-- Manual retry from dashboard re-enqueues with attempt counter reset.
+## 5. Roadmap
 
-**6. CLI destination (local forward)**
+| # | Phase | Status |
+| --- | --- | --- |
+| 1 | Core inbound gateway | ✅ shipped (hardened) |
+| 2 | Outbound webhooks — Svix model | ✅ shipped |
+| 3 | Transforms (goja) + filters (CEL) | ✅ shipped |
+| 4 | Record/replay + fixture library | ✅ shipped |
+| 5 | ~~Visual workflow builder~~ | ❌ dropped — see §7 |
+| 6 | Multi-tenant hardening — full RBAC, SSO, billing hooks | planned |
+| 7 | Self-host packaging — Helm chart, single-binary release | planned (`deploy/helm/` is empty; compose ships) |
 
-- CLI command: `dstream listen --source <id-or-name> --forward <local-url>`.
-- CLI opens WebSocket to `/api/cli/connect`, authenticates via API key, registers as the destination for any connection of type `cli`.
-- Delivery worker, when destination type is `cli`, instead of HTTP POSTs the event over the WS to the connected CLI session.
-- CLI POSTs to `<local-url>`, returns response status/body back over WS; worker records as the attempt.
-- Heartbeat every 15s; if CLI disconnects, events pause until reconnect.
+---
 
-**7. Dashboard (Tanstack Start)**
+## 6. What shipped
 
-Project-scoped pages (per tenant):
+### Phase 1 — core inbound gateway ✅
 
-- `/login` (email + magic link; postpone SSO).
-- `/orgs/{slug}/projects/{slug}/sources` — list, create, copy ingest URL, view source config.
-- `.../destinations` — list, create HTTP destination.
-- `.../connections` — create source↔destination connection.
-- `.../events` — paginated list, filter by source/status, click into event detail.
-- `.../events/{id}` — request headers/body, all attempts, "Retry now" button.
+Ingest → dedup → durable store → fair-queued delivery → retry → dashboard, plus the CLI tunnel (`dstream cli listen --forward`) for localhost forwarding. Magic-link auth, org membership, API keys, audit log, super-admin console. Security-hardened (SSRF guards on every outbound fetch, loop guard against dstream's own hosts, body caps, org-scoped everything).
 
-> **Edit-policy UI (done):** retry policy fields edit from `connections/{id}` (strategy, max_retries, base/cap ms, jitter, custom schedule → `PATCH /api/connections/{id}`); rate-limit fields edit from `destinations/{id}` (rps, burst, max_inflight → `PATCH /api/destinations/{id}`).
+Tracing and the load harness landed in Phase 3. Measured on a local dev box: 100 req/s × 60 s = 5,989 events, 0 errors, **ingest p99 14.1 ms**, **delivery-start p99 267 ms** — both inside the targets (local hardware, not a clean cloud baseline; see `tools/loadtest/README.md`).
 
-Root-admin pages (super-admin role only; `/admin/*` routes, gated by `users.is_super_admin`):
+### Phase 2 — outbound webhooks ✅
 
-- `/admin/queues` — embedded **asynqmon** UI: live queue stats (active, pending, scheduled, retry, archived/dead-letter), per-queue throughput, task inspection, pause/resume queue, drain dead-letter. Sidekiq/BullMQ-equivalent. Mounted as HTTP sub-handler from the `hibiken/asynqmon` package.
-- `/admin/overview` — cross-tenant metrics: total events/min, top sources by volume, top failing destinations, total orgs/projects/users.
-- `/admin/orgs` — list all organizations; click through to read-only inspection of their sources/destinations/events. For support.
-- `/admin/destinations/hot` — destinations breaching rate limits or with elevated failure rate, sorted by impact.
-- `/admin/system` — Redis info, Postgres pool stats, worker count, version, build SHA.
+Svix-style apps / endpoints / event types / signed messages, with endpoint lifecycle (rotation, auto-disable, recover, test-send), replay, and a loop guard. **2c** added the customer-facing App Portal (app-scoped token, `/api/portal/*` + `/portal` SPA, mint/revoke with an epoch kill-switch). **2d** added delivery controls (per-endpoint headers, per-endpoint rate limit with defer-on-no-budget, channels with `∧` overlap fan-out, event-type JSON-schema validation refusing external `$ref`s). **2e** added operational webhooks (a per-org operational app reusing the same engine, triggered on `endpoint.disabled` and `message.attempt.exhausted`) plus payload retention/expiry sweeps.
 
-Super-admin bootstrapped via `dstream admin promote <email>` CLI on first run.
+Specs: `2026-07-24-phase-2a-outbound-webhooks-svix`, `2026-08-27-phase-2b-endpoint-lifecycle`, `2026-08-31-cycle-b-outbound-dashboard-ui`, `2026-09-01-phase-2c-app-portal`, `2026-09-04-phase-2d-delivery-controls`, `2026-09-16-phase-2e-operational-webhooks-retention`.
 
-**8. API surface (REST, JSON)**
+### Phase 3 — transforms + filters ✅
 
-- `POST /api/sources` / `GET /api/sources` / `GET /api/sources/{id}`
-- `POST /api/destinations` / `GET /api/destinations` / `GET /api/destinations/{id}` / `PATCH /api/destinations/{id}` (PATCH accepts `rate_limit_rps`, `rate_limit_burst`, `max_inflight`)
-- `POST /api/connections` / `GET /api/connections` / `GET /api/connections/{id}` / `PATCH /api/connections/{id}` (PATCH accepts retry policy fields)
-- `GET /api/events?source_id=&status=&cursor=`
-- `GET /api/events/{id}`
-- `POST /api/events/{id}/retry`
-- `GET /api/cli/sources` (CLI bootstrap), `WS /api/cli/connect`
-- Admin (super-admin only): `GET /api/admin/overview`, `GET /api/admin/orgs`, `GET /api/admin/destinations/hot`, `GET /api/admin/system`. asynqmon mounted at `/admin/queues`.
+`internal/filter` (cel-go, cost-bounded, compiled on write and evaluated on delivery, fail-open) and `internal/transform` (goja in a locked-down sandbox: no injected capabilities, 1 s interrupt, output cap, object/array returns only), wired into **both** pipelines — the outbound side signs post-transform bytes. A delivery-time filter miss is a terminal `filtered` status. Editable per connection and per endpoint from the dashboard, the App Portal, and preview endpoints.
 
-**9. Auth**
+Also completed the tracing story (ingest child spans, an outbound `webhook.deliver` span, and `trace_id`/`span_id` stamped onto log lines) and shipped the load harness.
 
-- API keys per project (`Authorization: Bearer dsk_...`).
-- Dashboard sessions via cookie (magic-link auth).
-- Minimum RBAC: project member or not (full RBAC = Phase 6).
+Spec: `2026-09-18-phase-3-filters-transforms-design.md`.
 
-**10. Multi-tenant**
+### Phase 4 — record/replay + fixtures ✅
 
-- Every row owned by `project_id`. All queries scope by project. Middleware extracts project from API key or session.
-- No org-level cross-project queries in Phase 1.
+- **4a** — `bookmarks`: a retention-pinned pointer to a stored request, so a fixture never expires. `internal/bookmark` engine: reinject through the pipeline as `is_test` events, replay to an SSRF-guarded URL, or export portable JSON. CLI `dstream cli fixtures` / `replay --forward`; dashboard Fixtures page.
+- **4b-i** — **import** (`POST /api/bookmarks/import`) materialises an exported fixture as a real request + body + bookmark under a chosen source, closing the export → import → replay loop.
+- **4b-ii** — **auto-capture rules**: per-source CEL rules cached in the ingest source-cache, so a source with no rules pays nothing per request. Matching requests best-effort auto-bookmark and roll off past a cap; it can never slow or fail ingest.
+- **4b-iii** — **ordered scenarios**: a named sequence of fixtures, each with a pre-delay, replayed in order to an SSRF-guarded URL (delay capped at 60 s, 50 steps max, context-cancelable, stops on first error). CLI `dstream cli scenario run --forward`; dashboard builder.
 
-**11. Observability**
+Specs: `2026-09-19-phase-4a-record-replay-fixtures`, `-4b-fixture-import`, `-4b-ii-auto-capture`, `-4b-iii-scenarios`.
 
-- Structured logs (slog) with `request_id`, `event_id`.
-- Prometheus metrics on `/metrics` (super-admin gated — exposes tenant ids/names): ingest count/latency, delivery success/fail by destination + connection, retry/dead-letter counts, rate-limit + in-flight deferrals, events-in-state gauge, web/auth/CLI-tunnel subsystem metrics. See `docs/superpowers/specs/2026-07-19-observability-metrics-tracing-design.md`. NOTE: `/metrics` is cookie-gated, so a stock Prometheus can't scrape it — Phase-1 metrics are browse-only via a logged-in super-admin; no automated scraper ships in the dev compose.
-- Queue visibility is served by the super-admin console (overview/orgs/queue stats), not an embedded queue UI. (asynq/asynqmon were replaced by the `dqueue` Redis fair queue — commit 61b9c20.)
-- OpenTelemetry tracing (OTLP/HTTP → Jaeger in the dev stack): server HTTP span → queue context propagation → `deliver` span → outbound delivery + DB (otelpgx) spans. Off by default (`DSTREAM_TRACING_ENABLED`). Phase 3 DONE: ingest child spans (`ingest.resolve_source`/`read_body`/`dedup`/`persist`/`fanout`, fanout ctx links the consumer `deliver` span across the queue), outbound `webhook.deliver` span, and slog `trace_id`/`span_id` correlation (a context handler stamps them onto request/delivery log lines when a span is active).
+### Beyond the phases
 
-**12. Operations**
+**Super-admin queue ops** — `/console/queues`: per-lane drill-down (dead / scheduled / processing / pending), an all-orgs pending table, and safe ops (requeue a dead event, force-promote a scheduled one, drain the dead list), each a single atomic Lua script. Spec: `2026-09-26-admin-queue-ops-design.md`.
 
-- `docker-compose.yml`: dstream + postgres + redis + minio (bodies) all up with one command.
-- `dstream migrate` runs DB migrations on boot.
-- Env-var config loader (Viper). Documented `.env.example`.
+---
 
-**13. Verification (end-to-end test plan)**
+## 7. Decisions log
 
-- `docker compose up` brings stack online; dashboard reachable at `localhost:8080`.
-- Smoke: create source via dashboard → curl POST to ingest URL → event appears in dashboard, status `delivered` after worker hits a mock destination.
-- Retry: configure destination returning 500 → see 8 attempts with backoff in attempts table; "Retry now" works.
-- Dedup: send same body twice within 60s → only first creates event.
-- CLI tunnel: `dstream listen --source X --forward http://localhost:3000/hook` → hitting ingest delivers to local server; response captured in attempt.
-- Load: 1k events in 60s sustained, p99 ingest < 100ms, p99 delivery start < 500ms (single-node baseline). **Phase 3 DONE:** `tools/loadtest` harness (`make load`) + measured run — 100 req/s × 60s (5,989 events, 0 errors) on a local dev box gave ingest p99 **14.1ms** and delivery-start p99 **267ms**, both under target (local hardware, not a clean cloud baseline; see `tools/loadtest/README.md`).
-- Self-host: fresh VM, `git clone && docker compose up`, walk through smoke test.
+| Date | Decision |
+| --- | --- |
+| 2026-07-06 | **Webhook auth deferred to post-release.** No inbound signature verification and no outbound delivery auth. Plain forwarding only: `requests.sig_verified` is always false and `destinations.auth_config` is stored-but-unused. Columns and API fields are kept so auth lands without a migration. |
+| 2026-07-18 | **asynq → `dqueue`.** Replaced asynq/asynqmon with a hand-rolled Redis fair queue to get absolute per-org fairness. Accepted cost: reimplementing retry, backoff, dead-letter, scheduling, crash recovery and monitoring. |
+| 2026-09-29 | **Visual workflow builder (Phase 5) dropped.** A drag-to-connect canvas over the existing connection model was built, reviewed, and removed: the connections page's structured view already reads the topology, and the table view plus the create dialog already build it — so the canvas added a dependency and a third way to do the same thing. A visual builder only earns its place alongside a real multi-step pipeline model (source → chained filter/transform/branch nodes → fan-out), which stays deferred. |
 
-**14. Out of scope for Phase 1 (explicit list)**
-Transforms, filters, outbound webhooks, record/replay, visual builder, billing, SSO, audit log, alerting, custom domains, payload encryption at rest.
+---
 
-## Reusable / External Patterns
+## 8. Deferred & out of scope
 
-- DB access: `sqlc` (compile-time-safe Go from SQL).
-- Migrations: `goose` or `golang-migrate`.
-- HTTP server: `chi` router.
-- Task queue: `hibiken/asynq` (retries, scheduling, dead-letter) + `hibiken/asynqmon` (mounted UI at `/admin/queues`).
-- Rate limiting: `go-redis/redis_rate/v10` (token bucket on Redis).
-- Redis client: `go-redis/v9` (for non-queue uses: dedup `SETNX`, source cache, in-flight counters, CLI session registry).
-- JS sandbox (later phases): `dop251/goja`.
-- CLI WS: `nhooyr.io/websocket`.
-- Config: `spf13/viper`.
-- Frontend data: Tanstack Query + Tanstack Router (bundled in Tanstack Start).
+**Deferred:** pause/resume an org's delivery lane (needs a change to the correctness-critical `FairPick` Lua); per-connection and per-destination queue breakdowns; historical queue metrics.
 
-## How to Execute This Plan (post-approval)
+**Deferred to later phases:** full RBAC roles, SSO, billing hooks (Phase 6); cross-org fixture sharing (Phase 6); Helm chart and single-binary release (Phase 7).
 
-1. Create `docs/vision/` and `docs/specs/` directories.
-2. Write Document 1 (`dstream-platform.md`) following the outline above.
-3. Write Document 2 (`2026-06-15-phase-1-core-inbound-gateway.md`) following the section outline above.
-4. `git init` and commit both docs as `docs: add platform vision and phase 1 spec`.
-5. Stop. No code yet. Next session executes Phase 1 spec via `writing-plans` skill.
+**Out of scope entirely:** managed cloud signup, mobile apps, alerting beyond email/webhook, custom domains, payload encryption at rest.
 
-## Verification of This Planning Step
+---
 
-After both docs written:
+## 9. Operations & verification
 
-- Both files exist at their paths and parse as valid Markdown.
-- Vision doc references every phase 1–7 with a one-paragraph scope.
-- Phase 1 spec contains all 14 numbered sections from outline.
-- A reader unfamiliar with Hookdeck can finish the vision doc and explain dstream's three differentiator bets.
-- Phase 1 spec is detailed enough that a competent Go developer can scaffold the repo without further questions on data model, ingest path, or retry policy.
+`docker compose -f deploy/docker/docker-compose.yml up -d --build` brings up the whole dev stack (server, worker, web, Postgres, Redis, Jaeger) and runs migrations. Config is env-var driven via Viper — see `.env.example`. Note the split hosts in dev: the API and ingest are on `:8080`, the dashboard on `:3000`.
 
-┌─────┬─────────────────────────────────────────────────────────┬────────────────────────────────────────────────┐
-│ # │ Phase │ State │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 1 │ Core inbound gateway │ COMPLETE — core spec shipped; trace/load → Phase 3 │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 2 │ Outbound webhooks — Svix model (apps/endpoints/event-types/signed messages) │ 2a+2b backend + dashboard UI + 2c App Portal DONE (apps/endpoints/event-types/signed messages; rotation/auto-disable/replay/recover/test; loop guard; full web/ dashboard; customer-facing App Portal — app-scoped portal token, /api/portal/* + /portal SPA, mint/revoke + epoch kill-switch). 2d delivery controls DONE (per-endpoint custom headers, per-endpoint rate limit w/ defer-no-budget, channels — endpoint+message tagging + && overlap fan-out, event-type JSON-schema validation on publish w/ external-\$ref-refused loader; dashboard + App Portal UI). 2e DONE (operational webhooks — per-org operational app reusing the engine, endpoint.disabled + message.attempt.exhausted triggers, loop-guarded; payload retention/expiry sweep + expunged-message guards; dashboard page). Phase 2 COMPLETE. specs: docs/superpowers/specs/{2026-07-24-phase-2a-outbound-webhooks-svix, 2026-08-27-phase-2b-endpoint-lifecycle, 2026-08-31-cycle-b-outbound-dashboard-ui, 2026-09-01-phase-2c-app-portal, 2026-09-04-phase-2d-delivery-controls, 2026-09-16-phase-2e-operational-webhooks-retention}-design.md │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 3 │ Transforms (goja) + filters (CEL) │ Filters+transforms DONE — internal/filter (google/cel-go, cost-bounded, compile-on-write/eval-on-delivery, fail-open) + internal/transform (dop251/goja, locked-down sandbox: no injected caps, 1s interrupt, output cap, object/array-return only) wired into BOTH pipelines (inbound deliver + outbound webhook; outbound signs post-transform bytes); delivery-time filter → terminal 'filtered' status; per-endpoint/connection filter_expr+transform_js via dashboard + App Portal + preview endpoints. spec: docs/superpowers/specs/2026-09-18-phase-3-filters-transforms-design.md. Tracing completion DONE (ingest child spans + outbound webhook.deliver span + slog trace_id/span_id correlation). Load-test harness DONE (tools/loadtest + `make load`); measured run: ingest p99 14.1ms, delivery-start p99 267ms (local, both under target). Phase 3 COMPLETE. │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 4 │ Record/replay + fixtures │ 4a DONE — bookmarks (pointer to a stored request, retention-pinned so fixtures never expire); internal/bookmark engine (Reinject through the pipeline as is_test events / ReplayTo an SSRF-guarded URL / Export portable JSON); API capture+list+get+delete+replay+replay-to+export (tenant-scoped); CLI `dstream cli fixtures` + `replay --forward` (client-side); dashboard Fixtures page + Save-as-fixture + is_test badge. spec: docs/superpowers/specs/2026-09-19-phase-4a-record-replay-fixtures-design.md. 4b-i DONE — fixture IMPORT (POST /api/bookmarks/import materializes an exported JSON as a real request+body+bookmark under a caller-chosen source, org-checked + body-size-bounded; `dstream cli import`; dashboard Import dialog) closing the export→import→replay VCR loop. spec: docs/superpowers/specs/2026-09-19-phase-4b-fixture-import-design.md. 4b-ii DONE — AUTO-CAPTURE rules (capture_rules table; per-source rules cached in the ingest source-cache so the no-rule hot path pays nothing; a matching request best-effort auto-bookmarks + rolls off past `cap`, fail-closed, never slows/fails ingest; CEL filter reuse; rule delete keeps its fixtures via ON DELETE SET NULL; /api/capture-rules CRUD + dashboard Capture Rules UI). spec: docs/superpowers/specs/2026-09-19-phase-4b-ii-auto-capture-design.md. 4b-iii DONE — ordered SCENARIOS (scenarios + scenario_steps tables; a scenario = a named, ordered sequence of fixtures, each with a pre-delay, replayed in order to an SSRF-guarded public URL; step-replace on create/patch runs in a transaction; delay capped 0..60s + steps capped 50/scenario; per-step replay stops on first error and is context-cancelable; /api/scenarios CRUD + /{id}/replay-to; `dstream cli scenario run --forward` (client-side, localhost-capable); dashboard Scenarios page with an ordered step builder). spec: docs/superpowers/specs/2026-09-19-phase-4b-iii-scenarios-design.md. STILL DEFERRED (4b): cross-org fixture sharing (Phase 6). │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 5 │ Visual workflow builder │ connections has a graph view, not a builder │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 6 │ Full RBAC + SSO + billing │ identity done; SSO, role RBAC, billing not │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ 7 │ Self-host: Helm + single-binary │ compose done; no deploy/helm, no single-binary │
-├─────┼─────────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ — │ Source provider plugins (Stripe/GitHub sig parsing) │ no internal/source; generic only │
-└─────┴─────────────────────────────────────────────────────────┴────────────────────────────────────────────────┘
+`/metrics` is Prometheus-format but **cookie-gated to super-admins**, so a stock scraper can't read it — it's browse-only today, and no scraper ships in the dev compose. Tracing is off unless `DSTREAM_TRACING_ENABLED` is set.
+
+**Smoke path:** create a source → `curl` its ingest URL → the event appears and reaches `delivered` against a live destination. Point a connection at a 500 and watch the configured backoff play out in the attempts table, then "Retry now". Send the same body twice inside 60 s and confirm only the first creates events. Run `dstream cli listen --source X --forward http://localhost:3000/hook` and confirm the local response is captured as the attempt.
+
+Go tests need a migrated test database and Redis:
+
+```
+DSTREAM_TEST_DB_URL="postgres://dstream:dstream@127.0.0.1:5433/dstream_test?sslmode=disable" \
+DSTREAM_REDIS_ADDR=127.0.0.1:6379 go test ./... -count=1
+```
+
+The web app has **no test suite** — `tsc --noEmit` plus `bun run build` are its only gates, so UI regressions surface by hand.

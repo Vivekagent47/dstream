@@ -5,7 +5,7 @@
 
 dstream sits between webhook senders (Stripe, GitHub, Shopify, your own services) and your app. It accepts inbound webhooks, persists every request, applies per-connection delivery + retry policy, and forwards to your endpoints — while you watch every attempt in a dashboard.
 
-**Status:** Phases 1–3 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), and transforms + filters (CEL filter + sandboxed `goja` transform on both the inbound and outbound pipelines). Later phases (record/replay, visual builder, full RBAC/SSO/billing, self-host packaging) are on the roadmap below. `PLAN.md` is the live design doc.
+**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Remaining: full RBAC/SSO/billing and self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
 
 ---
 
@@ -152,13 +152,12 @@ Teams that consume webhooks rebuild the same operational layer in every service:
 - **Local development is `ngrok` + manual replays + hand-built fixtures.**
 - **Debugging a failed delivery** means correlating a provider dashboard, your logs, and a queue tool nobody owns.
 
-### The three bets
+### The two bets
 
 | Bet | What it is | Status |
 | --- | ---------- | ------ |
-| **Best local dev loop** | First-class CLI: tunnel, replay, fixture library. Test webhook handlers like unit tests. | Tunnel shipped; replay/fixtures planned |
-| **Visual workflow builder** | Node-based UI: source → filter → transform → destination. | Planned (Phase 5) |
-| **Record / replay providers** | VCR-style capture of live provider traffic for deterministic CI. | Planned (Phase 4) |
+| **Best local dev loop** | First-class CLI: tunnel, replay, fixture library, ordered scenarios. Test webhook handlers like unit tests. | ✅ shipped |
+| **Record / replay providers** | VCR-style capture of live provider traffic for deterministic CI. | ✅ shipped |
 
 Combined positioning: **the dev IDE for webhooks** — OSS-first, self-hostable from one binary, SaaS-able from the same codebase.
 
@@ -172,8 +171,7 @@ Combined positioning: **the dev IDE for webhooks** — OSS-first, self-hostable 
 | OSS + self-host                   | ✅            | ❌       | ✅     | partial | ❌           |
 | Outbound (publish)                | ✅ shipped    | ✅       | ✅     | ✅      | ❌           |
 | Transforms + filters (per-edge)   | ✅ shipped    | ✅       | partial| ❌      | ❌           |
-| Record / replay fixtures          | planned (P4)  | ❌       | ❌     | ❌      | ❌           |
-| Visual workflow                   | planned (P5)  | ❌       | ❌     | ❌      | ❌           |
+| Record / replay fixtures          | ✅ shipped    | ❌       | ❌     | ❌      | ❌           |
 
 ---
 
@@ -197,10 +195,25 @@ Combined positioning: **the dev IDE for webhooks** — OSS-first, self-hostable 
    dashboard (:3000) + admin queue stats (/admin/queues)
 ```
 
-One Go binary, several subcommands (`server`, `worker`, `cli`, `migrate`, `admin`) — a **modular monolith**. Self-hosters run one container set; scale by running more `server`/`worker` replicas of the same image.
+<details>
+<summary><b>Full component map</b> — every package and how it wires together (click to expand)</summary>
+
+<br>
+
+[![dstream architecture](brag-output/diagram.png)](brag-output/diagram.png)
+
+Dashboard and CLI on top, the API and identity layer in the middle, and three
+runtimes below it: the inbound pipeline (ingest → event store), outbound
+webhooks (publish → fan-out), and the delivery runtime (worker → fair queue →
+filter/transform → your endpoint). Generated with
+[gitdiagram](https://gitdiagram.com/vivekagent47/dstream).
+
+</details>
+
+One Go binary, several subcommands (`server`, `worker`, `cli`, `migrate`, `admin`, `maintenance`) — a **modular monolith**. Self-hosters run one container set; scale by running more `server`/`worker` replicas of the same image.
 
 - **Backend:** Go, chi router, sqlc-generated Postgres access, Atlas-managed migrations.
-- **Queue:** a custom Redis-backed per-org fair scheduler (`internal/dqueue`) — round-robin across orgs, at-least-once via a processing lease + recoverer, own retry/backoff + dead-letter. Aggregate queue stats at `/admin/queues`.
+- **Queue:** a custom Redis-backed per-org fair scheduler (`internal/dqueue`) — round-robin across orgs, at-least-once via a processing lease + recoverer, own retry/backoff + dead-letter. Queue stats at `/admin/queues`, plus a super-admin ops console at `/console/queues` (per-lane drill-down; requeue a dead event, promote a scheduled one, drain the dead list).
 - **Frontend:** Tanstack Start (React 19, Vite, Tailwind).
 - **Storage:** request bodies in Postgres (`bytea`) behind a `BodyStore` interface (object-store backend can drop in later). Postgres 18 for native `uuidv7()` — time-ordered ids keep insert-heavy tables clustered.
 
@@ -252,8 +265,9 @@ Secure by default:
 - **Session revocation** — signed cookies carry an epoch; logout invalidates all of a user's sessions.
 - **CSRF** double-submit on the dashboard; API keys are exempt by construction.
 - **Rate limits** on ingest and magic-link issuance; **per-destination** rate + in-flight caps on delivery.
-- **HMAC signature verification** of inbound webhooks (per-source config; recorded on each request).
 - Sensitive inbound headers (`Authorization`, `Cookie`) are stripped before forwarding to destinations.
+
+**Not yet implemented — deliberately deferred to post-release:** inbound webhook **signature verification** and outbound **delivery auth**. dstream does plain forwarding today: `requests.sig_verified` is always false, and a destination's `auth_config` is stored but unused. The columns and API fields exist so auth can land without a migration. Don't rely on dstream to authenticate a sender yet.
 
 ---
 
@@ -264,31 +278,41 @@ Secure by default:
 | 1 | **Core inbound gateway** — ingest → dedup → deliver → retry → dashboard | ✅ shipped + hardened |
 | 2 | **Outbound webhooks** — Svix-style publish + signed subscriber fan-out, endpoint lifecycle, App Portal, delivery controls, operational webhooks | ✅ shipped |
 | 3 | **Transformations + filters** — CEL filter + sandboxed `goja` transform per connection/endpoint (both pipelines), `filtered` status, preview endpoints; tracing completion + load-test harness | ✅ shipped |
-| 4 | Record / replay + fixture library | planned |
-| 5 | Visual workflow builder | planned |
+| 4 | **Record / replay + fixtures** — retention-pinned fixtures, reinject/replay-to-URL/export, import, CEL auto-capture rules, ordered scenarios; CLI + dashboard | ✅ shipped |
 | 6 | Multi-tenant hardening — full RBAC, SSO, audit, billing hooks | planned |
 | 7 | Self-host packaging — Helm, single-binary release | planned |
+
+Phase 5 (a visual workflow builder) was built and then dropped — the connections page already reads the topology and builds it, so a node canvas was a third way to do the same thing. See `PLAN.md` §7 for the reasoning.
 
 ---
 
 ## Repo layout
 
 ```
-cmd/dstream/      CLI entry — server | worker | cli | migrate | admin
+cmd/dstream/      CLI entry — server | worker | cli | migrate | admin | maintenance
 internal/
-  ingest/         HTTP receiver, dedup, signature verify, enqueue, body store
-  deliver/        HTTP delivery, retry policy, rate limit, SSRF guard, reaper
+  ingest/         HTTP receiver, dedup, body store, fan-out, auto-capture hook
   dqueue/         Redis per-org fair-scheduling delivery queue (Lua + client)
-  api/            REST API (sources, destinations, connections, events, CLI tunnel)
-  admin/          /admin/* routes (overview, orgs, queue stats)
-  auth/           API keys, signed sessions, magic links, CSRF, middleware
+  deliver/        HTTP delivery, retry policy, rate limit, SSRF guard, reaper
+  webhook/        outbound publish + signed subscriber fan-out (Svix model)
+  opevents/       operational webhooks (per-org app, lifecycle triggers)
+  filter/         CEL filter evaluation (cost-bounded)
+  transform/      goja JS sandbox for per-connection/endpoint transforms
+  bookmark/       fixture capture, reinject, replay-to-URL, export
+  api/            REST API (pipeline, outbound, identity, portal, CLI tunnel)
+  admin/          /admin/* routes (overview, orgs, queue stats + ops)
+  auth/           API keys, signed sessions, magic links, portal tokens, CSRF
   store/          sqlc-generated Postgres access
-  config/ logging/  Viper config, slog
+  audit/          audit-log writes
+  config/ logging/ metrics/ tracing/ middleware/ mailer/
 db/
+  schema/         schema.sql — the source of truth
   migrations/     Atlas migrations (embedded in the binary, auto-applied)
-  queries/        sqlc query inputs   schema/  reference schema
+  queries/        sqlc query inputs
 deploy/docker/    Dockerfile, web.Dockerfile, docker-compose.yml
-web/              Tanstack Start dashboard
+deploy/helm/      empty — Phase 7
+web/              TanStack Start dashboard (+ customer-facing App Portal)
+tools/loadtest/   ingest load harness (`make load`)
 PLAN.md           live design doc — single source of truth
 ```
 
