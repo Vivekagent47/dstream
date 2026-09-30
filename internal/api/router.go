@@ -161,6 +161,17 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 			// principal must have selected an active org.
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireOrg(d.Queries))
+				// DELETE ⇒ admin, for every route in this group including
+				// ones added later. RequireOrg must stay above: it is what
+				// resolves a session principal's membership row into
+				// Principal.Role (an API key carries its role from
+				// Authenticate already).
+				r.Use(auth.AdminForDestructive)
+
+				// adminOnly marks the privileged routes whose danger isn't
+				// implied by their method: secret material, outbound publish,
+				// and portal-access minting.
+				adminOnly := auth.RequireRole(auth.RoleAdmin)
 
 				r.Get("/audit", id.ListAudit)
 
@@ -235,8 +246,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/{app_id}", ob.GetApplication)
 					r.Patch("/{app_id}", ob.PatchApplication)
 					r.Delete("/{app_id}", ob.DeleteApplication)
-					r.Post("/{app_id}/portal-access", ob.CreatePortalAccess)
-					r.Post("/{app_id}/portal-access/revoke", ob.RevokePortalAccess)
+					r.With(adminOnly).Post("/{app_id}/portal-access", ob.CreatePortalAccess)
+					r.With(adminOnly).Post("/{app_id}/portal-access/revoke", ob.RevokePortalAccess)
 
 					r.Route("/{app_id}/endpoints", func(r chi.Router) {
 						r.Get("/", ob.ListEndpoints)
@@ -244,8 +255,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 						r.Get("/{id}", ob.GetEndpoint)
 						r.Patch("/{id}", ob.PatchEndpoint)
 						r.Delete("/{id}", ob.DeleteEndpoint)
-						r.Get("/{id}/secret", ob.GetEndpointSecret)
-						r.Post("/{id}/rotate-secret", ob.RotateEndpointSecret)
+						r.With(adminOnly).Get("/{id}/secret", ob.GetEndpointSecret)
+						r.With(adminOnly).Post("/{id}/rotate-secret", ob.RotateEndpointSecret)
 						r.Post("/{id}/recover", ob.RecoverEndpoint)
 						r.Post("/{id}/test", ob.TestEndpoint)
 						r.Get("/{id}/attempts", ob.ListEndpointAttempts)
@@ -253,7 +264,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 
 					r.Route("/{app_id}/messages", func(r chi.Router) {
 						r.Get("/", ob.ListMessages)
-						r.Post("/", ob.CreateMessage)
+						r.With(adminOnly).Post("/", ob.CreateMessage)
 						r.Get("/{id}", ob.GetMessage)
 						r.Get("/{id}/attempts", ob.ListMessageAttempts)
 						r.Get("/{id}/deliveries", ob.ListMessageDeliveries)
