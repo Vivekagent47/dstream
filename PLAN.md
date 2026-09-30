@@ -2,10 +2,10 @@
 
 Live design doc: what dstream is, how it's built, what has shipped, what's next.
 
-- **Per-phase designs:** `docs/superpowers/specs/` (25 design docs, one per slice)
+- **Per-phase designs:** `docs/superpowers/specs/` (26 design docs, one per slice)
 - **User-facing overview:** `README.md`
 
-**Status:** Phases 1–4 shipped. Phases 5–6 remain.
+**Status:** Phases 1–4 shipped, plus 5a (RBAC enforcement + API-key roles). The rest of Phase 5 (SSO, billing hooks) and Phase 6 remain.
 
 ---
 
@@ -40,7 +40,7 @@ internal/
   store/              Postgres data access (sqlc-generated)
   api/                REST API for dashboard + CLI control plane
   admin/              super-admin console endpoints (cross-tenant, queue ops)
-  auth/               API keys, sessions, magic links, portal tokens, RBAC stub
+  auth/               API keys, sessions, magic links, portal tokens, RBAC enforcement
   audit/              audit-log writes
   config/             Viper env config
   logging/  metrics/  tracing/  middleware/  mailer/
@@ -110,7 +110,7 @@ Tenancy is **org-scoped** (`organizations` + `org_members`; there is no separate
 | 2 | Outbound webhooks — Svix model | ✅ shipped |
 | 3 | Transforms (goja) + filters (CEL) | ✅ shipped |
 | 4 | Record/replay + fixture library | ✅ shipped |
-| 5 | Multi-tenant hardening — full RBAC, SSO, billing hooks | planned |
+| 5 | Multi-tenant hardening — full RBAC, SSO, billing hooks | 🚧 5a shipped (RBAC + key roles); 5b SSO, 5c billing planned |
 | 6 | Self-host packaging — Helm chart, single-binary release | planned (`deploy/helm/` is empty; compose ships) |
 
 A visual workflow builder held the fifth slot until 2026-09-29, when it was dropped and the remaining phases moved up — see §7.
@@ -148,6 +148,24 @@ Spec: `2026-09-18-phase-3-filters-transforms-design.md`.
 
 Specs: `2026-09-19-phase-4a-record-replay-fixtures`, `-4b-fixture-import`, `-4b-ii-auto-capture`, `-4b-iii-scenarios`.
 
+### Phase 5a — RBAC enforcement + API-key roles ✅
+
+The `owner | admin | member` ladder now gates the tenant traffic plane, not
+just org administration. `AdminForDestructive` gates every `DELETE` in the
+group at admin — so a destructive route added later is covered without an
+opt-in — and five privileged routes carry an explicit admin mark: endpoint
+secret read and rotate, outbound publish, portal-access mint and revoke.
+Members keep read, create and edit, plus the operational actions (retry,
+replay, test-send, recover). API keys carry their own role (`api_keys.role`,
+default `admin`, `owner` refused by CHECK), so a CI key can be restricted. The
+App Portal is unchanged.
+
+A 78-row route matrix test asserts every traffic-plane route against every
+role, and a `chi.Walk` coverage assertion fails if a route is added without a
+matrix entry.
+
+Spec: `2026-09-30-phase-5a-rbac-enforcement-design.md`.
+
 ### Beyond the phases
 
 **Super-admin queue ops** — `/console/queues`: per-lane drill-down (dead / scheduled / processing / pending), an all-orgs pending table, and safe ops (requeue a dead event, force-promote a scheduled one, drain the dead list), each a single atomic Lua script. Spec: `2026-09-26-admin-queue-ops-design.md`.
@@ -161,6 +179,7 @@ Specs: `2026-09-19-phase-4a-record-replay-fixtures`, `-4b-fixture-import`, `-4b-
 | 2026-07-06 | **Webhook auth deferred to post-release.** No inbound signature verification and no outbound delivery auth. Plain forwarding only: `requests.sig_verified` is always false and `destinations.auth_config` is stored-but-unused. Columns and API fields are kept so auth lands without a migration. |
 | 2026-07-18 | **asynq → `dqueue`.** Replaced asynq/asynqmon with a hand-rolled Redis fair queue to get absolute per-org fairness. Accepted cost: reimplementing retry, backoff, dead-letter, scheduling, crash recovery and monitoring. |
 | 2026-09-29 | **Visual workflow builder dropped**, and the phases after it renumbered (multi-tenant hardening → 5, self-host packaging → 6). It held the fifth slot while it lasted, which is why its spec is filed as `2026-09-29-phase-5-visual-workflow-builder-design.md`. A drag-to-connect canvas over the existing connection model was built, reviewed, and removed: the connections page's structured view already reads the topology, and the table view plus the create dialog already build it — so the canvas added a dependency and a third way to do the same thing. A visual builder only earns its place alongside a real multi-step pipeline model (source → chained filter/transform/branch nodes → fan-out), which stays deferred. |
+| 2026-09-30 | **Members cannot delete anything**, fixtures and scenarios included. A carve-out for disposable test artifacts was considered and rejected: an exemption list beside the blanket `DELETE ⇒ admin` rule is a second source of truth, and the uniform rule is one sentence to document. Cost: a member must ask an admin to clean up their own fixtures. |
 
 ---
 
@@ -168,7 +187,7 @@ Specs: `2026-09-19-phase-4a-record-replay-fixtures`, `-4b-fixture-import`, `-4b-
 
 **Deferred:** pause/resume an org's delivery lane (needs a change to the correctness-critical `FairPick` Lua); per-connection and per-destination queue breakdowns; historical queue metrics.
 
-**Deferred to later phases:** full RBAC roles, SSO, billing hooks (Phase 5); cross-org fixture sharing (Phase 5); Helm chart and single-binary release (Phase 6).
+**Deferred to later phases:** SSO and billing hooks (Phase 5b/5c — RBAC enforcement shipped in 5a); cross-org fixture sharing (Phase 5); Helm chart and single-binary release (Phase 6).
 
 **Out of scope entirely:** managed cloud signup, mobile apps, alerting beyond email/webhook, custom domains, payload encryption at rest.
 

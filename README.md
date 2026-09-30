@@ -5,7 +5,7 @@
 
 dstream sits between webhook senders (Stripe, GitHub, Shopify, your own services) and your app. It accepts inbound webhooks, persists every request, applies per-connection delivery + retry policy, and forwards to your endpoints — while you watch every attempt in a dashboard.
 
-**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Remaining: full RBAC/SSO/billing and self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
+**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Phase 5a also shipped: role-based access control across the API, with per-key roles. Remaining: SSO/billing and self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
 
 ---
 
@@ -261,6 +261,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d --scale worker=3
 
 Secure by default:
 
+- **Role-based access control** — members read, create and edit an org's sources, connections, destinations and endpoints; admins additionally delete, read and rotate endpoint secrets, publish outbound messages, and mint or revoke App Portal access; owners additionally delete the org and transfer ownership. Members keep full create and edit rights over routing configuration, including destination and endpoint URLs. API keys carry their own role (default `admin`, so existing keys are unaffected). **Upgrading from an earlier version:** existing `member` users lose delete, secret, publish and App Portal mint/revoke access — promote anyone who needs it to `admin`.
 - **SSRF-guarded delivery** — the worker refuses to POST to loopback/private/link-local (cloud-metadata) addresses; checked at dial time to defeat DNS rebinding.
 - **Session revocation** — signed cookies carry an epoch; logout invalidates all of a user's sessions.
 - **CSRF** double-submit on the dashboard; API keys are exempt by construction.
@@ -279,7 +280,7 @@ Secure by default:
 | 2 | **Outbound webhooks** — Svix-style publish + signed subscriber fan-out, endpoint lifecycle, App Portal, delivery controls, operational webhooks | ✅ shipped |
 | 3 | **Transformations + filters** — CEL filter + sandboxed `goja` transform per connection/endpoint (both pipelines), `filtered` status, preview endpoints; tracing completion + load-test harness | ✅ shipped |
 | 4 | **Record / replay + fixtures** — retention-pinned fixtures, reinject/replay-to-URL/export, import, CEL auto-capture rules, ordered scenarios; CLI + dashboard | ✅ shipped |
-| 5 | Multi-tenant hardening — full RBAC, SSO, audit, billing hooks | planned |
+| 5 | Multi-tenant hardening — full RBAC, SSO, billing hooks | 🚧 5a shipped (RBAC + key roles); 5b SSO, 5c billing planned |
 | 6 | Self-host packaging — Helm, single-binary release | planned |
 
 A visual workflow builder held the fifth slot until 2026-09-29: it was built, then dropped — the connections page already reads the topology and builds it, so a node canvas was a third way to do the same thing. The phases after it moved up. See `PLAN.md` §7 for the reasoning.
@@ -301,7 +302,7 @@ internal/
   bookmark/       fixture capture, reinject, replay-to-URL, export
   api/            REST API (pipeline, outbound, identity, portal, CLI tunnel)
   admin/          /admin/* routes (overview, orgs, queue stats + ops)
-  auth/           API keys, signed sessions, magic links, portal tokens, CSRF
+  auth/           API keys, signed sessions, magic links, portal tokens, CSRF, RBAC
   store/          sqlc-generated Postgres access
   audit/          audit-log writes
   config/ logging/ metrics/ tracing/ middleware/ mailer/
