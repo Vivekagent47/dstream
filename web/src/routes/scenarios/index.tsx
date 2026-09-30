@@ -274,7 +274,10 @@ function ScenarioDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      {/* Wider than the default max-w-lg: each step row packs a fixture select,
+          a delay input and three buttons, which leaves the fixture name barely
+          legible at 512px. */}
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{scenarioId ? 'Edit scenario' : 'New scenario'}</DialogTitle>
           <DialogDescription>
