@@ -189,6 +189,7 @@ export interface Invite {
 export interface APIKey {
   id: string
   name: string
+  role: 'admin' | 'member'
   prefix: string
   created_at: string
   last_used_at: string | null
@@ -198,6 +199,7 @@ export interface APIKey {
 export interface APIKeyCreateResult {
   id: string
   name: string
+  role: 'admin' | 'member'
   prefix: string
   key: string
 }
@@ -496,8 +498,10 @@ export const api = {
   // API keys
   listAPIKeys: (org_id: string) =>
     http.get<APIKey[]>(`/api/orgs/${org_id}/api-keys`).then((r) => r.data),
-  createAPIKey: (org_id: string, name: string) =>
-    http.post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name }).then((r) => r.data),
+  createAPIKey: (org_id: string, name: string, role?: 'admin' | 'member') =>
+    http
+      .post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name, role })
+      .then((r) => r.data),
   revokeAPIKey: (org_id: string, id: string) =>
     http.delete<void>(`/api/orgs/${org_id}/api-keys/${id}`).then((r) => r.data),
 

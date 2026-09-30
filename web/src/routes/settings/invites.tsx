@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import { api, qk } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { capitalize } from '#/lib/utils'
 import { PageHeader } from '#/components/TopBar'
 import { Button } from '#/components/ui/button'
@@ -26,8 +27,7 @@ function InvitesPage() {
     retry: false,
   })
   const orgId = me?.active_org_id
-  const myRole = me?.orgs?.find((o) => o.id === orgId)?.role
-  const canManage = myRole === 'owner' || myRole === 'admin'
+  const { isAdmin: canManage } = useRole()
 
   const invites = useQuery({
     queryKey: orgId ? qk.invites(orgId) : ['invites', 'none'],

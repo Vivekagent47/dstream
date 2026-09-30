@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Plus } from 'lucide-react'
 
 import { api, qk, type Bookmark, type CaptureRule, type Source } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { PageHeader } from '#/components/TopBar'
@@ -80,6 +81,7 @@ export const Route = createFileRoute('/fixtures/')({
 function FixturesPage() {
   const qc = useQueryClient()
   const { data: sources } = useQuery(sourcesQuery)
+  const { isAdmin } = useRole()
 
   const [sourceId, setSourceId] = useState('all')
   const [tag, setTag] = useState('')
@@ -238,20 +240,22 @@ function FixturesPage() {
                     <Button size="sm" variant="outline" onClick={() => setEditBookmark(b)}>
                       Edit
                     </Button>
-                    <ConfirmDialog
-                      title={`Delete ${b.name}?`}
-                      description="This removes the saved fixture. It doesn't affect past events."
-                      confirmLabel="Delete"
-                      destructive
-                      pending={remove.isPending}
-                      onConfirm={() => remove.mutate(b.id)}
-                    >
-                      {(open) => (
-                        <Button size="sm" variant="ghost" onClick={open}>
-                          Delete
-                        </Button>
-                      )}
-                    </ConfirmDialog>
+                    {isAdmin && (
+                      <ConfirmDialog
+                        title={`Delete ${b.name}?`}
+                        description="This removes the saved fixture. It doesn't affect past events."
+                        confirmLabel="Delete"
+                        destructive
+                        pending={remove.isPending}
+                        onConfirm={() => remove.mutate(b.id)}
+                      >
+                        {(open) => (
+                          <Button size="sm" variant="ghost" onClick={open}>
+                            Delete
+                          </Button>
+                        )}
+                      </ConfirmDialog>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -391,6 +395,7 @@ function BookmarkEditDialog({
 function CaptureRulesSection({ sources }: { sources: Source[] }) {
   const qc = useQueryClient()
   const { data: rules, error } = useQuery(captureRulesQuery)
+  const { isAdmin } = useRole()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<CaptureRule | null>(null)
 
@@ -475,20 +480,22 @@ function CaptureRulesSection({ sources }: { sources: Source[] }) {
                   <Button size="sm" variant="outline" onClick={() => openEdit(rule)}>
                     Edit
                   </Button>
-                  <ConfirmDialog
-                    title={`Delete ${rule.name}?`}
-                    description="This stops auto-capturing new fixtures for this rule. It doesn't remove fixtures already saved."
-                    confirmLabel="Delete"
-                    destructive
-                    pending={remove.isPending}
-                    onConfirm={() => remove.mutate(rule.id)}
-                  >
-                    {(open) => (
-                      <Button size="sm" variant="ghost" onClick={open}>
-                        Delete
-                      </Button>
-                    )}
-                  </ConfirmDialog>
+                  {isAdmin && (
+                    <ConfirmDialog
+                      title={`Delete ${rule.name}?`}
+                      description="This stops auto-capturing new fixtures for this rule. It doesn't remove fixtures already saved."
+                      confirmLabel="Delete"
+                      destructive
+                      pending={remove.isPending}
+                      onConfirm={() => remove.mutate(rule.id)}
+                    >
+                      {(open) => (
+                        <Button size="sm" variant="ghost" onClick={open}>
+                          Delete
+                        </Button>
+                      )}
+                    </ConfirmDialog>
+                  )}
                 </div>
               </TableCell>
             </TableRow>

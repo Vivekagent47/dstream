@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Copy, MinusCircle, Pencil, Trash2, Webhook } from 'lucide-react'
 
 import { api, qk, type Connection, type Source } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow, copyText } from '#/components/detail-page'
 import { SourceMetrics } from '#/components/entity-metrics'
@@ -275,6 +276,7 @@ function ConnectionsTab({ connections }: { connections: Connection[] | undefined
 function SettingsTab({ src }: { src: Source }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(src.name)
   const [description, setDescription] = useState(src.description)
@@ -379,15 +381,17 @@ function SettingsTab({ src }: { src: Source }) {
       </section>
 
       {/* Delete */}
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete source</h2>
-        <p className="text-sm text-muted-foreground">
-          Deletes this source and all associated connections. Incoming webhooks to its URL will fail.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete source
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete source</h2>
+          <p className="text-sm text-muted-foreground">
+            Deletes this source and all associated connections. Incoming webhooks to its URL will fail.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete source
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

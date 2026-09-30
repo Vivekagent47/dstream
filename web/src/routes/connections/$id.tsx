@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { Pencil, Trash2 } from 'lucide-react'
 
 import { api, qk, type Connection, type EventsPage as EventsPageData } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
@@ -456,6 +457,7 @@ function parseSchedule(s: string): number[] | null {
 function SettingsTab({ conn }: { conn: Connection }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(conn.name ?? '')
   const [maxRetries, setMaxRetries] = useState(String(conn.max_retries))
@@ -684,16 +686,18 @@ function SettingsTab({ conn }: { conn: Connection }) {
         </Button>
       </section>
 
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete connection</h2>
-        <p className="text-sm text-muted-foreground">
-          New events from this source stop routing to this destination. Already-queued
-          deliveries are unaffected.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete connection
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete connection</h2>
+          <p className="text-sm text-muted-foreground">
+            New events from this source stop routing to this destination. Already-queued
+            deliveries are unaffected.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete connection
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

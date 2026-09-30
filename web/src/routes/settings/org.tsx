@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 
 import { api, qk } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { PageHeader } from '#/components/TopBar'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { Button } from '#/components/ui/button'
@@ -45,9 +46,7 @@ function OrgSettingsPage() {
   })
   const orgId = me?.active_org_id
   const activeOrg = me?.orgs?.find((o) => o.id === orgId)
-  const myRole = activeOrg?.role
-  const isAdmin = myRole === 'owner' || myRole === 'admin'
-  const isOwner = myRole === 'owner'
+  const { isAdmin, isOwner } = useRole()
 
   const members = useQuery({
     queryKey: orgId ? qk.members(orgId) : ['members', 'none'],

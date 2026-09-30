@@ -15,6 +15,7 @@ import {
   type Endpoint,
   type MessageDeliveryAttempt,
 } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
 import { PipelineFields } from '#/components/PipelineFields'
@@ -158,6 +159,7 @@ function EndpointDetail() {
 
 function OverviewTab({ ep, appId }: { ep: Endpoint; appId: string }) {
   const qc = useQueryClient()
+  const { isAdmin } = useRole()
   const [revealSecret, setRevealSecret] = useState<string | null>(null)
   const [testOpen, setTestOpen] = useState(false)
   const [recoverOpen, setRecoverOpen] = useState(false)
@@ -242,17 +244,21 @@ function OverviewTab({ ep, appId }: { ep: Endpoint; appId: string }) {
         <Button size="sm" variant="outline" onClick={() => setRecoverOpen(true)}>
           Recover
         </Button>
-        <Button size="sm" variant="outline" onClick={() => setRotateOpen(true)}>
-          Rotate secret
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => reveal.mutate()}
-          disabled={reveal.isPending}
-        >
-          {reveal.isPending ? 'Revealing…' : 'Reveal secret'}
-        </Button>
+        {isAdmin && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => setRotateOpen(true)}>
+              Rotate secret
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => reveal.mutate()}
+              disabled={reveal.isPending}
+            >
+              {reveal.isPending ? 'Revealing…' : 'Reveal secret'}
+            </Button>
+          </>
+        )}
         <Button
           size="sm"
           variant="outline"
@@ -603,6 +609,7 @@ function sameHeaders(a: Record<string, string>, b: Record<string, string> | null
 function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
   const { data: eventTypes } = useQuery(eventTypesQuery)
 
   const [url, setUrl] = useState(ep.url)
@@ -857,15 +864,17 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
         </Button>
       </section>
 
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete endpoint</h2>
-        <p className="text-sm text-muted-foreground">
-          Stops all delivery to this URL and removes its delivery history. This cannot be undone.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete endpoint
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete endpoint</h2>
+          <p className="text-sm text-muted-foreground">
+            Stops all delivery to this URL and removes its delivery history. This cannot be undone.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete endpoint
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

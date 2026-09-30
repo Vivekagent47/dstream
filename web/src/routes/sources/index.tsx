@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Copy, Inbox, MoreHorizontal, Plus, Search } from 'lucide-react'
 
 import { api, qk, type Source } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
@@ -60,6 +61,7 @@ export const Route = createFileRoute('/sources/')({
 function SourcesPage() {
   const qc = useQueryClient()
   const { data: sources } = useQuery(sourcesQuery)
+  const { isAdmin } = useRole()
 
   const [q, setQ] = useState('')
   const [status, setStatus] = useState('all')
@@ -204,6 +206,7 @@ function SourcesPage() {
                     onCopy={() => copyUrl(s.ingest_url)}
                     onToggle={() => patch.mutate({ id: s.id, enabled: !s.enabled })}
                     onDelete={() => setDeleteTarget(s)}
+                    canDelete={isAdmin}
                     pending={patch.isPending}
                   />
                 </TableCell>
@@ -259,12 +262,14 @@ function SourceRowMenu({
   onCopy,
   onToggle,
   onDelete,
+  canDelete,
   pending,
 }: {
   source: Source
   onCopy: () => void
   onToggle: () => void
   onDelete: () => void
+  canDelete: boolean
   pending: boolean
 }) {
   return (
@@ -279,10 +284,14 @@ function SourceRowMenu({
         <DropdownMenuItem onClick={onToggle}>
           {source.enabled ? 'Disable' : 'Enable'}
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={onDelete} className="text-destructive">
-          Delete
-        </DropdownMenuItem>
+        {canDelete && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onDelete} className="text-destructive">
+              Delete
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

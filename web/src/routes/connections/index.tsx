@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 
 import { api, qk, type Connection } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
@@ -104,6 +105,7 @@ function ConnectionsPage() {
     queryKey: qk.connectionStatsAll(),
     queryFn: () => api.getAllConnectionStats(),
   })
+  const { isAdmin } = useRole()
 
   const [q, setQ] = useState('')
   const [status, setStatus] = useState('all')
@@ -372,6 +374,7 @@ function ConnectionsPage() {
                       onView={() => navigate({ to: '/connections/$id', params: { id: c.id } })}
                       onToggle={() => patch.mutate({ id: c.id, enabled: !c.enabled })}
                       onDelete={() => setDeleteTarget(c)}
+                      canDelete={isAdmin}
                       pending={patch.isPending}
                     />
                   </div>
@@ -456,6 +459,7 @@ function ConnectionsPage() {
                     onView={() => navigate({ to: '/connections/$id', params: { id: c.id } })}
                     onToggle={() => patch.mutate({ id: c.id, enabled: !c.enabled })}
                     onDelete={() => setDeleteTarget(c)}
+                    canDelete={isAdmin}
                     pending={patch.isPending}
                   />
                 </TableCell>
@@ -519,12 +523,14 @@ function ConnectionRowMenu({
   onView,
   onToggle,
   onDelete,
+  canDelete,
   pending,
 }: {
   connection: Connection
   onView: () => void
   onToggle: () => void
   onDelete: () => void
+  canDelete: boolean
   pending: boolean
 }) {
   return (
@@ -545,10 +551,14 @@ function ConnectionRowMenu({
         <DropdownMenuItem onClick={onToggle}>
           {connection.enabled ? 'Disable' : 'Enable'}
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={onDelete} className="text-destructive">
-          Delete
-        </DropdownMenuItem>
+        {canDelete && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onDelete} className="text-destructive">
+              Delete
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

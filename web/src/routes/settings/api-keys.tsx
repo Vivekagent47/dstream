@@ -5,11 +5,20 @@ import { toast } from 'sonner'
 import { Plus } from 'lucide-react'
 
 import { api, qk, type APIKeyCreateResult } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
+import { capitalize } from '#/lib/utils'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { PageHeader } from '#/components/TopBar'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import { Label } from '#/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '#/components/ui/select'
 import {
   Table,
   TableBody,
@@ -37,8 +46,7 @@ function APIKeysPage() {
     retry: false,
   })
   const orgId = me?.active_org_id
-  const myRole = me?.orgs?.find((o) => o.id === orgId)?.role
-  const canManage = myRole === 'owner' || myRole === 'admin'
+  const { isAdmin: canManage } = useRole()
 
   const keys = useQuery({
     queryKey: orgId ? qk.apiKeys(orgId) : ['api-keys', 'none'],
@@ -96,6 +104,7 @@ function APIKeysPage() {
           <TableHeader>
             <TableRow>
               <TableHead className="pl-6">Name</TableHead>
+              <TableHead>Role</TableHead>
               <TableHead>Prefix</TableHead>
               <TableHead>Last used</TableHead>
               <TableHead>Created</TableHead>
@@ -106,6 +115,7 @@ function APIKeysPage() {
             {rows.map((k) => (
               <TableRow key={k.id}>
                 <TableCell className="pl-6 font-medium">{k.name}</TableCell>
+                <TableCell>{capitalize(k.role)}</TableCell>
                 <TableCell>
                   <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{k.prefix}…</code>
                 </TableCell>
@@ -137,7 +147,7 @@ function APIKeysPage() {
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
                   No API keys yet.
                 </TableCell>
               </TableRow>
@@ -212,13 +222,15 @@ function CreateKeyDialog({
 }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
+  const [role, setRole] = useState<'admin' | 'member'>('admin')
 
   const create = useMutation({
-    mutationFn: () => api.createAPIKey(orgId, name),
+    mutationFn: () => api.createAPIKey(orgId, name, role),
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: qk.apiKeys(orgId) })
       onOpenChange(false)
       setName('')
+      setRole('admin')
       onCreated(result)
     },
     onError: (e) => toast.error((e as Error).message),
@@ -253,6 +265,25 @@ function CreateKeyDialog({
               required
               autoFocus
             />
+          </div>
+          <div>
+            <Label className="mb-2 block">Role</Label>
+            <Select value={role} onValueChange={(v) => setRole((v as 'admin' | 'member') ?? 'admin')}>
+              <SelectTrigger className="w-full">
+                <SelectValue>{(v: string | null) => (v ? capitalize(v) : 'Select a role')}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {(['admin', 'member'] as const).map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {capitalize(r)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-2 text-xs text-muted-foreground">
+              A member key can read and write, but cannot delete resources, read endpoint
+              secrets, publish messages, or mint or revoke portal links.
+            </p>
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>

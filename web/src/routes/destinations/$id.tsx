@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Pencil, Send, TerminalSquare, Trash2 } from 'lucide-react'
 
 import { api, qk, type Connection, type Destination } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
 import { DestinationMetrics } from '#/components/entity-metrics'
@@ -259,6 +260,7 @@ function numOrNull(s: string): number | null {
 function SettingsTab({ dest }: { dest: Destination }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(dest.name)
   const [description, setDescription] = useState(dest.description)
@@ -381,15 +383,17 @@ function SettingsTab({ dest }: { dest: Destination }) {
       </section>
 
       {/* Delete */}
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete destination</h2>
-        <p className="text-sm text-muted-foreground">
-          Deletes this destination and all associated connections. Deliveries to it will stop.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete destination
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete destination</h2>
+          <p className="text-sm text-muted-foreground">
+            Deletes this destination and all associated connections. Deliveries to it will stop.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete destination
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
