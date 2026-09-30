@@ -279,10 +279,10 @@ Secure by default:
 | 2 | **Outbound webhooks** — Svix-style publish + signed subscriber fan-out, endpoint lifecycle, App Portal, delivery controls, operational webhooks | ✅ shipped |
 | 3 | **Transformations + filters** — CEL filter + sandboxed `goja` transform per connection/endpoint (both pipelines), `filtered` status, preview endpoints; tracing completion + load-test harness | ✅ shipped |
 | 4 | **Record / replay + fixtures** — retention-pinned fixtures, reinject/replay-to-URL/export, import, CEL auto-capture rules, ordered scenarios; CLI + dashboard | ✅ shipped |
-| 6 | Multi-tenant hardening — full RBAC, SSO, audit, billing hooks | planned |
-| 7 | Self-host packaging — Helm, single-binary release | planned |
+| 5 | Multi-tenant hardening — full RBAC, SSO, audit, billing hooks | planned |
+| 6 | Self-host packaging — Helm, single-binary release | planned |
 
-Phase 5 (a visual workflow builder) was built and then dropped — the connections page already reads the topology and builds it, so a node canvas was a third way to do the same thing. See `PLAN.md` §7 for the reasoning.
+A visual workflow builder held the fifth slot until 2026-09-29: it was built, then dropped — the connections page already reads the topology and builds it, so a node canvas was a third way to do the same thing. The phases after it moved up. See `PLAN.md` §7 for the reasoning.
 
 ---
 
@@ -310,7 +310,7 @@ db/
   migrations/     Atlas migrations (embedded in the binary, auto-applied)
   queries/        sqlc query inputs
 deploy/docker/    Dockerfile, web.Dockerfile, docker-compose.yml
-deploy/helm/      empty — Phase 7
+deploy/helm/      empty — Phase 6
 web/              TanStack Start dashboard (+ customer-facing App Portal)
 tools/loadtest/   ingest load harness (`make load`)
 PLAN.md           live design doc — single source of truth

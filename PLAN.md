@@ -5,7 +5,7 @@ Live design doc: what dstream is, how it's built, what has shipped, what's next.
 - **Per-phase designs:** `docs/superpowers/specs/` (25 design docs, one per slice)
 - **User-facing overview:** `README.md`
 
-**Status:** Phases 1–4 shipped. Phase 5 (visual workflow builder) was dropped. Phases 6–7 remain.
+**Status:** Phases 1–4 shipped. Phases 5–6 remain.
 
 ---
 
@@ -47,7 +47,7 @@ internal/
 web/                  TanStack Start dashboard (+ customer-facing App Portal)
 db/                   schema.sql (source of truth), migrations (Atlas), sqlc queries
 deploy/docker/        Dockerfile + docker-compose.yml (dev stack)
-deploy/helm/          empty — Phase 7
+deploy/helm/          empty — Phase 6
 tools/loadtest/       ingest load harness (`make load`)
 ```
 
@@ -110,9 +110,10 @@ Tenancy is **org-scoped** (`organizations` + `org_members`; there is no separate
 | 2 | Outbound webhooks — Svix model | ✅ shipped |
 | 3 | Transforms (goja) + filters (CEL) | ✅ shipped |
 | 4 | Record/replay + fixture library | ✅ shipped |
-| 5 | ~~Visual workflow builder~~ | ❌ dropped — see §7 |
-| 6 | Multi-tenant hardening — full RBAC, SSO, billing hooks | planned |
-| 7 | Self-host packaging — Helm chart, single-binary release | planned (`deploy/helm/` is empty; compose ships) |
+| 5 | Multi-tenant hardening — full RBAC, SSO, billing hooks | planned |
+| 6 | Self-host packaging — Helm chart, single-binary release | planned (`deploy/helm/` is empty; compose ships) |
+
+A visual workflow builder held the fifth slot until 2026-09-29, when it was dropped and the remaining phases moved up — see §7.
 
 ---
 
@@ -159,7 +160,7 @@ Specs: `2026-09-19-phase-4a-record-replay-fixtures`, `-4b-fixture-import`, `-4b-
 | --- | --- |
 | 2026-07-06 | **Webhook auth deferred to post-release.** No inbound signature verification and no outbound delivery auth. Plain forwarding only: `requests.sig_verified` is always false and `destinations.auth_config` is stored-but-unused. Columns and API fields are kept so auth lands without a migration. |
 | 2026-07-18 | **asynq → `dqueue`.** Replaced asynq/asynqmon with a hand-rolled Redis fair queue to get absolute per-org fairness. Accepted cost: reimplementing retry, backoff, dead-letter, scheduling, crash recovery and monitoring. |
-| 2026-09-29 | **Visual workflow builder (Phase 5) dropped.** A drag-to-connect canvas over the existing connection model was built, reviewed, and removed: the connections page's structured view already reads the topology, and the table view plus the create dialog already build it — so the canvas added a dependency and a third way to do the same thing. A visual builder only earns its place alongside a real multi-step pipeline model (source → chained filter/transform/branch nodes → fan-out), which stays deferred. |
+| 2026-09-29 | **Visual workflow builder dropped**, and the phases after it renumbered (multi-tenant hardening → 5, self-host packaging → 6). It held the fifth slot while it lasted, which is why its spec is filed as `2026-09-29-phase-5-visual-workflow-builder-design.md`. A drag-to-connect canvas over the existing connection model was built, reviewed, and removed: the connections page's structured view already reads the topology, and the table view plus the create dialog already build it — so the canvas added a dependency and a third way to do the same thing. A visual builder only earns its place alongside a real multi-step pipeline model (source → chained filter/transform/branch nodes → fan-out), which stays deferred. |
 
 ---
 
@@ -167,7 +168,7 @@ Specs: `2026-09-19-phase-4a-record-replay-fixtures`, `-4b-fixture-import`, `-4b-
 
 **Deferred:** pause/resume an org's delivery lane (needs a change to the correctness-critical `FairPick` Lua); per-connection and per-destination queue breakdowns; historical queue metrics.
 
-**Deferred to later phases:** full RBAC roles, SSO, billing hooks (Phase 6); cross-org fixture sharing (Phase 6); Helm chart and single-binary release (Phase 7).
+**Deferred to later phases:** full RBAC roles, SSO, billing hooks (Phase 5); cross-org fixture sharing (Phase 5); Helm chart and single-binary release (Phase 6).
 
 **Out of scope entirely:** managed cloud signup, mobile apps, alerting beyond email/webhook, custom domains, payload encryption at rest.
 
