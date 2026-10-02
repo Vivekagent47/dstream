@@ -14,6 +14,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/api/outbound"
 	"github.com/Vivekagent47/dstream/internal/api/pipeline"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/config"
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
@@ -54,6 +55,11 @@ type Deps struct {
 	SecretGrace time.Duration
 	// Portal signs App Portal tokens for the mint/revoke endpoints.
 	Portal *auth.PortalSigner
+	// Authenticator is the OIDC seam for the SSO routes. nil when SSO is not
+	// configured, in which case those routes 404.
+	Authenticator auth.Authenticator
+	// OIDC carries the SSO provisioning defaults and the enforce flag.
+	OIDC config.OIDCConfig
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
@@ -62,13 +68,15 @@ type Deps struct {
 // still declared here so the auth layering stays visible in one place.
 func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) {
 	id := identity.Handlers{
-		Log:        d.Log,
-		Queries:    d.Queries,
-		Pool:       d.Pool,
-		Redis:      d.Redis,
-		Queue:      d.Queue,
-		Signer:     d.Signer,
-		AppBaseURL: d.AppBaseURL,
+		Log:           d.Log,
+		Queries:       d.Queries,
+		Pool:          d.Pool,
+		Redis:         d.Redis,
+		Queue:         d.Queue,
+		Signer:        d.Signer,
+		AppBaseURL:    d.AppBaseURL,
+		Authenticator: d.Authenticator,
+		OIDC:          d.OIDC,
 	}
 	pl := pipeline.Handlers{
 		Log:              d.Log,
@@ -110,6 +118,44 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 			// CORS preflight, blocking login-CSRF / session fixation.
 			r.Post("/magic-link/verify", id.VerifyMagicLink)
 			r.Post("/logout", id.Logout)
+
+			// Which login methods the login page should render. No secret:
+			// a deployment's use of SSO is visible from its login page.
+			r.Get("/methods", id.AuthMethods)
+
+			// SSO. These must be GET — an IdP redirects the browser back by
+			// navigation, which cannot be a POST — so the login-CSRF /
+			// session-fixation problem that made /magic-link/verify POST-only
+			// has to be closed a different way.
+			//
+			// What closes it is the dstream_sso_state cookie: /sso/start sets
+			// it alongside the Redis state row, and the callback refuses any
+			// state the browser cannot also present in that cookie. The nonce
+			// and the single-use (GETDEL) state are NOT sufficient on their
+			// own — /sso/start is unauthenticated, so an attacker can mint a
+			// valid state and a genuine ID token for his own account, then
+			// phish the victim into a top-level GET of the callback. An
+			// attacker cannot set a cookie in the victim's browser for this
+			// origin, absent control of a sibling subdomain, which is what
+			// makes the binding the load-bearing part. Do not remove it.
+			//
+			// Named residual: that caveat is real here. A Domain=example.com
+			// cookie set from any compromised sibling subdomain IS sent to
+			// this origin and r.Cookie returns the first match, and
+			// dstream_sso_state is not __Host- prefixed (that requires
+			// Secure, which is false in local HTTP dev). Unlike
+			// dstream_session (HMAC) and dstream_csrf (bound to the session
+			// value), this cookie's entire security property is that its
+			// value cannot be injected — so it is the one cookie in the repo
+			// where a sibling-subdomain write is directly exploitable. Same
+			// caveat as internal/middleware/csrf.go's cookie-tossing note.
+			// See ssoStateCookieName in identity/sso.go.
+			//
+			// Both routes stay mounted when SSO is unconfigured and 404 from
+			// the handler, so the route table does not change shape with
+			// configuration.
+			r.Get("/sso/start", id.StartSSO)
+			r.Get("/sso/callback", id.CallbackSSO)
 		})
 
 		// Invite peek/accept: peek is fully public (so a logged-out user

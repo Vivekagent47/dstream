@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/config"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
@@ -31,4 +32,9 @@ type Handlers struct {
 	// AppBaseURL is the frontend/SPA origin used to build user-facing links
 	// (magic-link verify, invite) rendered into emails.
 	AppBaseURL string
+	// Authenticator is nil when SSO is not configured; the SSO routes 404 in
+	// that case rather than being conditionally mounted, so the route table
+	// does not change shape with configuration.
+	Authenticator auth.Authenticator
+	OIDC          config.OIDCConfig
 }
