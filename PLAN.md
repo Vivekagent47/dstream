@@ -5,7 +5,7 @@ Live design doc: what dstream is, how it's built, what has shipped, what's next.
 - **Per-phase designs:** `docs/superpowers/specs/` (27 design docs, one per slice)
 - **User-facing overview:** `README.md`
 
-**Status:** Phases 1–4 shipped, plus 5a (RBAC enforcement + API-key roles) and 5b (instance-level OIDC single sign-on). The rest of Phase 5 (5c billing hooks) and Phase 6 remain.
+**Status:** Phases 1–4 shipped, plus 5a (RBAC enforcement + API-key roles), 5b (instance-level OIDC single sign-on) and 5c (usage metering and quotas — no payment provider). Phase 6 remains.
 
 ---
 
@@ -113,7 +113,7 @@ SSO adds **no table and no column**. An OIDC login joins on the existing `users.
 | 2 | Outbound webhooks — Svix model | ✅ shipped |
 | 3 | Transforms (goja) + filters (CEL) | ✅ shipped |
 | 4 | Record/replay + fixture library | ✅ shipped |
-| 5 | Multi-tenant hardening — full RBAC, SSO, billing hooks | 🚧 5a + 5b shipped (RBAC, key roles, OIDC SSO); 5c billing planned |
+| 5 | Multi-tenant hardening — full RBAC, SSO, usage metering + quotas | ✅ shipped (5a RBAC + key roles, 5b OIDC SSO, 5c usage metering + quotas — no payment provider) |
 | 6 | Self-host packaging — Helm chart, single-binary release | planned (`deploy/helm/` is empty; compose ships) |
 
 A visual workflow builder held the fifth slot until 2026-09-29, when it was dropped and the remaining phases moved up — see §7.
@@ -280,6 +280,81 @@ signature verification and outbound delivery auth remain deliberately deferred
 
 Spec: `2026-10-01-phase-5b-oidc-sso-design.md`.
 
+### Phase 5c — Usage metering and quotas ✅
+
+Four per-org metrics, counted every period: `requests` (inbound HTTP),
+`events` (inbound fan-out — the primary billable unit), `messages` (outbound
+publishes) and `attempts` (every delivery attempt, retries included). All four
+are recorded; only `events` and `messages` are enforced — gating `events`
+already gates the `requests` that produced them, and rejecting an `attempts`
+retry would punish a customer for their own endpoint's outage rather than
+dstream's.
+
+**Postgres `usage_rollups` is the source of truth.** An hourly sweep in the
+existing `runMaintenance` loop groups each metric's rows by org and by
+`date_trunc(org.quota_period, …)`, then upserts — idempotent by
+`(org_id, period_start, metric)`, so a worker restart re-running the current
+period converges instead of double-counting. **Redis holds a counter used
+only for the hot-path accept/reject decision**, reconciled to the Postgres
+value on every sweep, so an eviction or drift self-heals within one interval;
+Redis is never the billing record. A Redis read failure **fails open** —
+ingest and publish proceed with a warning log, the same precedent the
+existing rate limiter set.
+
+**Six columns on `organizations`** (`plan`, `quota_events_soft/hard`,
+`quota_messages_soft/hard`, `quota_period`), every one defaulting so the
+migration backfills existing orgs in one `ALTER` with no data migration.
+**Every default is `0`, and `0` means unlimited at both tiers** — an upgraded
+deployment that configures nothing rejects nothing, exactly as before this
+shipped.
+
+**The enforcement ladder never silently drops a webhook.** Under soft:
+accepted. At or over soft, under hard: still **accepted**, and
+`usage.quota_warning` fires once per period (a Redis `SETNX` latch keyed by
+org + period + event type, so a sustained overage doesn't flood the
+operational app). At or over hard: `429` with `Retry-After`, and
+`usage.quota_exceeded` fires once per period. The soft tier is deliberately
+never a rejection — a sender that doesn't retry on failure loses that webhook
+for good, so rejecting is the hard ceiling's job, not the default.
+
+**Usage is approximate within a period, exact after the next sweep.** The
+hot-path counter increments by one per ingest request before fan-out is known,
+while the sweep counts real `events` rows. An org whose sources fan out to
+several connections per request therefore crosses its *real* limit somewhat
+later than its live counter implies — lenient in the accept-more direction,
+never reject-early. `is_test` traffic (fixture replay) is excluded from the
+metered `events` count, so exercising your own setup never burns quota.
+
+**No historical backfill of `usage_rollups`.** Reconstructing prior periods
+from existing rows would be wrong, not merely incomplete — payload retention
+already nulls and removes old rows, so a backfill would undercount exactly the
+oldest periods it claims to cover. Rollups start accumulating at deploy; the
+current, still-open period is always marked `"partial": true` in
+`GET /api/usage` so a chart never renders it as a completed, lower bar.
+
+**Surfaces:** `GET /api/usage` and `GET /api/usage/history` (member),
+`PATCH /api/orgs/{org_id}/plan` (**owner-only** — a quota change is a spend
+decision, stricter than this phase's admin-for-destructive default),
+`GET /admin/usage` (super-admin, cross-tenant). The dashboard's usage card
+lives on Settings → Organization → View usage; its quota-editing form renders
+only for an owner, matching the API.
+
+**Folded in from the Task 5 review:** a `SELECT *` on `organizations` had been
+serializing `plan` and all five quota columns into `POST /api/orgs` and
+`PATCH /api/orgs/{org_id}` responses (any admin) since the migration landed —
+not a confidentiality break (`GET /api/usage` already exposes limits at member
+level), but a contract inconsistency against the owner-only write gate above.
+Closed by pinning `GetOrganizationByID`, `GetOrganizationBySlug`,
+`CreateOrganization` and `UpdateOrgName` to explicit column lists and
+regenerating with `sqlc` — the same treatment `ListOrgsForUser` already got
+for the same reason.
+
+**No payment provider of any kind is in scope or implied** — no Stripe, no
+invoices, no subscriptions, no proration. This slice ends at the meter; a
+future biller reads `usage_rollups`, it doesn't ship here.
+
+Spec: `2026-10-02-phase-5c-usage-metering-quotas-design.md`.
+
 ### Beyond the phases
 
 **Super-admin queue ops** — `/console/queues`: per-lane drill-down (dead / scheduled / processing / pending), an all-orgs pending table, and safe ops (requeue a dead event, force-promote a scheduled one, drain the dead list), each a single atomic Lua script. Spec: `2026-09-26-admin-queue-ops-design.md`.
@@ -297,6 +372,7 @@ Spec: `2026-10-01-phase-5b-oidc-sso-design.md`.
 | 2026-10-01 | **SSO is instance-level, not per-org.** One IdP per deployment, configured by env var. Per-org connections would need client secrets encrypted at rest, and dstream has no secret-encryption facility or key management — that is a subsystem, not a slice. They would also need the `sso_identities` mapping this slice avoided, since one address could then legitimately exist under two issuers. Cost: a multi-tenant SaaS deployment cannot offer per-tenant SSO until that is built. |
 | 2026-10-01 | **`DSTREAM_OIDC_DEFAULT_ORG` is not validated at boot** (amended mid-implementation; an earlier draft promised it would be). The check cannot live in config validation — that runs before the DB pool opens — and placing it after the pool would couple startup to database seeding state, bricking a deployment whose default org is created by a seed job *after* first boot. Cost: a bad slug surfaces at the first SSO login instead, so it must surface legibly — a `500` naming the variable plus a server log line, never the `401` an auth failure returns. |
 | 2026-10-01 | **The SSO callback binds its state to the browser with a cookie**, correcting this spec's own first draft, which claimed single-use state was sufficient for a `GET` callback. It was not: `/sso/start` is unauthenticated, so an attacker mints a valid state for free, logs in as himself, and phishes a victim into a top-level `GET` of the callback — a working session-fixation bug that the slice's first implementation carried, caught in review before it was committed. Accepted residual: `dstream_sso_state` is not `__Host-` prefixed (that needs `Secure`, false in local HTTP dev), so cookie tossing from a compromised sibling subdomain remains in scope, as it does for the CSRF cookie. |
+| 2026-10-02 | **Quota columns pinned out of four `organizations` queries.** `GetOrganizationByID`, `GetOrganizationBySlug`, `CreateOrganization` and `UpdateOrgName` were `SELECT * FROM organizations` / `RETURNING *`, so `plan` and all five quota columns had been serializing straight into `POST /api/orgs` and `PATCH /api/orgs/{org_id}` responses since the 5c migration landed. Not a confidentiality break — `GET /api/usage` already exposes limits at member level — but a contract inconsistency against the owner-only quota write gate. Fixed by pinning explicit column lists and regenerating with `sqlc`, matching `ListOrgsForUser`'s existing pin. |
 
 ---
 
@@ -304,7 +380,18 @@ Spec: `2026-10-01-phase-5b-oidc-sso-design.md`.
 
 **Deferred:** pause/resume an org's delivery lane (needs a change to the correctness-critical `FairPick` Lua); per-connection and per-destination queue breakdowns; historical queue metrics.
 
-**Deferred to later phases:** billing hooks (Phase 5c — RBAC shipped in 5a, OIDC SSO in 5b); cross-org fixture sharing (Phase 5); Helm chart and single-binary release (Phase 6).
+**Deferred to later phases:** cross-org fixture sharing (Phase 5); Helm chart and single-binary release (Phase 6).
+
+**Deferred usage-metering surface (Phase 5c shipped the meter only):** a
+payment provider — Stripe subscriptions, invoices, checkout, dunning — is out
+of scope entirely, by design; plan *history* and scheduled plan changes (an
+`org_plan_history` table would need to exist first; changing a plan today
+overwrites); per-source/per-connection usage attribution (the rollup's
+primary key would have to widen — its shape allows this later, it isn't
+exposed now); usage-based alert thresholds below the hard ceiling (e.g. notify
+at 80% — the warning latch fires at the soft limit only); and metering the
+App Portal's end customers (a different tenancy level; would need portal
+tokens to carry usage identity).
 
 **Deferred SSO surface (Phase 5b shipped instance-level only):** per-org IdP connections and domain-routed login — blocked on dstream having no secret-encryption facility or key management for per-tenant client secrets, plus the `sso_identities` mapping they imply; **SAML** (XML canonicalisation, signature verification, metadata exchange, a heavy dependency — OIDC already covers Okta, Entra ID, Google Workspace, Auth0 and Keycloak); **SCIM / directory sync** (deprovisioning stays manual — remove the member); **group-to-role mapping from IdP claims** (two mapped groups, a claim absent on one login and present on the next, and whether a mapping may demote an owner are a slice's worth of decisions that silently change privileges when wrong). Also still open from 5a: members keep `PATCH` on destination and endpoint URLs, so a member can repoint live traffic — a decision about where the admin line sits, independent of SSO.
 

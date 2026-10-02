@@ -24,6 +24,7 @@ import { Route as ConsoleIndexRouteImport } from './routes/console/index'
 import { Route as ConnectionsIndexRouteImport } from './routes/connections/index'
 import { Route as ApplicationsIndexRouteImport } from './routes/applications/index'
 import { Route as SourcesIdRouteImport } from './routes/sources/$id'
+import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
 import { Route as SettingsOrgRouteImport } from './routes/settings/org'
 import { Route as SettingsMembersRouteImport } from './routes/settings/members'
@@ -117,6 +118,11 @@ const ApplicationsIndexRoute = ApplicationsIndexRouteImport.update({
 const SourcesIdRoute = SourcesIdRouteImport.update({
   id: '/sources/$id',
   path: '/sources/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsUsageRoute = SettingsUsageRouteImport.update({
+  id: '/settings/usage',
+  path: '/settings/usage',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsProfileRoute = SettingsProfileRouteImport.update({
@@ -230,6 +236,7 @@ export interface FileRoutesByFullPath {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/sources/$id': typeof SourcesIdRoute
   '/applications/': typeof ApplicationsIndexRoute
   '/connections/': typeof ConnectionsIndexRoute
@@ -264,6 +271,7 @@ export interface FileRoutesByTo {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/sources/$id': typeof SourcesIdRoute
   '/applications': typeof ApplicationsIndexRoute
   '/connections': typeof ConnectionsIndexRoute
@@ -300,6 +308,7 @@ export interface FileRoutesById {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/sources/$id': typeof SourcesIdRoute
   '/applications/': typeof ApplicationsIndexRoute
   '/connections/': typeof ConnectionsIndexRoute
@@ -337,6 +346,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/settings/profile'
+    | '/settings/usage'
     | '/sources/$id'
     | '/applications/'
     | '/connections/'
@@ -371,6 +381,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/settings/profile'
+    | '/settings/usage'
     | '/sources/$id'
     | '/applications'
     | '/connections'
@@ -406,6 +417,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/settings/profile'
+    | '/settings/usage'
     | '/sources/$id'
     | '/applications/'
     | '/connections/'
@@ -442,6 +454,7 @@ export interface RootRouteChildren {
   SettingsMembersRoute: typeof SettingsMembersRoute
   SettingsOrgRoute: typeof SettingsOrgRoute
   SettingsProfileRoute: typeof SettingsProfileRoute
+  SettingsUsageRoute: typeof SettingsUsageRoute
   SourcesIdRoute: typeof SourcesIdRoute
   ApplicationsIndexRoute: typeof ApplicationsIndexRoute
   ConnectionsIndexRoute: typeof ConnectionsIndexRoute
@@ -562,6 +575,13 @@ declare module '@tanstack/react-router' {
       path: '/sources/$id'
       fullPath: '/sources/$id'
       preLoaderRoute: typeof SourcesIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings/usage': {
+      id: '/settings/usage'
+      path: '/settings/usage'
+      fullPath: '/settings/usage'
+      preLoaderRoute: typeof SettingsUsageRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/profile': {
@@ -727,6 +747,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsMembersRoute: SettingsMembersRoute,
   SettingsOrgRoute: SettingsOrgRoute,
   SettingsProfileRoute: SettingsProfileRoute,
+  SettingsUsageRoute: SettingsUsageRoute,
   SourcesIdRoute: SourcesIdRoute,
   ApplicationsIndexRoute: ApplicationsIndexRoute,
   ConnectionsIndexRoute: ConnectionsIndexRoute,

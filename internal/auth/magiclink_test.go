@@ -208,7 +208,7 @@ func runBootstrap(t *testing.T, pool *pgxpool.Pool, q *store.Queries, email, def
 	return u
 }
 
-func seedOrg(t *testing.T, q *store.Queries) store.Organization {
+func seedOrg(t *testing.T, q *store.Queries) store.CreateOrganizationRow {
 	t.Helper()
 	o, err := q.CreateOrganization(context.Background(), store.CreateOrganizationParams{
 		Name: "Default Co",

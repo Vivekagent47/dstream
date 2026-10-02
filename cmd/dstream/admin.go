@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/spf13/cobra"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
@@ -221,22 +222,29 @@ func bootstrapCmd() *cobra.Command {
 				}
 			}
 
-			org, err := q.GetOrganizationBySlug(ctx, orgSlug)
-			if err != nil {
+			// GetOrganizationBySlug and CreateOrganization return distinct
+			// pinned row types (see db/queries/identity.sql), so only the
+			// shared field this function needs — ID — is carried across the
+			// two branches.
+			var orgID pgtype.UUID
+			if orgRow, err := q.GetOrganizationBySlug(ctx, orgSlug); err != nil {
 				if !errors.Is(err, pgx.ErrNoRows) {
 					return fmt.Errorf("lookup org: %w", err)
 				}
-				org, err = q.CreateOrganization(ctx, store.CreateOrganizationParams{
+				created, err := q.CreateOrganization(ctx, store.CreateOrganizationParams{
 					Name: orgSlug,
 					Slug: orgSlug,
 				})
 				if err != nil {
 					return fmt.Errorf("create org: %w", err)
 				}
+				orgID = created.ID
+			} else {
+				orgID = orgRow.ID
 			}
 
 			if err := q.AddOrgMember(ctx, store.AddOrgMemberParams{
-				OrgID:  org.ID,
+				OrgID:  orgID,
 				UserID: user.ID,
 				Role:   string(auth.RoleOwner),
 			}); err != nil {
@@ -251,7 +259,7 @@ func bootstrapCmd() *cobra.Command {
 
 			// Idempotent; backfill covers pre-existing orgs. Admin tooling
 			// tolerates a seed failure (log + continue).
-			if _, err := opevents.SeedOperationalApp(ctx, q, store.GoUUID(org.ID)); err != nil {
+			if _, err := opevents.SeedOperationalApp(ctx, q, store.GoUUID(orgID)); err != nil {
 				fmt.Fprintf(os.Stderr, "warn: seed operational app: %v\n", err)
 			}
 
@@ -264,7 +272,7 @@ func bootstrapCmd() *cobra.Command {
 				label = "bootstrap"
 			}
 			if _, err := q.CreateAPIKey(ctx, store.CreateAPIKeyParams{
-				OrgID:   org.ID,
+				OrgID:   orgID,
 				Name:    label,
 				Prefix:  prefix,
 				KeyHash: hash,
@@ -274,7 +282,7 @@ func bootstrapCmd() *cobra.Command {
 			}
 
 			fmt.Printf("user:    %s\n", email)
-			fmt.Printf("org:     %s (id=%s)\n", orgSlug, store.GoUUID(org.ID))
+			fmt.Printf("org:     %s (id=%s)\n", orgSlug, store.GoUUID(orgID))
 			fmt.Printf("api key: %s\n", full)
 			fmt.Println("\nSet it in your shell:")
 			fmt.Printf("  export DSTREAM_API_KEY=%s\n", full)

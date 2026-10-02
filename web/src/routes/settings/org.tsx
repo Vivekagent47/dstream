@@ -1,4 +1,4 @@
-import { createFileRoute, Navigate, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, Navigate, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
@@ -8,7 +8,7 @@ import { api, qk } from '#/lib/api'
 import { useRole } from '#/lib/useRole'
 import { PageHeader } from '#/components/TopBar'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
-import { Button } from '#/components/ui/button'
+import { Button, buttonVariants } from '#/components/ui/button'
 import {
   Card,
   CardContent,
@@ -98,6 +98,20 @@ function OrgSettingsPage() {
           isAdmin={isAdmin}
         />
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage</CardTitle>
+          <CardDescription>
+            See this org&rsquo;s metered traffic against its plan limits for the current period.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Link to="/settings/usage" className={buttonVariants({ variant: 'outline' })}>
+            View usage
+          </Link>
+        </CardContent>
+      </Card>
 
       {isOwner && (
         <Card>

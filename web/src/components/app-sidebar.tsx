@@ -7,6 +7,7 @@ import {
   Bookmark,
   Building2,
   ChevronsUpDown,
+  Gauge,
   Inbox,
   KeyRound,
   LayoutDashboard,
@@ -62,6 +63,7 @@ const PLATFORM = [
 const SETTINGS = [
   { label: 'Profile', to: '/settings/profile', icon: UserRound },
   { label: 'Organization', to: '/settings/org', icon: Building2 },
+  { label: 'Usage', to: '/settings/usage', icon: Gauge },
   { label: 'Members', to: '/settings/members', icon: Users },
   { label: 'Invites', to: '/settings/invites', icon: Mail },
   { label: 'API keys', to: '/settings/api-keys', icon: KeyRound },

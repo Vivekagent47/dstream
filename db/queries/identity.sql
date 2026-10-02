@@ -1,17 +1,26 @@
+-- Columns are named, NOT * / RETURNING *, on these four queries for the same
+-- reason ListOrgsForUser below is pinned: internal/api/identity/orgs.go
+-- serializes their result straight to JSON (POST /api/orgs, PATCH
+-- /api/orgs/{org_id}), so a `SELECT *` here joins `plan` and every quota_*
+-- column into those admin-visible responses on the next sqlc run. Per design
+-- §7 limits are read through GET /api/usage and set through the owner-only
+-- PATCH /orgs/{id}/plan. Widening this list is a deliberate API change; make
+-- it on purpose.
 -- name: CreateOrganization :one
-INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING *;
+INSERT INTO organizations (name, slug) VALUES ($1, $2)
+RETURNING id, name, slug, created_at, updated_at;
 
 -- name: GetOrganizationBySlug :one
-SELECT * FROM organizations WHERE slug = $1;
+SELECT id, name, slug, created_at, updated_at FROM organizations WHERE slug = $1;
 
 -- name: GetOrganizationByID :one
-SELECT * FROM organizations WHERE id = $1;
+SELECT id, name, slug, created_at, updated_at FROM organizations WHERE id = $1;
 
 -- name: UpdateOrgName :one
 UPDATE organizations
    SET name = $2, updated_at = now()
  WHERE id = $1
- RETURNING *;
+ RETURNING id, name, slug, created_at, updated_at;
 
 -- name: DeleteOrganization :exec
 DELETE FROM organizations WHERE id = $1;
@@ -87,7 +96,14 @@ DELETE FROM org_members m
    ) > 1;
 
 -- name: ListOrgsForUser :many
-SELECT o.*, m.role
+-- Columns are named, NOT o.*, because this row type is serialized straight to
+-- JSON by GET /api/orgs and GET /api/me. With o.* every column added to
+-- organizations silently joins both public responses on the next sqlc run —
+-- which is how the phase 5c quota columns nearly shipped to every member of
+-- every org. Per design §7 limits are read through GET /api/usage and set
+-- through the owner-only PATCH /orgs/{id}/plan. Widening this list is a
+-- deliberate API change; make it on purpose.
+SELECT o.id, o.name, o.slug, o.created_at, o.updated_at, m.role
   FROM organizations o
   JOIN org_members m ON m.org_id = o.id
  WHERE m.user_id = $1

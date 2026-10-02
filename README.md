@@ -5,7 +5,7 @@
 
 dstream sits between webhook senders (Stripe, GitHub, Shopify, your own services) and your app. It accepts inbound webhooks, persists every request, applies per-connection delivery + retry policy, and forwards to your endpoints — while you watch every attempt in a dashboard.
 
-**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Phase 5a also shipped: role-based access control across the API, with per-key roles. Phase 5b shipped **instance-level OIDC single sign-on** — one IdP per deployment, not yet exercised against a real IdP ([see below](#single-sign-on-oidc)). Remaining: billing hooks and self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
+**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Phase 5a also shipped: role-based access control across the API, with per-key roles. Phase 5b shipped **instance-level OIDC single sign-on** — one IdP per deployment, not yet exercised against a real IdP ([see below](#single-sign-on-oidc)). Phase 5c shipped **usage metering and quotas** — four metered metrics per org per period, a soft-warn/hard-reject enforcement ladder, and a usage card on the org settings page ([see below](#usage-metering-and-quotas)). Every quota defaults to `0` (unlimited), so an upgraded deployment rejects nothing until an owner opts in, and **no payment provider is included or implied** — this slice ends at the meter. Remaining: self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
 
 ---
 
@@ -329,6 +329,66 @@ limitations of that row, so you can read the trail correctly:
   to several orgs gets one row, in the org they joined first; their
   break-glass is **invisible** in the other orgs' audit trails.
 
+### Usage metering and quotas
+
+dstream counts four per-org metrics every period — `requests` (inbound HTTP),
+`events` (inbound fan-out, the primary billable unit), `messages` (outbound
+publishes) and `attempts` (every delivery attempt, retries included) — and can
+enforce a soft warning plus a hard ceiling on the two that drive cost:
+`events` gates ingest, `messages` gates publish. **There is no payment
+provider of any kind here** — no Stripe, no invoices, no subscriptions. This
+is the meter a future biller would read, not a biller; set nothing and
+nothing changes.
+
+**Every quota defaults to `0`, and `0` means unlimited** — on both the soft
+and hard tier, for both gated metrics. An upgraded deployment that configures
+nothing rejects nothing; quotas are opt-in per org via the owner-only
+`PATCH /api/orgs/{org_id}/plan`, or the usage card on the org settings page.
+
+| Column (on `organizations`) | Default | Meaning |
+| --- | --- | --- |
+| `plan` | `free` | Label only (`free`/`pro`/`enterprise`/`custom`) — nothing in dstream changes behavior by plan name, only the limit columns below do. |
+| `quota_events_soft` / `quota_events_hard` | `0` / `0` | Soft warns, hard rejects. `0` = that tier never fires. |
+| `quota_messages_soft` / `quota_messages_hard` | `0` / `0` | Same shape, for outbound publishes. |
+| `quota_period` | `month` | `day` or `month` — the bucket the hourly sweep rolls counts into. |
+
+**Only the hard ceiling ever returns `429`.** Crossing the soft limit accepts
+the request normally and fires `usage.quota_warning` once per period (to the
+org's operational webhook app); crossing the hard ceiling returns `429` with
+`Retry-After` and fires `usage.quota_exceeded` once per period. The soft tier
+never rejects, by design: a sender that doesn't retry on failure loses that
+webhook permanently, so rejecting is the last resort, not the default.
+
+**`attempts` is metered but never enforced.** It's recorded — a customer whose
+retries dwarf everyone else's is worth a conversation — but rejecting a retry
+would punish them for their own endpoint being down, turning an outage into a
+dropped webhook. `requests` is likewise metered-only: gating `events` already
+gates the request that produced them.
+
+**Usage is approximate within a period, exact after the next sweep.** The
+hot-path counter enforcement reads increments by one per request, while the
+hourly sweep counts real `events` rows and reconciles the counter to that
+authoritative value. An org whose sources fan out to several connections per
+request therefore crosses its *real* limit somewhat later than its live
+counter suggests — deliberately lenient, in the accept-a-bit-more direction,
+never reject-early.
+
+**Fixture replay (`is_test` traffic) is excluded from the metered `events`
+count** — exercising your own setup through the replay tooling never burns
+quota or trips an alert.
+
+**Rollups start accumulating at deploy — there is no historical backfill.**
+Reconstructing past periods from existing `requests`/`events`/`attempts` rows
+would be actively wrong, not just incomplete: payload retention already nulls
+and removes old rows, so a backfill would silently *undercount* exactly the
+oldest periods it claims to cover. The current, still-open period is always
+marked `"partial": true` in `GET /api/usage` so a chart never renders it as a
+completed, lower bar.
+
+Dashboard: **Settings → Organization → View usage.** API: `GET /api/usage`,
+`GET /api/usage/history?metric=&periods=`, `PATCH /api/orgs/{org_id}/plan`
+(owner-only). Cross-tenant view for operators: `/admin/usage` (super-admin).
+
 ### Scaling workers
 
 Delivery scales horizontally — run more `worker` processes. They all drain the
@@ -354,6 +414,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d --scale worker=3
 Secure by default:
 
 - **Role-based access control** — members read, create and edit an org's sources, connections, destinations and endpoints; admins additionally delete, read and rotate endpoint secrets, publish outbound messages, and mint or revoke App Portal access; owners additionally delete the org and transfer ownership. Members keep full create and edit rights over routing configuration, including destination and endpoint URLs. API keys carry their own role (default `admin`, so existing keys are unaffected). **Upgrading from an earlier version:** existing `member` users lose delete, secret, publish and App Portal mint/revoke access — promote anyone who needs it to `admin`.
+- **Usage quotas are owner-gated** — `PATCH /api/orgs/{org_id}/plan` requires `owner`, stricter than this phase's default of admin-for-destructive, because changing a spend limit is a spend decision. Reading usage (`GET /api/usage`) is member-level, same as the rest of the traffic plane.
 - **SSRF-guarded delivery** — the worker refuses to POST to loopback/private/link-local (cloud-metadata) addresses; checked at dial time to defeat DNS rebinding.
 - **Session revocation** — signed cookies carry an epoch; logout invalidates all of a user's sessions.
 - **Single sign-on shares the session model** — an OIDC login goes through the same signer and the same account bootstrap as a magic-link login, so epoch revocation ("log out everywhere") covers SSO users too, and neither method can escalate a role an existing member already holds. The callback has to be a `GET` (an IdP redirects the browser back by navigation), so its state is **bound to the browser** by a short-lived `dstream_sso_state` cookie on top of being single-use in Redis — without that binding the callback would be a session-fixation primitive, since anyone can mint a state at the unauthenticated start endpoint. **Named residual:** that cookie's whole security property is that its value can't be injected, and it is not `__Host-` prefixed (which would require `Secure`, false in local HTTP dev) — so unlike `dstream_session` (HMAC-signed) and `dstream_csrf` (bound to the session value), a cookie tossed from a **compromised sibling subdomain** is directly exploitable against this one. If you serve dstream on a shared parent domain, treat every sibling subdomain as part of its trust boundary. SSO changes nothing about API-key auth or the App Portal.
@@ -373,7 +434,7 @@ Secure by default:
 | 2 | **Outbound webhooks** — Svix-style publish + signed subscriber fan-out, endpoint lifecycle, App Portal, delivery controls, operational webhooks | ✅ shipped |
 | 3 | **Transformations + filters** — CEL filter + sandboxed `goja` transform per connection/endpoint (both pipelines), `filtered` status, preview endpoints; tracing completion + load-test harness | ✅ shipped |
 | 4 | **Record / replay + fixtures** — retention-pinned fixtures, reinject/replay-to-URL/export, import, CEL auto-capture rules, ordered scenarios; CLI + dashboard | ✅ shipped |
-| 5 | Multi-tenant hardening — full RBAC, SSO, billing hooks | 🚧 5a + 5b shipped (RBAC, key roles, instance-level OIDC SSO); 5c billing planned |
+| 5 | Multi-tenant hardening — full RBAC, SSO, usage metering + quotas | ✅ shipped (5a RBAC + key roles, 5b instance-level OIDC SSO, 5c usage metering + quotas — no payment provider) |
 | 6 | Self-host packaging — Helm, single-binary release | planned |
 
 A visual workflow builder held the fifth slot until 2026-09-29: it was built, then dropped — the connections page already reads the topology and builds it, so a node canvas was a third way to do the same thing. The phases after it moved up. See `PLAN.md` §7 for the reasoning.

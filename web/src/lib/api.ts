@@ -459,6 +459,41 @@ export interface ScenarioReplayResult {
   error?: string
 }
 
+// Usage and quotas (phase 5c). `0` on any limit means unlimited — the
+// default for every org until an owner opts in via patchOrgPlan.
+export type Plan = 'free' | 'pro' | 'enterprise' | 'custom'
+export type QuotaPeriod = 'day' | 'month'
+
+export interface UsageLimits {
+  events_soft: number
+  events_hard: number
+  messages_soft: number
+  messages_hard: number
+}
+
+export interface OrgQuota {
+  plan: Plan
+  period: QuotaPeriod
+  limits: UsageLimits
+}
+
+// GET /api/usage. `partial` is always true — the current period is still
+// accumulating, so a chart must not render it as a completed, lower bar.
+// `usage` counts lag real traffic slightly: the hot-path counter increments
+// once per request while the authoritative sweep counts real `events` rows,
+// so a source that fans out to several connections crosses its real limit
+// later than the live counter here suggests.
+export interface Usage extends OrgQuota {
+  period_start: string
+  partial: boolean
+  usage: {
+    requests: number
+    events: number
+    messages: number
+    attempts: number
+  }
+}
+
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
   updateMe: (input: { name: string }) =>
@@ -857,6 +892,22 @@ export const api = {
     http
       .post<{ results: ScenarioReplayResult[] }>(`/api/scenarios/${id}/replay-to`, { url })
       .then((r) => r.data),
+
+  // Usage and quotas
+  getUsage: () => http.get<Usage>('/api/usage').then((r) => r.data),
+  // Owner-only on the server — a quota change is a spend decision. Partial:
+  // an omitted field keeps its current value.
+  patchOrgPlan: (
+    org_id: string,
+    input: {
+      plan?: Plan
+      quota_period?: QuotaPeriod
+      quota_events_soft?: number
+      quota_events_hard?: number
+      quota_messages_soft?: number
+      quota_messages_hard?: number
+    },
+  ) => http.patch<OrgQuota>(`/api/orgs/${org_id}/plan`, input).then((r) => r.data),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
@@ -925,4 +976,5 @@ export const qk = {
     ['capture-rules', params ?? {}] as const,
   scenarios: () => ['scenarios'] as const,
   scenario: (id: string) => ['scenarios', id] as const,
+  usage: () => ['usage'] as const,
 }
