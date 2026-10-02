@@ -395,6 +395,16 @@ func (d Handlers) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 	// Path B — issue a magic link to the invite's email. The user will land
 	// in the bootstrap flow on verify, which auto-applies pending invites.
 	//
+	// Not under SSO enforcement, though: this mints a sign-in link with no
+	// session involved, so it is a second way around IdP policy and has to be
+	// closed with the first. Path A above is unaffected — an SSO-authenticated
+	// user accepting their own invite needs no link. The invitee's route under
+	// enforcement is to sign in via SSO and re-open the invite, which lands
+	// them in Path A.
+	if d.refuseIfSSOEnforced(w) {
+		return
+	}
+
 	// Apply the SAME budgets as POST /api/auth/magic-link/request, keyed on
 	// the invite's email + caller's IP. Without this, anyone holding ANY
 	// valid invite token can mail-bomb the invitee by POSTing accept in a

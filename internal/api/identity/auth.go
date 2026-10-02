@@ -33,10 +33,47 @@ type magicLinkRequest struct {
 	Email string `json:"email"`
 }
 
+// refuseIfSSOEnforced closes the magic-link mint paths when
+// DSTREAM_OIDC_ENFORCE is on. Reports true once it has written the refusal, so
+// callers read `if d.refuseIfSSOEnforced(w) { return }`.
+//
+// With SSO enforced, a magic link is a way around IdP policy (MFA, conditional
+// access, deprovisioning): possession of the mailbox would be enough to sign
+// in, which is exactly what enforcement exists to stop. Refuse rather than
+// silently not sending, so the SPA can say why instead of showing a
+// "check your email" that never arrives. GET /api/auth/methods already
+// advertises magic_link=!Enforce; this is what makes that true.
+//
+// Guarded at BOTH mint sites — RequestMagicLink and the invite-accept fallback
+// (invites.go "Path B", which mails a link with no session involved at all).
+// Guarding only the first would leave anyone holding a live invite token a
+// working bypass.
+//
+// VerifyMagicLink is deliberately NOT guarded. Enforcement gates minting, not
+// redemption: the break-glass (`dstream admin magic-link`) mints a token that
+// has to stay redeemable, or a broken IdP locks every human out of the
+// deployment with no way back in.
+//
+// This also deliberately does not apply to API keys: machines do not do SSO,
+// and breaking every CI integration when an operator enables enforcement
+// would be a severe regression.
+func (d Handlers) refuseIfSSOEnforced(w http.ResponseWriter) bool {
+	if !d.OIDC.Enforce {
+		return false
+	}
+	httpx.Err(w, http.StatusForbidden, "magic-link sign-in is disabled; use single sign-on")
+	return true
+}
+
 // POST /api/auth/magic-link/request — issues a fresh single-use link for the
 // given email. Always returns 202 (or 429) without leaking which addresses
 // exist.
 func (d Handlers) RequestMagicLink(w http.ResponseWriter, r *http.Request) {
+	// Before the body decode: under enforcement this endpoint has no business
+	// reading a request at all. See refuseIfSSOEnforced.
+	if d.refuseIfSSOEnforced(w) {
+		return
+	}
 	var body magicLinkRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpx.Err(w, http.StatusBadRequest, "invalid json")
