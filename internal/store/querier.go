@@ -79,7 +79,15 @@ type Querier interface {
 	CreateMessageDeliveriesBatch(ctx context.Context, arg CreateMessageDeliveriesBatchParams) ([]CreateMessageDeliveriesBatchRow, error)
 	CreateMessageDeliveryAttempt(ctx context.Context, arg CreateMessageDeliveryAttemptParams) (MessageDeliveryAttempt, error)
 	CreateOrgInvite(ctx context.Context, arg CreateOrgInviteParams) (OrgInvite, error)
-	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (Organization, error)
+	// Columns are named, NOT * / RETURNING *, on these four queries for the same
+	// reason ListOrgsForUser below is pinned: internal/api/identity/orgs.go
+	// serializes their result straight to JSON (POST /api/orgs, PATCH
+	// /api/orgs/{org_id}), so a `SELECT *` here joins `plan` and every quota_*
+	// column into those admin-visible responses on the next sqlc run. Per design
+	// §7 limits are read through GET /api/usage and set through the owner-only
+	// PATCH /orgs/{id}/plan. Widening this list is a deliberate API change; make
+	// it on purpose.
+	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
 	CreateScenario(ctx context.Context, arg CreateScenarioParams) (Scenario, error)
 	CreateSource(ctx context.Context, arg CreateSourceParams) (Source, error)
@@ -145,7 +153,6 @@ type Querier interface {
 	GetActiveOrgInviteByTokenHash(ctx context.Context, tokenHash []byte) (GetActiveOrgInviteByTokenHashRow, error)
 	GetApplicationForOrg(ctx context.Context, arg GetApplicationForOrgParams) (Application, error)
 	GetBookmarkForOrg(ctx context.Context, arg GetBookmarkForOrgParams) (Bookmark, error)
-	UpdateBookmarkForOrg(ctx context.Context, arg UpdateBookmarkForOrgParams) (Bookmark, error)
 	GetCaptureRuleForOrg(ctx context.Context, arg GetCaptureRuleForOrgParams) (CaptureRule, error)
 	GetConnectionByID(ctx context.Context, id pgtype.UUID) (Connection, error)
 	GetConnectionForOrg(ctx context.Context, arg GetConnectionForOrgParams) (Connection, error)
@@ -170,8 +177,12 @@ type Querier interface {
 	GetMessageForApp(ctx context.Context, arg GetMessageForAppParams) (Message, error)
 	GetOperationalApp(ctx context.Context, orgID pgtype.UUID) (Application, error)
 	GetOrgMember(ctx context.Context, arg GetOrgMemberParams) (OrgMember, error)
-	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error)
-	GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error)
+	// One org's plan + limits, pinned to exactly those columns (no name/slug/
+	// timestamps) so GET /api/usage can't accidentally grow into a second
+	// `SELECT *`-shaped leak the way identity.sql:5,8 already are.
+	GetOrgQuota(ctx context.Context, id pgtype.UUID) (GetOrgQuotaRow, error)
+	GetOrganizationByID(ctx context.Context, id pgtype.UUID) (GetOrganizationByIDRow, error)
+	GetOrganizationBySlug(ctx context.Context, slug string) (GetOrganizationBySlugRow, error)
 	// Excludes a retention-expunged (NULL) body so it surfaces as ErrNoRows, taking
 	// the delivery worker's missing-body terminate path instead of sending empty.
 	GetRequestBody(ctx context.Context, requestID pgtype.UUID) ([]byte, error)
@@ -179,9 +190,10 @@ type Querier interface {
 	GetScenarioForOrg(ctx context.Context, arg GetScenarioForOrgParams) (Scenario, error)
 	GetSourceByIngestToken(ctx context.Context, ingestToken string) (Source, error)
 	GetSourceForOrg(ctx context.Context, arg GetSourceForOrgParams) (Source, error)
+	GetUsageForPeriod(ctx context.Context, arg GetUsageForPeriodParams) ([]GetUsageForPeriodRow, error)
+	GetUsageHistory(ctx context.Context, arg GetUsageHistoryParams) ([]GetUsageHistoryRow, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
-	UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (User, error)
 	// Cross-tenant (super-admin console): destinations with delivery failures in the
 	// last 24h, worst first. total/failed let the handler compute a failure rate.
 	// Only destinations that actually failed are returned (HAVING).
@@ -230,6 +242,15 @@ type Querier interface {
 	// invited_by UUID is omitted; we surface invited_by_email for the UI.
 	ListOrgInvitesByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgInvitesByOrgRow, error)
 	ListOrgMembersByOrg(ctx context.Context, orgID pgtype.UUID) ([]ListOrgMembersByOrgRow, error)
+	// Drives both reconciliation and the super-admin view.
+	ListOrgQuotas(ctx context.Context) ([]ListOrgQuotasRow, error)
+	// Columns are named, NOT o.*, because this row type is serialized straight to
+	// JSON by GET /api/orgs and GET /api/me. With o.* every column added to
+	// organizations silently joins both public responses on the next sqlc run —
+	// which is how the phase 5c quota columns nearly shipped to every member of
+	// every org. Per design §7 limits are read through GET /api/usage and set
+	// through the owner-only PATCH /orgs/{id}/plan. Widening this list is a
+	// deliberate API change; make it on purpose.
 	ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error)
 	ListPendingOrgInvitesByEmail(ctx context.Context, email string) ([]OrgInvite, error)
 	ListScenarioSteps(ctx context.Context, scenarioID pgtype.UUID) ([]ListScenarioStepsRow, error)
@@ -276,6 +297,22 @@ type Querier interface {
 	ResetEventForManualRetry(ctx context.Context, id pgtype.UUID) error
 	ResetEventForRetry(ctx context.Context, arg ResetEventForRetryParams) error
 	RevokeAPIKeyForOrg(ctx context.Context, arg RevokeAPIKeyForOrgParams) error
+	// Both delivery surfaces sum into one metric: inbound attempts are org-scoped
+	// through the event, outbound through message_deliveries, which carries org_id
+	// directly (no join to messages needed).
+	//
+	// NOTE both attempt tables use attempted_at, NOT created_at.
+	RollupAttempts(ctx context.Context, arg RollupAttemptsParams) ([]RollupAttemptsRow, error)
+	// is_test events are excluded from the metered count. Fixture replay is the
+	// dev-loop feature dstream sells; throttling or billing someone for exercising
+	// it is the wrong default. is_test is set only by dstream's own replay and
+	// test-connection paths (internal/bookmark, internal/api/pipeline), never by an
+	// inbound webhook, so this is not a quota-evasion vector. The health-metric
+	// queries at db/queries/events.sql:250,262 exclude them for the same reason.
+	RollupEvents(ctx context.Context, arg RollupEventsParams) ([]RollupEventsRow, error)
+	RollupMessages(ctx context.Context, arg RollupMessagesParams) ([]RollupMessagesRow, error)
+	// requests has no org_id and its timestamp is received_at, not created_at.
+	RollupRequests(ctx context.Context, arg RollupRequestsParams) ([]RollupRequestsRow, error)
 	RotateEndpointSecret(ctx context.Context, arg RotateEndpointSecretParams) (Endpoint, error)
 	SeedEventType(ctx context.Context, arg SeedEventTypeParams) error
 	// Gap-filled ingest-request volume over time for ONE source (single series, no
@@ -297,13 +334,21 @@ type Querier interface {
 	// rows and the handler returns 403/400. No SELECT-then-UPDATE TOCTOU.
 	TransferOrgOwnership(ctx context.Context, arg TransferOrgOwnershipParams) (int64, error)
 	UpdateApplication(ctx context.Context, arg UpdateApplicationParams) (Application, error)
+	UpdateBookmarkForOrg(ctx context.Context, arg UpdateBookmarkForOrgParams) (Bookmark, error)
 	UpdateCaptureRule(ctx context.Context, arg UpdateCaptureRuleParams) (CaptureRule, error)
 	UpdateEndpoint(ctx context.Context, arg UpdateEndpointParams) (Endpoint, error)
 	UpdateEventType(ctx context.Context, arg UpdateEventTypeParams) (EventType, error)
 	UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error
-	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (Organization, error)
+	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (UpdateOrgNameRow, error)
+	// Sets plan + limits together (PATCH /api/orgs/{org_id}/plan, owner-only).
+	// RETURNING is pinned the same way GetOrgQuota is, for the same reason.
+	UpdateOrgQuota(ctx context.Context, arg UpdateOrgQuotaParams) (UpdateOrgQuotaRow, error)
 	UpdateScenario(ctx context.Context, arg UpdateScenarioParams) (Scenario, error)
 	UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error)
+	UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (User, error)
+	// Idempotent by (org_id, period_start, metric): the sweep re-runs the current
+	// period on every worker restart, so this must converge rather than add.
+	UpsertUsageRollup(ctx context.Context, arg UpsertUsageRollupParams) error
 }
 
 var _ Querier = (*Queries)(nil)

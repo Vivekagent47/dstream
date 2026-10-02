@@ -19,6 +19,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
 // Deps bundles everything an API handler might need so we can wire them via
@@ -60,6 +61,10 @@ type Deps struct {
 	Authenticator auth.Authenticator
 	// OIDC carries the SSO provisioning defaults and the enforce flag.
 	OIDC config.OIDCConfig
+	// Quota enforces per-org usage limits on publish. Shared with the ingest
+	// handler so both paths read one cached snapshot of the limits. nil = no
+	// enforcement.
+	Quota *usage.Gate
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
@@ -103,6 +108,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		SecretGrace: d.SecretGrace,
 		Portal:      d.Portal,
 		AppBaseURL:  d.AppBaseURL,
+		Quota:       d.Quota,
 	}
 
 	parent.Route("/api", func(r chi.Router) {
@@ -195,6 +201,12 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 				r.Post("/invites", id.CreateInvite)
 				r.Delete("/invites/{id}", id.DeleteInvite)
 
+				// Owner-only: gated inline in the handler, not by
+				// AdminForDestructive above (a PATCH isn't covered by that
+				// DELETE-only rule anyway) — a quota change is a spend
+				// decision, stricter than this group's admin default.
+				r.Patch("/plan", id.PatchOrgPlan)
+
 				r.Get("/api-keys", id.ListAPIKeys)
 				r.Post("/api-keys", id.CreateAPIKey)
 				r.Delete("/api-keys/{id}", id.RevokeAPIKey)
@@ -220,6 +232,12 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 				adminOnly := auth.RequireRole(auth.RoleAdmin)
 
 				r.Get("/audit", id.ListAudit)
+
+				// Current-period usage + history for the active org. Any
+				// member can read; the owner-only write lives at
+				// PATCH /api/orgs/{org_id}/plan above (identity group).
+				r.Get("/usage", id.GetUsage)
+				r.Get("/usage/history", id.GetUsageHistory)
 
 				// Filter/transform dev-time preview (stateless pipeline funcs).
 				r.Post("/filter-preview", pipeline.FilterPreview)

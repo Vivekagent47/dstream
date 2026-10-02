@@ -47,6 +47,8 @@ func c(method, pattern string, min auth.Role) rbacCase {
 // executable copy of the table in the spec; router.go is the declarative one.
 var rbacMatrix = []rbacCase{
 	c(http.MethodGet, "/api/audit", auth.RoleMember),
+	c(http.MethodGet, "/api/usage", auth.RoleMember),
+	c(http.MethodGet, "/api/usage/history", auth.RoleMember),
 	c(http.MethodPost, "/api/filter-preview", auth.RoleMember),
 	c(http.MethodPost, "/api/transform-preview", auth.RoleMember),
 

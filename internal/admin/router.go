@@ -16,6 +16,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
 type Deps struct {
@@ -41,6 +42,9 @@ func Mount(parent chi.Router, d Deps) {
 		r.Post("/queues/dead/requeue", d.handleRequeueDead)
 		r.Post("/queues/scheduled/promote", d.handlePromoteScheduled)
 		r.Post("/queues/dead/drain", d.handleDrainDead)
+
+		// Cross-tenant usage view: every org against its own limits.
+		r.Get("/usage", d.handleUsage)
 
 		// Custom admin pages (Phase 1.4 scope).
 		r.Get("/overview", d.handleOverview)
@@ -120,6 +124,69 @@ func (d Deps) handleListOrgs(w http.ResponseWriter, r *http.Request) {
 			"name":       o.Name,
 			"slug":       o.Slug,
 			"created_at": o.CreatedAt.Time,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleUsage serves GET /admin/usage: every org's current-period totals
+// against its own limits, for the super-admin console.
+//
+// Reuses ListOrgQuotas rather than adding a capped variant like
+// ListAllOrganizations (200-row cap, used by handleListOrgs above).
+// ListOrgQuotas is already documented (db/queries/usage.sql) as driving both
+// the reconciliation sweep and this view, and unlike the orgs list — which
+// users page through — the whole point of a cross-tenant usage view is
+// "where does every org sit against its limit"; capping it would silently
+// hide the orgs past the cap from the one surface meant to show overage
+// across the whole deployment. Admin-only and infrequent, the same tradeoff
+// the sweep itself already makes on this query.
+//
+// ponytail: N+1 usage lookups, one GetUsageForPeriod per org, same shape as
+// handleQueueOrgs's N+1 org-name lookups above — admin-only + infrequent.
+// Batch (one query keyed by (org_id, period_start) IN (...)) if org counts
+// ever make this slow.
+func (d Deps) handleUsage(w http.ResponseWriter, r *http.Request) {
+	orgs, err := d.Queries.ListOrgQuotas(r.Context())
+	if err != nil {
+		d.Log.Error("admin usage: list org quotas", "err", err)
+		http.Error(w, "usage", http.StatusInternalServerError)
+		return
+	}
+	now := time.Now()
+	out := make([]map[string]any, 0, len(orgs))
+	for _, o := range orgs {
+		// Each org's OWN period, never a hardcoded "month" — same rule as
+		// GET /api/usage and for the same reason: the sweep reconciles this
+		// org's rollup at PeriodStart(now, o.QuotaPeriod), so a 'day' org
+		// looked up at a hardcoded month start would read back as zero.
+		periodStart := usage.PeriodStart(now, o.QuotaPeriod)
+		rows, err := d.Queries.GetUsageForPeriod(r.Context(), store.GetUsageForPeriodParams{
+			OrgID:       o.ID,
+			PeriodStart: pgtype.Timestamptz{Time: periodStart, Valid: true},
+		})
+		if err != nil {
+			// One bad org must not blank the whole console page.
+			d.Log.Error("admin usage: get usage for period", "err", err, "org_id", store.GoUUID(o.ID).String())
+			continue
+		}
+		counts := map[string]int64{"requests": 0, "events": 0, "messages": 0, "attempts": 0}
+		for _, row := range rows {
+			counts[row.Metric] = row.Count
+		}
+		out = append(out, map[string]any{
+			"org_id":              store.GoUUID(o.ID).String(),
+			"org_name":            o.Name,
+			"org_slug":            o.Slug,
+			"plan":                o.Plan,
+			"period":              o.QuotaPeriod,
+			"period_start":        periodStart,
+			"partial":             true,
+			"usage":               counts,
+			"quota_events_soft":   o.QuotaEventsSoft,
+			"quota_events_hard":   o.QuotaEventsHard,
+			"quota_messages_soft": o.QuotaMessagesSoft,
+			"quota_messages_hard": o.QuotaMessagesHard,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
