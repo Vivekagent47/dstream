@@ -5,7 +5,8 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 
 import { api, qk } from '#/lib/api'
-import { Button } from '#/components/ui/button'
+import { useAuthMethods } from '#/lib/useAuthMethods'
+import { Button, buttonVariants } from '#/components/ui/button'
 import {
   Card,
   CardContent,
@@ -27,6 +28,16 @@ function InvitePage() {
     queryFn: () => api.peekInvite(token),
     retry: false,
   })
+
+  // Accepting while signed out mints a magic link, which the server refuses
+  // (403) under SSO enforcement. Offer the way through: signing in with the
+  // IdP applies the pending invite during session bootstrap.
+  //
+  // Shared with the login page on purpose. Gating this block on the probe
+  // SUCCEEDING would reproduce the dead end the hook exists to prevent: an
+  // enforced deployment with a dead probe would show only "Accept invite",
+  // which the server 403s, and hide the one control that works.
+  const { methods, fromServer } = useAuthMethods()
 
   const accept = useMutation({
     mutationFn: () => api.acceptInvite(token),
@@ -84,6 +95,31 @@ function InvitePage() {
               <Button onClick={() => accept.mutate()} disabled={accept.isPending}>
                 {accept.isPending ? 'Accepting…' : 'Accept invite'}
               </Button>
+
+              {methods?.sso && (
+                <div className="space-y-2 border-t border-border pt-4">
+                  {/* Names the address on purpose: BootstrapSession applies
+                      the invite by matching the email the IdP verified, so
+                      signing in as anyone else yields a session with no
+                      invited-org membership and no explanation. */}
+                  <p className="text-xs text-muted-foreground">
+                    {/* Neither phrasing is safe when `methods` is the
+                        fallback: one calls SSO optional, the other calls it
+                        mandatory, and we do not know which. */}
+                    {!fromServer
+                      ? 'If this deployment uses single sign-on: '
+                      : methods.magic_link
+                        ? 'Already use single sign-on here? '
+                        : 'This deployment uses single sign-on. '}
+                    Sign in with <code>{peek.data.email}</code> and your invitation is applied
+                    automatically.
+                  </p>
+                  {/* Anchor, not a fetch: /api/auth/sso/start 302s to the IdP. */}
+                  <a href={api.ssoStartUrl()} className={buttonVariants({ variant: 'outline' })}>
+                    Sign in with SSO
+                  </a>
+                </div>
+              )}
             </>
           )}
 

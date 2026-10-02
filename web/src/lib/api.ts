@@ -235,6 +235,14 @@ export interface MeResponse {
   api_key?: { org_id: string }
 }
 
+// AuthMethods is what the unauthenticated login page asks for before it
+// renders any control: `sso` is true when an IdP is configured, `magic_link`
+// is false when SSO is enforced (the server 403s magic-link requests then).
+export interface AuthMethods {
+  sso: boolean
+  magic_link: boolean
+}
+
 export interface InvitePeek {
   org_name: string
   email: string
@@ -464,6 +472,20 @@ export const api = {
   verifyMagicLink: (token: string) =>
     http.post<void>('/api/auth/magic-link/verify', { token }).then((r) => r.data),
   logout: () => http.post<void>('/api/auth/logout').then((r) => r.data),
+
+  // Deadlined, unlike every other call here: the login page renders no
+  // sign-in control until this answers, so a proxy that accepts the
+  // connection and never replies would leave no way in at all. 5s then fail,
+  // which the caller treats as "offer both methods" — see login.tsx.
+  authMethods: () =>
+    http.get<AuthMethods>('/api/auth/methods', { timeout: 5000 }).then((r) => r.data),
+  // Deliberately a URL builder, not a call: /api/auth/sso/start 302s to the
+  // IdP, so it has to be reached by a document navigation (anchor href or
+  // location.assign). An XHR would follow the redirect inside JS and the
+  // handshake would never reach the browser. Relative on purpose — same
+  // origin as the document, which is where /api is proxied.
+  ssoStartUrl: (returnTo = '/connections') =>
+    `/api/auth/sso/start?return_to=${encodeURIComponent(returnTo)}`,
 
   // Orgs
   listMyOrgs: () => http.get<Org[]>('/api/orgs').then((r) => r.data),
@@ -841,6 +863,7 @@ export const api = {
 // stay in sync with the API surface.
 export const qk = {
   me: () => ['me'] as const,
+  authMethods: () => ['auth-methods'] as const,
   adminOverview: () => ['admin', 'overview'] as const,
   adminOrgs: () => ['admin', 'orgs'] as const,
   adminQueues: () => ['admin', 'queues'] as const,

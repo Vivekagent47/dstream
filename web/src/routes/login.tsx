@@ -6,8 +6,9 @@ import { ArrowRight, CheckCircle2, MailCheck } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api } from '#/lib/api'
+import { useAuthMethods } from '#/lib/useAuthMethods'
 import ThemeToggle from '#/components/ThemeToggle'
-import { Button } from '#/components/ui/button'
+import { Button, buttonVariants } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import { Label } from '#/components/ui/label'
 
@@ -57,6 +58,10 @@ function BrandPanel() {
 
 function Login() {
   const [email, setEmail] = useState('')
+  // Ask the server which methods exist before rendering any control; see
+  // useAuthMethods for the probe-failure fallback and why it offers both.
+  const { methods: available, fromServer } = useAuthMethods()
+
   const request = useMutation({
     // Normalize email to match the server (trim + lowercase) so the
     // per-email rate-limit key is stable across casing variations the
@@ -112,35 +117,83 @@ function Login() {
               <h1 className="text-2xl font-bold tracking-tight text-foreground">
                 Sign in to dstream
               </h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Passwordless — enter your email and we&apos;ll send a single-use link. New here? This
-                creates your account.
-              </p>
-
-              <form onSubmit={submit} className="mt-8 space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    required
-                    autoFocus
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@example.com"
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={request.isPending}>
-                  {request.isPending ? (
-                    'Sending…'
-                  ) : (
+              {available && (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {/* Neutral copy when `available` is the fallback rather than
+                      the server's answer: both controls are rendered then, and
+                      describing either as THE way in would be a guess. An
+                      enforced deployment with a dead probe would otherwise
+                      read "Passwordless — enter your email" directly above the
+                      SSO button that is its only working route. */}
+                  {!fromServer ? (
+                    "We couldn't reach the server to check which sign-in methods are enabled — both are offered below. Use whichever this deployment supports."
+                  ) : available.magic_link ? (
                     <>
-                      Send magic link
-                      <ArrowRight className="h-4 w-4" />
+                      Passwordless — enter your email and we&apos;ll send a single-use link. New
+                      here? This creates your account.
                     </>
+                  ) : available.sso ? (
+                    'This deployment uses single sign-on. Continue with your identity provider.'
+                  ) : (
+                    'No sign-in method is configured for this deployment. Ask your administrator.'
                   )}
-                </Button>
-              </form>
+                </p>
+              )}
+
+              {!available ? (
+                <p className="mt-8 text-sm text-muted-foreground">Loading sign-in options…</p>
+              ) : (
+                <>
+                  {available.sso && (
+                    // A plain anchor, not a Button+fetch: /api/auth/sso/start
+                    // 302s to the IdP, so it needs a document navigation.
+                    <a
+                      href={api.ssoStartUrl()}
+                      className={buttonVariants({ className: 'mt-8 w-full' })}
+                    >
+                      Sign in with SSO
+                      <ArrowRight className="h-4 w-4" />
+                    </a>
+                  )}
+
+                  {available.sso && available.magic_link && (
+                    <div className="mt-6 flex items-center gap-3">
+                      <span className="h-px flex-1 bg-border" />
+                      <span className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
+                        or
+                      </span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                  )}
+
+                  {available.magic_link && (
+                    <form onSubmit={submit} className="mt-8 space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="email">Email</Label>
+                        <Input
+                          id="email"
+                          type="email"
+                          required
+                          autoFocus
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          placeholder="you@example.com"
+                        />
+                      </div>
+                      <Button type="submit" className="w-full" disabled={request.isPending}>
+                        {request.isPending ? (
+                          'Sending…'
+                        ) : (
+                          <>
+                            Send magic link
+                            <ArrowRight className="h-4 w-4" />
+                          </>
+                        )}
+                      </Button>
+                    </form>
+                  )}
+                </>
+              )}
 
               <p className="mt-6 text-center text-xs text-muted-foreground">
                 By continuing you agree to the terms of the dstream instance you&apos;re signing into.
