@@ -888,18 +888,6 @@ func (q *Queries) MarkEventFailed(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
-const markEventQueued = `-- name: MarkEventQueued :exec
-UPDATE events
-SET status     = 'queued',
-    updated_at = now()
-WHERE id = $1
-`
-
-func (q *Queries) MarkEventQueued(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, markEventQueued, id)
-	return err
-}
-
 const markEventFiltered = `-- name: MarkEventFiltered :exec
 UPDATE events SET status = 'filtered', updated_at = now() WHERE id = $1
 `
@@ -924,6 +912,18 @@ WHERE id = $1
 // the pre-increment count, so this keeps attempt_num monotonic and gap-free.
 func (q *Queries) MarkEventInFlight(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markEventInFlight, id)
+	return err
+}
+
+const markEventQueued = `-- name: MarkEventQueued :exec
+UPDATE events
+SET status     = 'queued',
+    updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) MarkEventQueued(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markEventQueued, id)
 	return err
 }
 
