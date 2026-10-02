@@ -64,6 +64,12 @@ sqlc:
 
 schema-diff:
 	@test -n "$(NAME)" || (echo "usage: make schema-diff NAME=add_foo"; exit 1)
+	@# Atlas recreates `public` in the dev database on every diff, which drops
+	@# the extensions schema.sql depends on. Reinstall them first or the diff
+	@# fails on the first citext column.
+	@psql "$${DSTREAM_ATLAS_DEV_URL:?set DSTREAM_ATLAS_DEV_URL}" -q \
+		-c 'CREATE EXTENSION IF NOT EXISTS pgcrypto' \
+		-c 'CREATE EXTENSION IF NOT EXISTS citext'
 	$(ATLAS) migrate diff $(NAME) --env $(ATLAS_ENV)
 
 schema-lint:
@@ -79,7 +85,24 @@ migrate-hash:
 	$(ATLAS) migrate hash --env $(ATLAS_ENV)
 
 db-reset:
-	dropdb --if-exists dstream && createdb dstream && $(MAKE) migrate-up
+	@# DESTRUCTIVE. Two guards, both earned the hard way:
+	@#
+	@# 1. CONFIRM=yes. This target used to be the thing an operator reached for
+	@#    when `make migrate-up` failed, which cost a working database more than
+	@#    once. migrate-up is fixed now, but the reflex is worth blocking.
+	@# 2. It derives the target from DSTREAM_DB_URL instead of calling bare
+	@#    dropdb/createdb, which used libpq defaults — no host, no port. With a
+	@#    second Postgres listening on 5432 and the dev stack on 5433, that
+	@#    dropped a database on the wrong server while leaving the real one
+	@#    untouched.
+	@test "$(CONFIRM)" = "yes" || (echo "db-reset is destructive: it drops the database named in DSTREAM_DB_URL.\nRe-run with: make db-reset CONFIRM=yes"; exit 1)
+	@test -n "$$DSTREAM_DB_URL" || (echo "DSTREAM_DB_URL is not set"; exit 1)
+	@DB=$$(printf '%s' "$$DSTREAM_DB_URL" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#'); \
+	ADMIN=$$(printf '%s' "$$DSTREAM_DB_URL" | sed -E "s#/$$DB(\?|$$)#/postgres\1#"); \
+	echo "dropping and recreating \"$$DB\""; \
+	psql "$$ADMIN" -q -c "DROP DATABASE IF EXISTS \"$$DB\" WITH (FORCE)" \
+	               -c "CREATE DATABASE \"$$DB\""
+	$(MAKE) migrate-up
 
 compose-up:
 	docker compose -f deploy/docker/docker-compose.yml up -d
