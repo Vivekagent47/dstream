@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -27,6 +28,11 @@ type TxBeginner interface {
 }
 
 var ErrInvalidMagicToken = errors.New("auth: invalid or expired magic link")
+
+// ErrDefaultOrgNotFound means the configured default org slug matches no
+// organization. It is an operator misconfiguration, not an auth failure —
+// callers should surface it as a 500, never as a 401.
+var ErrDefaultOrgNotFound = errors.New("auth: configured default org not found")
 
 const magicTokenBytes = 32
 
@@ -57,16 +63,14 @@ func IssueMagicLink(ctx context.Context, q *store.Queries, email string, ttl tim
 // Bootstrap flow inside ONE Postgres transaction:
 //
 //  1. Load + validate the magic-link row.
-//  2. Get-or-create the user (race-tolerant via unique-violation handling).
-//  3. Apply any pending org_invites for the user's email — add the user as
-//     a member; if already a member, preserve their existing role.
-//  4. If the user is still not a member of any org, create a personal
-//     workspace and add them as owner.
-//  5. Mark the magic-link token used.
-//  6. Commit. Pick the active org deterministically via GetFirstOrgForUser.
+//  2. BootstrapSession: get-or-create the user, apply pending invites, and
+//     mint a personal workspace if they are still org-less. Shared with
+//     every other login method; no default org applies to magic links.
+//  3. Mark the magic-link token used.
+//  4. Commit. Pick the active org deterministically via GetFirstOrgForUser.
 //
 // The whole thing runs in a transaction so a partial failure (e.g. ctx
-// cancellation between step 4 and step 5) rolls back cleanly — no orphan
+// cancellation between step 2 and step 3) rolls back cleanly — no orphan
 // workspaces with zero members, no consumed-but-unbootstrapped tokens.
 func ConsumeMagicLink(ctx context.Context, pool TxBeginner, q *store.Queries, token string) (store.User, uuid.UUID, error) {
 	tx, err := pool.Begin(ctx)
@@ -90,78 +94,9 @@ func ConsumeMagicLink(ctx context.Context, pool TxBeginner, q *store.Queries, to
 		return store.User{}, uuid.Nil, err
 	}
 
-	// Get-or-create the user. CreateUser may race against another
-	// concurrent verify for the same email — handle the unique violation
-	// by reloading rather than 500ing.
-	u, err := qtx.GetUserByEmail(ctx, row.Email)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return store.User{}, uuid.Nil, err
-		}
-		violated, sErr := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
-			var e error
-			u, e = q.WithTx(sp).CreateUser(ctx, store.CreateUserParams{Email: row.Email})
-			return e
-		})
-		if sErr != nil {
-			return store.User{}, uuid.Nil, sErr
-		}
-		if violated {
-			// Concurrent create with the same email — fetch the existing row.
-			u, err = qtx.GetUserByEmail(ctx, row.Email)
-			if err != nil {
-				return store.User{}, uuid.Nil, err
-			}
-		}
-	}
-
-	// Apply pending invites. Best-effort per invite: if adding a member
-	// fails on unique violation (already a member), preserve the existing
-	// role rather than 500ing — invite acceptance is idempotent and does not
-	// silently change an established member's role. Other errors abort the tx.
-	invites, err := qtx.ListPendingOrgInvitesByEmail(ctx, u.Email)
+	u, err := BootstrapSession(ctx, tx, q, row.Email, "", RoleMember)
 	if err != nil {
 		return store.User{}, uuid.Nil, err
-	}
-	for _, inv := range invites {
-		if _, err := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
-			return q.WithTx(sp).AddOrgMember(ctx, store.AddOrgMemberParams{
-				OrgID:  inv.OrgID,
-				UserID: u.ID,
-				Role:   inv.Role,
-			})
-		}); err != nil {
-			return store.User{}, uuid.Nil, err
-		}
-		// Already a member: preserve existing role (idempotent accept).
-		if err := qtx.MarkOrgInviteAccepted(ctx, inv.ID); err != nil {
-			return store.User{}, uuid.Nil, err
-		}
-	}
-
-	// If still org-less, mint a personal workspace.
-	count, err := qtx.CountOrgMembershipsForUser(ctx, u.ID)
-	if err != nil {
-		return store.User{}, uuid.Nil, err
-	}
-	if count == 0 {
-		org, err := qtx.CreateOrganization(ctx, store.CreateOrganizationParams{
-			Name: personalOrgName(u.Email),
-			Slug: slugifyEmail(u.Email),
-		})
-		if err != nil {
-			return store.User{}, uuid.Nil, err
-		}
-		if err := qtx.AddOrgMember(ctx, store.AddOrgMemberParams{
-			OrgID:  org.ID,
-			UserID: u.ID,
-			Role:   string(RoleOwner),
-		}); err != nil {
-			return store.User{}, uuid.Nil, err
-		}
-		if _, err := opevents.SeedOperationalApp(ctx, qtx, store.GoUUID(org.ID)); err != nil {
-			return store.User{}, uuid.Nil, err
-		}
 	}
 
 	// Mark the magic-link token used LAST — only after the bootstrap
@@ -181,6 +116,135 @@ func ConsumeMagicLink(ctx context.Context, pool TxBeginner, q *store.Queries, to
 		return store.User{}, uuid.Nil, err
 	}
 	return u, store.GoUUID(activeOrg), nil
+}
+
+// BootstrapSession turns a verified email address into a user holding at
+// least one org membership, inside the caller's transaction. It is the shared
+// account-provisioning path for every human login method — magic-link
+// redemption and the OIDC callback both route through here, so they cannot
+// drift on invite application, workspace creation, or the rule that a fresh
+// login never escalates an existing member's role.
+//
+// defaultOrgSlug, when non-empty, joins a user who has no membership to that
+// org at defaultRole instead of minting a personal workspace. An existing
+// membership always wins: this function never changes a role a user already
+// holds. An unknown slug is an error, not a silent fallback — it means the
+// deployment is misconfigured.
+//
+// Callers own the transaction so the whole login is atomic: the magic-link
+// path also marks its token used, and a partial failure must leave no orphan
+// workspace and no consumed-but-unbootstrapped token.
+func BootstrapSession(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *store.Queries,
+	email string,
+	defaultOrgSlug string,
+	defaultRole Role,
+) (store.User, error) {
+	qtx := q.WithTx(tx)
+
+	// Get-or-create the user. CreateUser may race against another concurrent
+	// login for the same email — handle the unique violation by reloading
+	// rather than failing.
+	u, err := qtx.GetUserByEmail(ctx, email)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return store.User{}, err
+		}
+		violated, sErr := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+			var e error
+			u, e = q.WithTx(sp).CreateUser(ctx, store.CreateUserParams{Email: email})
+			return e
+		})
+		if sErr != nil {
+			return store.User{}, sErr
+		}
+		if violated {
+			// Concurrent create with the same email — fetch the existing row.
+			if u, err = qtx.GetUserByEmail(ctx, email); err != nil {
+				return store.User{}, err
+			}
+		}
+	}
+
+	// Apply pending invites. Best-effort per invite: a unique violation means
+	// they are already a member, in which case the existing role is preserved
+	// rather than overwritten — invite acceptance is idempotent and does not
+	// silently re-grade an established member. Other errors abort the tx.
+	invites, err := qtx.ListPendingOrgInvitesByEmail(ctx, u.Email)
+	if err != nil {
+		return store.User{}, err
+	}
+	for _, inv := range invites {
+		if _, err := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+			return q.WithTx(sp).AddOrgMember(ctx, store.AddOrgMemberParams{
+				OrgID:  inv.OrgID,
+				UserID: u.ID,
+				Role:   inv.Role,
+			})
+		}); err != nil {
+			return store.User{}, err
+		}
+		if err := qtx.MarkOrgInviteAccepted(ctx, inv.ID); err != nil {
+			return store.User{}, err
+		}
+	}
+
+	count, err := qtx.CountOrgMembershipsForUser(ctx, u.ID)
+	if err != nil {
+		return store.User{}, err
+	}
+	if count > 0 {
+		// Already a member of something. Never touch an existing role.
+		return u, nil
+	}
+
+	if defaultOrgSlug != "" {
+		org, err := qtx.GetOrganizationBySlug(ctx, defaultOrgSlug)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.User{}, fmt.Errorf("%w: %q", ErrDefaultOrgNotFound, defaultOrgSlug)
+			}
+			return store.User{}, err
+		}
+		// Savepoint-wrapped like the invite loop above: unlike the personal
+		// workspace below (whose org is created in this tx, so its id is
+		// unguessable), two concurrent logins for the same org-less user race
+		// to insert the *same* (org_id, user_id). AddOrgMember is a plain
+		// INSERT, so the loser takes 23505 and would abort the whole tx. The
+		// violation means they are already a member — exactly what we wanted.
+		if _, err := inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+			return q.WithTx(sp).AddOrgMember(ctx, store.AddOrgMemberParams{
+				OrgID:  org.ID,
+				UserID: u.ID,
+				Role:   string(defaultRole),
+			})
+		}); err != nil {
+			return store.User{}, err
+		}
+		return u, nil
+	}
+
+	// Still org-less and no default configured: mint a personal workspace.
+	org, err := qtx.CreateOrganization(ctx, store.CreateOrganizationParams{
+		Name: personalOrgName(u.Email),
+		Slug: slugifyEmail(u.Email),
+	})
+	if err != nil {
+		return store.User{}, err
+	}
+	if err := qtx.AddOrgMember(ctx, store.AddOrgMemberParams{
+		OrgID:  org.ID,
+		UserID: u.ID,
+		Role:   string(RoleOwner),
+	}); err != nil {
+		return store.User{}, err
+	}
+	if _, err := opevents.SeedOperationalApp(ctx, qtx, store.GoUUID(org.ID)); err != nil {
+		return store.User{}, err
+	}
+	return u, nil
 }
 
 // personalOrgName returns the human-facing display name for a new
