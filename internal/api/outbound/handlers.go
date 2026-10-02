@@ -11,6 +11,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
 // isUniqueViolation detects Postgres unique_violation (SQLSTATE 23505)
@@ -34,6 +35,9 @@ type Handlers struct {
 	// Portal signs App Portal tokens; AppBaseURL builds the portal link.
 	Portal     *auth.PortalSigner
 	AppBaseURL string
+	// Quota meters publishes against the org's messages plan and refuses at the
+	// hard ceiling. nil = no quota enforcement (*usage.Gate is nil-safe).
+	Quota *usage.Gate
 }
 
 func applicationView(a store.Application) map[string]any {

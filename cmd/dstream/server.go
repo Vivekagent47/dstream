@@ -29,6 +29,7 @@ import (
 	mw "github.com/Vivekagent47/dstream/internal/middleware"
 	"github.com/Vivekagent47/dstream/internal/store"
 	"github.com/Vivekagent47/dstream/internal/tracing"
+	"github.com/Vivekagent47/dstream/internal/usage"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -155,6 +156,17 @@ func serverCmd() *cobra.Command {
 			})
 			r.With(auth.SuperAdminOnly(q, signer)).Handle("/metrics", metrics.Handler())
 
+			// One gate for both enforcement points, so ingest and publish read
+			// a single cached copy of every org's limits. Loaded once here so
+			// the first requests after a restart are not treated as unlimited;
+			// a failure only logs, because the gate serves "unlimited" until a
+			// reload lands and quota enforcement is not worth failing a boot
+			// over.
+			quota := &usage.Gate{Log: log, Queries: q, Redis: rdb, Queue: dq}
+			if err := quota.Reload(ctx); err != nil {
+				log.Warn("usage: initial quota limits load failed", "err", err)
+			}
+
 			ih := &ingest.Handler{
 				Log:            log,
 				Queries:        q,
@@ -165,6 +177,7 @@ func serverCmd() *cobra.Command {
 				RateLimitRPS:   cfg.IngestRateLimitRPS,
 				RateLimitBurst: cfg.IngestRateLimitBurst,
 				MaxWebhookHops: cfg.MaxWebhookHops,
+				Quota:          quota,
 			}
 			ih.Mount(r)
 
@@ -211,6 +224,7 @@ func serverCmd() *cobra.Command {
 				AllowPrivateDestinations: cfg.AllowPrivateDestinations,
 				Authenticator:            ssoAuth,
 				OIDC:                     cfg.OIDC,
+				Quota:                    quota,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{

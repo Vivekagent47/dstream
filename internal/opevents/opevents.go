@@ -9,9 +9,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -21,12 +23,28 @@ import (
 var opEventTypes = []struct{ Name, Desc string }{
 	{"endpoint.disabled", "dstream auto-disabled an endpoint after repeated failures"},
 	{"message.attempt.exhausted", "a message delivery exhausted its retries and was dead-lettered"},
+	{"usage.quota_warning", "an org passed its plan's soft usage limit for the current period"},
+	{"usage.quota_exceeded", "an org hit its hard usage ceiling and requests are being refused"},
 }
 
 // SeedOperationalApp ensures orgID has its operational application and the core
 // operational event types. Idempotent; returns the op app id.
 func SeedOperationalApp(ctx context.Context, q *store.Queries, orgID uuid.UUID) (uuid.UUID, error) {
 	app, err := q.EnsureOperationalApp(ctx, store.UUID(orgID))
+	appID := app.ID
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Two publishes raced to seed this org's op app. EnsureOperationalApp is
+		// a single statement: its INSERT hit ON CONFLICT DO NOTHING while the
+		// UNION's SELECT ran on a snapshot taken before the winner committed, so
+		// it saw neither — yet the row exists now, so read it. Without this the
+		// loser's operational event is silently dropped, which is routine for two
+		// workers dead-lettering the same org at once and for the soft and hard
+		// quota alerts, which fire moments apart.
+		var existing store.Application
+		if existing, err = q.GetOperationalApp(ctx, store.UUID(orgID)); err == nil {
+			appID = existing.ID
+		}
+	}
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -37,7 +55,7 @@ func SeedOperationalApp(ctx context.Context, q *store.Queries, orgID uuid.UUID) 
 			return uuid.Nil, err
 		}
 	}
-	return store.GoUUID(app.ID), nil
+	return store.GoUUID(appID), nil
 }
 
 // Publish emits one operational event for orgID by creating a message on the
