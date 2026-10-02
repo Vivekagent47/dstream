@@ -14,7 +14,18 @@ CREATE TABLE organizations (
     name        TEXT NOT NULL,                -- display name shown in the dashboard
     slug        TEXT NOT NULL UNIQUE,         -- URL-safe identifier used in dashboard routes
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Plan and quota. Every column defaults, so an existing deployment
+    -- backfills in the same ALTER with no data migration. 0 means unlimited
+    -- on both tiers: a deployment that configures nothing rejects nothing.
+    plan                TEXT   NOT NULL DEFAULT 'free'
+                          CHECK (plan IN ('free','pro','enterprise','custom')),
+    quota_events_soft   BIGINT NOT NULL DEFAULT 0,
+    quota_events_hard   BIGINT NOT NULL DEFAULT 0,
+    quota_messages_soft BIGINT NOT NULL DEFAULT 0,
+    quota_messages_hard BIGINT NOT NULL DEFAULT 0,
+    quota_period        TEXT   NOT NULL DEFAULT 'month'
+                          CHECK (quota_period IN ('day','month'))
 );
 
 -- users: humans who log into the dashboard (magic-link auth, no passwords).
@@ -472,3 +483,23 @@ CREATE TABLE message_delivery_attempts (
   attempted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX mda_delivery_attempt_idx ON message_delivery_attempts (delivery_id, attempt_num);
+
+-- =========================================================================
+-- Usage metering
+-- =========================================================================
+
+-- usage_rollups: the authoritative per-org usage record, written by the
+-- maintenance sweep. The composite PK makes the rollup an idempotent upsert,
+-- which matters because the sweep re-runs the current period on every worker
+-- restart. Redis holds a counter for the hot-path decision; THIS is the
+-- billing record.
+CREATE TABLE usage_rollups (
+    org_id       UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    period_start TIMESTAMPTZ NOT NULL,
+    metric       TEXT        NOT NULL
+                   CHECK (metric IN ('requests','events','messages','attempts')),
+    count        BIGINT      NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, period_start, metric)
+);
+CREATE INDEX usage_rollups_period_idx ON usage_rollups (period_start DESC);
