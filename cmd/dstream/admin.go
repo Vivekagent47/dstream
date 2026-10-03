@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/spf13/cobra"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
@@ -28,11 +31,133 @@ func adminCmd() *cobra.Command {
 	c.AddCommand(
 		promoteCmd(),
 		bootstrapCmd(),
+		magicLinkCmd(),
 		orgCmd(),
 		memberCmd(),
 		keyCmd(),
 	)
 	return c
+}
+
+// magicLinkCmd mints a sign-in link and prints it, bypassing
+// DSTREAM_OIDC_ENFORCE.
+//
+// This exists because enforcement without a break-glass is a foot-gun: an
+// expired client secret, rotated signing keys, or a down discovery endpoint
+// locks every human out of the deployment — including whoever would fix it.
+// Reaching this command requires shell access to the host, which is a stronger
+// factor than any IdP, and it writes an audit row so the use is visible.
+//
+// It works because enforcement gates minting, not redemption:
+// POST /api/auth/magic-link/verify stays open, so the token printed here is
+// redeemable even with DSTREAM_OIDC_ENFORCE=true.
+func magicLinkCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "magic-link <email>",
+		Short: "Mint a sign-in link for an existing user (break-glass; bypasses SSO enforcement)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			email := strings.ToLower(strings.TrimSpace(args[0]))
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
+			if err != nil {
+				return err
+			}
+			defer pool.Close()
+			q := store.New(pool)
+
+			// Existing users only. Minting for an unknown address would let a
+			// typo create an account through the break-glass, and the audit row
+			// below needs a real user to hang off.
+			u, err := q.GetUserByEmail(ctx, email)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("user %s does not exist; have them sign in once, or use `dstream admin bootstrap`", email)
+				}
+				return fmt.Errorf("lookup user: %w", err)
+			}
+			// audit_logs.org_id is the tenant scope the trail is read by, so
+			// a row with no org is a row nobody can see. Resolved before
+			// minting so a user with no org fails without a live token.
+			orgs, err := q.ListOrgsForUser(ctx, u.ID)
+			if err != nil {
+				return fmt.Errorf("list orgs for %s: %w", email, err)
+			}
+			if len(orgs) == 0 {
+				return fmt.Errorf("user %s belongs to no org; cannot file an audit row for a break-glass sign-in", email)
+			}
+
+			token, err := auth.IssueMagicLink(ctx, q, email, cfg.MagicLinkTTL)
+			if err != nil {
+				return fmt.Errorf("issue magic link: %w", err)
+			}
+
+			// NOT audit.Log: it resolves the actor from a Principal in ctx and
+			// is a documented no-op with a warning when there is none
+			// (internal/audit/log.go) — "out-of-band privileged actions should
+			// not flow through here". A CLI invocation has no principal, so
+			// audit.Log would silently record nothing, which is the opposite of
+			// what a break-glass needs. Insert the row directly instead.
+			//
+			// host + os_user are the operator attribution the actor columns
+			// cannot carry (see below): metadata.actor="cli" says a shell did
+			// it, these say which one. "unknown" rather than "" — an empty
+			// string in an audit row reads as a missing field.
+			host, herr := os.Hostname()
+			if herr != nil {
+				fmt.Fprintf(os.Stderr, "warn: hostname for audit row: %v\n", herr)
+				host = "unknown"
+			}
+			osUser := os.Getenv("USER")
+			if osUser == "" {
+				osUser = "unknown"
+			}
+			meta, err := json.Marshal(map[string]any{
+				"email":   email,
+				"reason":  "sso_enforced_break_glass",
+				"actor":   "cli",
+				"host":    host,
+				"os_user": osUser,
+			})
+			if err != nil {
+				return fmt.Errorf("encode audit metadata: %w", err)
+			}
+			if err := q.InsertAuditLog(ctx, store.InsertAuditLogParams{
+				OrgID: orgs[0].ID,
+				// audit_logs.org_id is ON DELETE SET NULL, so without the
+				// snapshot a break-glass row outlives its org with no org
+				// identity at all. audit.Log sets it for the same reason.
+				OrgNameSnapshot: &orgs[0].Name,
+				// A NULL actor is NOT insertable: audit_logs_check requires
+				// exactly one of (actor_user_id, actor_api_key_id) to be
+				// non-null, and the real actor here is whoever holds shell
+				// access, not a dstream user. So the row names its target as
+				// its own actor and metadata.actor="cli" carries the real
+				// provenance — the alternative, skipping the row, would make
+				// the break-glass invisible, which is worse than a
+				// self-referential one.
+				ActorUserID:        u.ID,
+				ActorEmailSnapshot: &email,
+				Action:             "auth.break_glass_magic_link",
+				TargetType:         "user",
+				TargetID:           u.ID,
+				Metadata:           meta,
+			}); err != nil {
+				// The token exists but was never printed and is never logged,
+				// so it is unusable by anyone and expires on its own. Fail
+				// loudly rather than hand out an unaudited sign-in link.
+				return fmt.Errorf("record break-glass audit row: %w", err)
+			}
+
+			fmt.Printf("%s/auth/verify?token=%s\n", strings.TrimRight(cfg.AppBaseURL, "/"), url.QueryEscape(token))
+			fmt.Println("\nThis link bypasses SSO enforcement and is single-use. It expires in", cfg.MagicLinkTTL)
+			return nil
+		},
+	}
 }
 
 func promoteCmd() *cobra.Command {
@@ -97,22 +222,29 @@ func bootstrapCmd() *cobra.Command {
 				}
 			}
 
-			org, err := q.GetOrganizationBySlug(ctx, orgSlug)
-			if err != nil {
+			// GetOrganizationBySlug and CreateOrganization return distinct
+			// pinned row types (see db/queries/identity.sql), so only the
+			// shared field this function needs — ID — is carried across the
+			// two branches.
+			var orgID pgtype.UUID
+			if orgRow, err := q.GetOrganizationBySlug(ctx, orgSlug); err != nil {
 				if !errors.Is(err, pgx.ErrNoRows) {
 					return fmt.Errorf("lookup org: %w", err)
 				}
-				org, err = q.CreateOrganization(ctx, store.CreateOrganizationParams{
+				created, err := q.CreateOrganization(ctx, store.CreateOrganizationParams{
 					Name: orgSlug,
 					Slug: orgSlug,
 				})
 				if err != nil {
 					return fmt.Errorf("create org: %w", err)
 				}
+				orgID = created.ID
+			} else {
+				orgID = orgRow.ID
 			}
 
 			if err := q.AddOrgMember(ctx, store.AddOrgMemberParams{
-				OrgID:  org.ID,
+				OrgID:  orgID,
 				UserID: user.ID,
 				Role:   string(auth.RoleOwner),
 			}); err != nil {
@@ -127,7 +259,7 @@ func bootstrapCmd() *cobra.Command {
 
 			// Idempotent; backfill covers pre-existing orgs. Admin tooling
 			// tolerates a seed failure (log + continue).
-			if _, err := opevents.SeedOperationalApp(ctx, q, store.GoUUID(org.ID)); err != nil {
+			if _, err := opevents.SeedOperationalApp(ctx, q, store.GoUUID(orgID)); err != nil {
 				fmt.Fprintf(os.Stderr, "warn: seed operational app: %v\n", err)
 			}
 
@@ -140,16 +272,17 @@ func bootstrapCmd() *cobra.Command {
 				label = "bootstrap"
 			}
 			if _, err := q.CreateAPIKey(ctx, store.CreateAPIKeyParams{
-				OrgID:   org.ID,
+				OrgID:   orgID,
 				Name:    label,
 				Prefix:  prefix,
 				KeyHash: hash,
+				Role:    string(auth.RoleAdmin), // bootstrap key drives setup
 			}); err != nil {
 				return fmt.Errorf("create api key: %w", err)
 			}
 
 			fmt.Printf("user:    %s\n", email)
-			fmt.Printf("org:     %s (id=%s)\n", orgSlug, store.GoUUID(org.ID))
+			fmt.Printf("org:     %s (id=%s)\n", orgSlug, store.GoUUID(orgID))
 			fmt.Printf("api key: %s\n", full)
 			fmt.Println("\nSet it in your shell:")
 			fmt.Printf("  export DSTREAM_API_KEY=%s\n", full)
@@ -350,6 +483,7 @@ func keyCreateCmd() *cobra.Command {
 				Name:    name,
 				Prefix:  prefix,
 				KeyHash: hash,
+				Role:    string(auth.RoleAdmin),
 			})
 			if err != nil {
 				return fmt.Errorf("create key: %w", err)

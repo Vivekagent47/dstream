@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Copy, MoreHorizontal, Plus, Search, Send } from 'lucide-react'
 
 import { api, qk, type Destination } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
@@ -66,6 +67,7 @@ const typeLabel = (t: string) => (t === 'http' ? 'HTTP' : t === 'cli' ? 'CLI' : 
 function DestinationsPage() {
   const qc = useQueryClient()
   const { data: destinations } = useQuery(destinationsQuery)
+  const { isAdmin } = useRole()
 
   const [q, setQ] = useState('')
   const [type, setType] = useState('all')
@@ -205,29 +207,40 @@ function DestinationsPage() {
                   {new Date(d.created_at).toLocaleDateString()}
                 </TableCell>
                 <TableCell className="pr-6 text-right">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-8 w-8"
-                        aria-label="Destination actions"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      {d.type === 'http' && d.url && (
-                        <DropdownMenuItem onClick={() => copyUrl(d.url as string)}>
-                          Copy URL
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={() => setDeleteTarget(d)} className="text-destructive">
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {/* Nothing to offer a member on a non-HTTP destination — the
+                      only other item is admin-only delete. */}
+                  {(isAdmin || (d.type === 'http' && d.url)) && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          aria-label="Destination actions"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        {d.type === 'http' && d.url && (
+                          <DropdownMenuItem onClick={() => copyUrl(d.url as string)}>
+                            Copy URL
+                          </DropdownMenuItem>
+                        )}
+                        {isAdmin && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => setDeleteTarget(d)}
+                              className="text-destructive"
+                            >
+                              Delete
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -355,7 +368,9 @@ function CreateDestinationDialog({
             <Label className="mb-2 block">Type</Label>
             <Select value={type} onValueChange={(v) => setType((v as 'http' | 'cli') ?? 'http')}>
               <SelectTrigger className="w-full">
-                <SelectValue>{(v: string | null) => (v ? typeLabel(v) : 'Select a type')}</SelectValue>
+                <SelectValue>
+                  {(v: string | null) => (v ? typeLabel(v) : 'Select a type')}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {DEST_TYPES.map((t) => (

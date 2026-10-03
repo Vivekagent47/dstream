@@ -12,12 +12,7 @@ import {
   type ChartConfig,
 } from '#/components/ui/chart'
 
-import {
-  api,
-  qk,
-  type EventsPage as EventsPageData,
-  type EventHistogramBucket,
-} from '#/lib/api'
+import { api, qk, type EventsPage as EventsPageData, type EventHistogramBucket } from '#/lib/api'
 import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
@@ -59,7 +54,16 @@ const RANGES = [
 ] as const
 type RangeKey = (typeof RANGES)[number]['key']
 
-const STATUSES = ['queued', 'in_flight', 'delivered', 'failed', 'filtered', 'paused', 'dead', 'discarded'] as const
+const STATUSES = [
+  'queued',
+  'in_flight',
+  'delivered',
+  'failed',
+  'filtered',
+  'paused',
+  'dead',
+  'discarded',
+] as const
 
 const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant']> = {
   delivered: 'success',
@@ -125,8 +129,7 @@ function EventsPage() {
 
   const { data, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
     queryKey: qk.events({ limit: PAGE_SIZE, ...filters }),
-    queryFn: ({ pageParam }) =>
-      api.listEvents({ limit: PAGE_SIZE, cursor: pageParam, ...filters }),
+    queryFn: ({ pageParam }) => api.listEvents({ limit: PAGE_SIZE, cursor: pageParam, ...filters }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage: EventsPageData) => lastPage.next_cursor,
     refetchInterval: 5000,
@@ -167,7 +170,8 @@ function EventsPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Events"
+      <PageHeader
+        title="Events"
         help="Every received webhook and its delivery status — inspect payloads, retry, or replay."
       />
 
@@ -239,9 +243,7 @@ function EventsPage() {
       />
 
       <div className="flex-1 overflow-x-auto">
-        {error && (
-          <p className="px-6 py-3 text-sm text-destructive">{(error as Error).message}</p>
-        )}
+        {error && <p className="px-6 py-3 text-sm text-destructive">{(error as Error).message}</p>}
         <Table>
           <TableHeader>
             <TableRow>
@@ -257,7 +259,7 @@ function EventsPage() {
               const l = connLabel.get(e.connection_id)
               return (
                 <TableRow key={e.id}>
-                  <TableCell className="pl-6 whitespace-nowrap font-mono text-xs">
+                  <TableCell className="pl-6 font-mono text-xs whitespace-nowrap">
                     <Link
                       to="/events/$id"
                       params={{ id: e.id }}
@@ -276,7 +278,7 @@ function EventsPage() {
                       </Badge>
                     )}
                   </TableCell>
-                  <TableCell className="whitespace-nowrap font-mono text-xs">
+                  <TableCell className="font-mono text-xs whitespace-nowrap">
                     {l ? (
                       <span className="inline-flex items-center gap-1.5">
                         {l.source}
@@ -373,7 +375,12 @@ function Histogram({
   const fmtLabel = (ts: string) => {
     const d = new Date(ts)
     return bucket === 'day'
-      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+      ? d.toLocaleDateString([], {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          timeZone: 'UTC',
+        })
       : d.toLocaleString()
   }
 

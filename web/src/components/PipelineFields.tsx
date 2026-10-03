@@ -21,7 +21,10 @@ type TransformPreviewFn = (input: { js: string; payload: unknown }) => Promise<{
 // raw axios error (message in response.data.error).
 function previewError(e: unknown): string {
   if (e && typeof e === 'object') {
-    const anyE = e as { response?: { data?: { error?: string; message?: string } }; message?: string }
+    const anyE = e as {
+      response?: { data?: { error?: string; message?: string } }
+      message?: string
+    }
     const be = anyE.response?.data?.error ?? anyE.response?.data?.message
     if (typeof be === 'string' && be) return be
     if (typeof anyE.message === 'string' && anyE.message) return anyE.message
@@ -133,9 +136,7 @@ export function PipelineFields({
           </Button>
           {filterResult != null && (
             <span
-              className={
-                'font-mono text-xs ' + (filterOk ? 'text-foreground' : 'text-destructive')
-              }
+              className={'font-mono text-xs ' + (filterOk ? 'text-foreground' : 'text-destructive')}
             >
               {filterResult}
             </span>

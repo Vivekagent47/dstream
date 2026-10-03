@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,6 +29,7 @@ import (
 	mw "github.com/Vivekagent47/dstream/internal/middleware"
 	"github.com/Vivekagent47/dstream/internal/store"
 	"github.com/Vivekagent47/dstream/internal/tracing"
+	"github.com/Vivekagent47/dstream/internal/usage"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -67,8 +69,23 @@ func serverCmd() *cobra.Command {
 			if cfg.DevMode && !isLocalBaseURL(cfg.PublicBaseURL) {
 				return errors.New("DSTREAM_DEV_MODE must be false when DSTREAM_PUBLIC_BASE_URL is not localhost (it logs plaintext magic-link tokens)")
 			}
+			// Fail fast on a broken SSO config: every one of these would
+			// otherwise surface as a confusing error inside the auth path at
+			// a user's first login.
+			if err := cfg.ValidateOIDC(); err != nil {
+				return err
+			}
 			log := logging.New(cfg.LogLevel, cfg.LogFormat)
 			log.Info("starting server", "addr", cfg.HTTPAddr, "version", version)
+			// The redirect URI must match what is registered at the IdP, and a
+			// mismatch is the most common OIDC setup failure — this log line is
+			// the only way an operator discovers the exact value to register.
+			if cfg.OIDC.Enabled() {
+				log.Info("sso enabled",
+					"issuer", cfg.OIDC.Issuer,
+					"redirect_uri", strings.TrimRight(cfg.PublicBaseURL, "/")+"/api/auth/sso/callback",
+					"enforce", cfg.OIDC.Enforce)
+			}
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -139,6 +156,17 @@ func serverCmd() *cobra.Command {
 			})
 			r.With(auth.SuperAdminOnly(q, signer)).Handle("/metrics", metrics.Handler())
 
+			// One gate for both enforcement points, so ingest and publish read
+			// a single cached copy of every org's limits. Loaded once here so
+			// the first requests after a restart are not treated as unlimited;
+			// a failure only logs, because the gate serves "unlimited" until a
+			// reload lands and quota enforcement is not worth failing a boot
+			// over.
+			quota := &usage.Gate{Log: log, Queries: q, Redis: rdb, Queue: dq}
+			if err := quota.Reload(ctx); err != nil {
+				log.Warn("usage: initial quota limits load failed", "err", err)
+			}
+
 			ih := &ingest.Handler{
 				Log:            log,
 				Queries:        q,
@@ -149,8 +177,35 @@ func serverCmd() *cobra.Command {
 				RateLimitRPS:   cfg.IngestRateLimitRPS,
 				RateLimitBurst: cfg.IngestRateLimitBurst,
 				MaxWebhookHops: cfg.MaxWebhookHops,
+				Quota:          quota,
 			}
 			ih.Mount(r)
+
+			// Discovery runs once, here: a wrong issuer or an unreachable IdP
+			// fails the boot instead of every login. The redirect URL is the
+			// same expression the "sso enabled" log line above prints, because
+			// that printed value is what the operator registers at the IdP.
+			var ssoAuth auth.Authenticator
+			if cfg.OIDC.Enabled() {
+				// Bounded, because this call sits before ListenAndServe: an IdP
+				// that accepts the TCP connection and never answers (a WAF, an
+				// overloaded proxy) would otherwise hang the boot forever with
+				// nothing bound — no /healthz, no ingest, no dashboard — so an
+				// IdP incident would read as "dstream is down" rather than
+				// "SSO is broken".
+				dctx, dcancel := context.WithTimeout(ctx, 10*time.Second)
+				defer dcancel()
+				a, err := auth.NewOIDCAuthenticator(dctx, cfg.OIDC.Issuer,
+					cfg.OIDC.ClientID, cfg.OIDC.ClientSecret,
+					strings.TrimRight(cfg.PublicBaseURL, "/")+"/api/auth/sso/callback",
+					cfg.OIDC.Scopes)
+				if err != nil {
+					// The wrapped error already names the issuer; this adds the
+					// two things an operator has to check.
+					return fmt.Errorf("sso discovery failed; check DSTREAM_OIDC_ISSUER and IdP reachability: %w", err)
+				}
+				ssoAuth = a
+			}
 
 			api.Mount(r, api.Deps{
 				Log:                      log,
@@ -167,6 +222,9 @@ func serverCmd() *cobra.Command {
 				SecretGrace:              cfg.WebhookSecretGrace,
 				Portal:                   portalSigner,
 				AllowPrivateDestinations: cfg.AllowPrivateDestinations,
+				Authenticator:            ssoAuth,
+				OIDC:                     cfg.OIDC,
+				Quota:                    quota,
 			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
 
 			admin.Mount(r, admin.Deps{

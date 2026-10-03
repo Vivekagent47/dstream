@@ -140,7 +140,9 @@ function Stat({ title, value }: { title: string; value: string | null }) {
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 items-center justify-center">
-        <span className={value == null ? 'text-sm text-muted-foreground' : 'text-3xl font-semibold'}>
+        <span
+          className={value == null ? 'text-sm text-muted-foreground' : 'text-3xl font-semibold'}
+        >
           {value ?? '—'}
         </span>
       </CardContent>
@@ -162,9 +164,7 @@ export function DestinationMetrics({ id }: { id: string }) {
   })
 
   const series = data?.series ?? []
-  const present = DELIVERY_STATUS_ORDER.filter((k) =>
-    series.some((b) => (b.counts?.[k] ?? 0) > 0),
-  )
+  const present = DELIVERY_STATUS_ORDER.filter((k) => series.some((b) => (b.counts?.[k] ?? 0) > 0))
   const chartData = series.map((b) => ({ ts: b.ts, ...b.counts }))
   const rate = data?.delivery_rate
   const latency = data?.avg_latency_ms ?? null
@@ -182,7 +182,11 @@ export function DestinationMetrics({ id }: { id: string }) {
         className="min-h-40 flex-[3]"
       >
         <ChartContainer config={deliveryConfig} className="aspect-auto h-40 w-full">
-          <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap={2}>
+          <BarChart
+            data={chartData}
+            margin={{ top: 4, right: 4, bottom: 0, left: 4 }}
+            barCategoryGap={2}
+          >
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis
               dataKey="ts"
@@ -193,7 +197,9 @@ export function DestinationMetrics({ id }: { id: string }) {
               tickFormatter={(ts) => fmtTick(ts as string, active.bucket)}
             />
             <ChartTooltip
-              content={<ChartTooltipContent labelFormatter={(v) => fmtLabel(v as string, active.bucket)} />}
+              content={
+                <ChartTooltipContent labelFormatter={(v) => fmtLabel(v as string, active.bucket)} />
+              }
             />
             <ChartLegend content={<ChartLegendContent />} />
             {present.map((k, i) => (
@@ -242,7 +248,11 @@ export function SourceMetrics({ id }: { id: string }) {
         className="min-h-40 flex-[3]"
       >
         <ChartContainer config={requestConfig} className="aspect-auto h-40 w-full">
-          <BarChart data={series} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap={2}>
+          <BarChart
+            data={series}
+            margin={{ top: 4, right: 4, bottom: 0, left: 4 }}
+            barCategoryGap={2}
+          >
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis
               dataKey="ts"
@@ -253,7 +263,9 @@ export function SourceMetrics({ id }: { id: string }) {
               tickFormatter={(ts) => fmtTick(ts as string, active.bucket)}
             />
             <ChartTooltip
-              content={<ChartTooltipContent labelFormatter={(v) => fmtLabel(v as string, active.bucket)} />}
+              content={
+                <ChartTooltipContent labelFormatter={(v) => fmtLabel(v as string, active.bucket)} />
+              }
             />
             <Bar dataKey="count" fill="var(--color-count)" radius={[3, 3, 0, 0]} />
           </BarChart>
@@ -261,10 +273,7 @@ export function SourceMetrics({ id }: { id: string }) {
       </ChartCard>
       <div className="grid min-h-32 flex-[2] gap-3 xl:grid-cols-2">
         <Stat title="Requests rate" value={rate == null ? null : `${rate.toFixed(1)}/day`} />
-        <Stat
-          title="Avg. events per request"
-          value={fanout == null ? null : fanout.toFixed(2)}
-        />
+        <Stat title="Avg. events per request" value={fanout == null ? null : fanout.toFixed(2)} />
       </div>
     </div>
   )

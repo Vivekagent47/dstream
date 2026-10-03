@@ -71,7 +71,12 @@ export function SendMessageDialog({
         payload: parsedPayload,
         ...(eventId.trim() ? { event_id: eventId.trim() } : {}),
         ...(channels.trim()
-          ? { channels: channels.split(',').map((c) => c.trim()).filter(Boolean) }
+          ? {
+              channels: channels
+                .split(',')
+                .map((c) => c.trim())
+                .filter(Boolean),
+            }
           : {}),
       }),
     onSuccess: (res) => {

@@ -18,7 +18,9 @@ import {
   TableRow,
 } from '#/components/ui/table'
 
-export const Route = createFileRoute('/portal/messages/$messageId')({ component: PortalMessageDetail })
+export const Route = createFileRoute('/portal/messages/$messageId')({
+  component: PortalMessageDetail,
+})
 
 const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant']> = {
   delivered: 'success',
@@ -31,9 +33,7 @@ const statusVariant: Record<string, React.ComponentProps<typeof Badge>['variant'
 
 function statusBadge(status: number | null | undefined) {
   if (status == null) return <span className="text-muted-foreground">—</span>
-  return (
-    <Badge variant={status >= 200 && status < 300 ? 'success' : 'destructive'}>{status}</Badge>
-  )
+  return <Badge variant={status >= 200 && status < 300 ? 'success' : 'destructive'}>{status}</Badge>
 }
 
 function PortalMessageDetail() {
@@ -174,7 +174,10 @@ function Activity({ messageId }: { messageId: string }) {
               ))}
               {deliveryRows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={5}
+                    className="py-12 text-center text-sm text-muted-foreground"
+                  >
                     No deliveries yet.
                   </TableCell>
                 </TableRow>
@@ -211,7 +214,10 @@ function Activity({ messageId }: { messageId: string }) {
               ))}
               {attemptRows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
+                  <TableCell
+                    colSpan={6}
+                    className="py-12 text-center text-sm text-muted-foreground"
+                  >
                     No delivery attempts yet.
                   </TableCell>
                 </TableRow>
@@ -258,9 +264,7 @@ function AttemptRow({
                   Response headers
                 </div>
                 <pre className="overflow-x-auto rounded border border-border bg-muted px-3 py-2 font-mono text-xs">
-                  {a.response_headers != null
-                    ? JSON.stringify(a.response_headers, null, 2)
-                    : '—'}
+                  {a.response_headers != null ? JSON.stringify(a.response_headers, null, 2) : '—'}
                 </pre>
               </div>
               <div>

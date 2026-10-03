@@ -24,6 +24,7 @@ import { Route as ConsoleIndexRouteImport } from './routes/console/index'
 import { Route as ConnectionsIndexRouteImport } from './routes/connections/index'
 import { Route as ApplicationsIndexRouteImport } from './routes/applications/index'
 import { Route as SourcesIdRouteImport } from './routes/sources/$id'
+import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
 import { Route as SettingsOrgRouteImport } from './routes/settings/org'
 import { Route as SettingsMembersRouteImport } from './routes/settings/members'
@@ -34,6 +35,7 @@ import { Route as OrgsNewRouteImport } from './routes/orgs/new'
 import { Route as InvitesTokenRouteImport } from './routes/invites/$token'
 import { Route as EventsIdRouteImport } from './routes/events/$id'
 import { Route as DestinationsIdRouteImport } from './routes/destinations/$id'
+import { Route as ConsoleUsageRouteImport } from './routes/console/usage'
 import { Route as ConsoleQueuesRouteImport } from './routes/console/queues'
 import { Route as ConnectionsIdRouteImport } from './routes/connections/$id'
 import { Route as AuthVerifyRouteImport } from './routes/auth/verify'
@@ -119,6 +121,11 @@ const SourcesIdRoute = SourcesIdRouteImport.update({
   path: '/sources/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsUsageRoute = SettingsUsageRouteImport.update({
+  id: '/settings/usage',
+  path: '/settings/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsProfileRoute = SettingsProfileRouteImport.update({
   id: '/settings/profile',
   path: '/settings/profile',
@@ -167,6 +174,11 @@ const EventsIdRoute = EventsIdRouteImport.update({
 const DestinationsIdRoute = DestinationsIdRouteImport.update({
   id: '/destinations/$id',
   path: '/destinations/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConsoleUsageRoute = ConsoleUsageRouteImport.update({
+  id: '/console/usage',
+  path: '/console/usage',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsoleQueuesRoute = ConsoleQueuesRouteImport.update({
@@ -220,6 +232,7 @@ export interface FileRoutesByFullPath {
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/console/queues': typeof ConsoleQueuesRoute
+  '/console/usage': typeof ConsoleUsageRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -230,6 +243,7 @@ export interface FileRoutesByFullPath {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/sources/$id': typeof SourcesIdRoute
   '/applications/': typeof ApplicationsIndexRoute
   '/connections/': typeof ConnectionsIndexRoute
@@ -254,6 +268,7 @@ export interface FileRoutesByTo {
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/console/queues': typeof ConsoleQueuesRoute
+  '/console/usage': typeof ConsoleUsageRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -264,6 +279,7 @@ export interface FileRoutesByTo {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/sources/$id': typeof SourcesIdRoute
   '/applications': typeof ApplicationsIndexRoute
   '/connections': typeof ConnectionsIndexRoute
@@ -290,6 +306,7 @@ export interface FileRoutesById {
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/console/queues': typeof ConsoleQueuesRoute
+  '/console/usage': typeof ConsoleUsageRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -300,6 +317,7 @@ export interface FileRoutesById {
   '/settings/members': typeof SettingsMembersRoute
   '/settings/org': typeof SettingsOrgRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/sources/$id': typeof SourcesIdRoute
   '/applications/': typeof ApplicationsIndexRoute
   '/connections/': typeof ConnectionsIndexRoute
@@ -327,6 +345,7 @@ export interface FileRouteTypes {
     | '/auth/verify'
     | '/connections/$id'
     | '/console/queues'
+    | '/console/usage'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -337,6 +356,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/settings/profile'
+    | '/settings/usage'
     | '/sources/$id'
     | '/applications/'
     | '/connections/'
@@ -361,6 +381,7 @@ export interface FileRouteTypes {
     | '/auth/verify'
     | '/connections/$id'
     | '/console/queues'
+    | '/console/usage'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -371,6 +392,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/settings/profile'
+    | '/settings/usage'
     | '/sources/$id'
     | '/applications'
     | '/connections'
@@ -396,6 +418,7 @@ export interface FileRouteTypes {
     | '/auth/verify'
     | '/connections/$id'
     | '/console/queues'
+    | '/console/usage'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -406,6 +429,7 @@ export interface FileRouteTypes {
     | '/settings/members'
     | '/settings/org'
     | '/settings/profile'
+    | '/settings/usage'
     | '/sources/$id'
     | '/applications/'
     | '/connections/'
@@ -432,6 +456,7 @@ export interface RootRouteChildren {
   AuthVerifyRoute: typeof AuthVerifyRoute
   ConnectionsIdRoute: typeof ConnectionsIdRoute
   ConsoleQueuesRoute: typeof ConsoleQueuesRoute
+  ConsoleUsageRoute: typeof ConsoleUsageRoute
   DestinationsIdRoute: typeof DestinationsIdRoute
   EventsIdRoute: typeof EventsIdRoute
   InvitesTokenRoute: typeof InvitesTokenRoute
@@ -442,6 +467,7 @@ export interface RootRouteChildren {
   SettingsMembersRoute: typeof SettingsMembersRoute
   SettingsOrgRoute: typeof SettingsOrgRoute
   SettingsProfileRoute: typeof SettingsProfileRoute
+  SettingsUsageRoute: typeof SettingsUsageRoute
   SourcesIdRoute: typeof SourcesIdRoute
   ApplicationsIndexRoute: typeof ApplicationsIndexRoute
   ConnectionsIndexRoute: typeof ConnectionsIndexRoute
@@ -564,6 +590,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SourcesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/usage': {
+      id: '/settings/usage'
+      path: '/settings/usage'
+      fullPath: '/settings/usage'
+      preLoaderRoute: typeof SettingsUsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings/profile': {
       id: '/settings/profile'
       path: '/settings/profile'
@@ -632,6 +665,13 @@ declare module '@tanstack/react-router' {
       path: '/destinations/$id'
       fullPath: '/destinations/$id'
       preLoaderRoute: typeof DestinationsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/console/usage': {
+      id: '/console/usage'
+      path: '/console/usage'
+      fullPath: '/console/usage'
+      preLoaderRoute: typeof ConsoleUsageRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/console/queues': {
@@ -717,6 +757,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthVerifyRoute: AuthVerifyRoute,
   ConnectionsIdRoute: ConnectionsIdRoute,
   ConsoleQueuesRoute: ConsoleQueuesRoute,
+  ConsoleUsageRoute: ConsoleUsageRoute,
   DestinationsIdRoute: DestinationsIdRoute,
   EventsIdRoute: EventsIdRoute,
   InvitesTokenRoute: InvitesTokenRoute,
@@ -727,6 +768,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsMembersRoute: SettingsMembersRoute,
   SettingsOrgRoute: SettingsOrgRoute,
   SettingsProfileRoute: SettingsProfileRoute,
+  SettingsUsageRoute: SettingsUsageRoute,
   SourcesIdRoute: SourcesIdRoute,
   ApplicationsIndexRoute: ApplicationsIndexRoute,
   ConnectionsIndexRoute: ConnectionsIndexRoute,

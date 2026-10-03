@@ -87,12 +87,17 @@ func seedOrg(t *testing.T, q *store.Queries) (userID, orgID uuid.UUID) {
 // newRouter mounts /api with the real Authenticate + RequireOrg middleware and
 // lets the caller register just the routes under test via `register`.
 func newRouter(q *store.Queries, dq *dqueue.Client, s *auth.SessionSigner, register func(chi.Router, Handlers)) *chi.Mux {
-	h := Handlers{Log: discardLog(), Queries: q, Queue: dq}
+	return newRouterWith(Handlers{Log: discardLog(), Queries: q, Queue: dq}, s, register)
+}
+
+// newRouterWith is newRouter over a caller-built Handlers, for tests that need
+// a field newRouter does not set (the quota gate).
+func newRouterWith(h Handlers, s *auth.SessionSigner, register func(chi.Router, Handlers)) *chi.Mux {
 	r := chi.NewRouter()
 	r.Route("/api", func(r chi.Router) {
-		r.Use(auth.Authenticate(q, s))
+		r.Use(auth.Authenticate(h.Queries, s))
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireOrg(q))
+			r.Use(auth.RequireOrg(h.Queries))
 			register(r, h)
 		})
 	})

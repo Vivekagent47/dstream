@@ -14,10 +14,12 @@ import (
 	"github.com/Vivekagent47/dstream/internal/api/outbound"
 	"github.com/Vivekagent47/dstream/internal/api/pipeline"
 	"github.com/Vivekagent47/dstream/internal/auth"
+	"github.com/Vivekagent47/dstream/internal/config"
 	"github.com/Vivekagent47/dstream/internal/deliver"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/ingest"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
 // Deps bundles everything an API handler might need so we can wire them via
@@ -54,6 +56,15 @@ type Deps struct {
 	SecretGrace time.Duration
 	// Portal signs App Portal tokens for the mint/revoke endpoints.
 	Portal *auth.PortalSigner
+	// Authenticator is the OIDC seam for the SSO routes. nil when SSO is not
+	// configured, in which case those routes 404.
+	Authenticator auth.Authenticator
+	// OIDC carries the SSO provisioning defaults and the enforce flag.
+	OIDC config.OIDCConfig
+	// Quota enforces per-org usage limits on publish. Shared with the ingest
+	// handler so both paths read one cached snapshot of the limits. nil = no
+	// enforcement.
+	Quota *usage.Gate
 }
 
 // Mount wires the full /api router onto the parent. `extra` middleware is
@@ -62,13 +73,15 @@ type Deps struct {
 // still declared here so the auth layering stays visible in one place.
 func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) {
 	id := identity.Handlers{
-		Log:        d.Log,
-		Queries:    d.Queries,
-		Pool:       d.Pool,
-		Redis:      d.Redis,
-		Queue:      d.Queue,
-		Signer:     d.Signer,
-		AppBaseURL: d.AppBaseURL,
+		Log:           d.Log,
+		Queries:       d.Queries,
+		Pool:          d.Pool,
+		Redis:         d.Redis,
+		Queue:         d.Queue,
+		Signer:        d.Signer,
+		AppBaseURL:    d.AppBaseURL,
+		Authenticator: d.Authenticator,
+		OIDC:          d.OIDC,
 	}
 	pl := pipeline.Handlers{
 		Log:              d.Log,
@@ -95,6 +108,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		SecretGrace: d.SecretGrace,
 		Portal:      d.Portal,
 		AppBaseURL:  d.AppBaseURL,
+		Quota:       d.Quota,
 	}
 
 	parent.Route("/api", func(r chi.Router) {
@@ -110,6 +124,44 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 			// CORS preflight, blocking login-CSRF / session fixation.
 			r.Post("/magic-link/verify", id.VerifyMagicLink)
 			r.Post("/logout", id.Logout)
+
+			// Which login methods the login page should render. No secret:
+			// a deployment's use of SSO is visible from its login page.
+			r.Get("/methods", id.AuthMethods)
+
+			// SSO. These must be GET — an IdP redirects the browser back by
+			// navigation, which cannot be a POST — so the login-CSRF /
+			// session-fixation problem that made /magic-link/verify POST-only
+			// has to be closed a different way.
+			//
+			// What closes it is the dstream_sso_state cookie: /sso/start sets
+			// it alongside the Redis state row, and the callback refuses any
+			// state the browser cannot also present in that cookie. The nonce
+			// and the single-use (GETDEL) state are NOT sufficient on their
+			// own — /sso/start is unauthenticated, so an attacker can mint a
+			// valid state and a genuine ID token for his own account, then
+			// phish the victim into a top-level GET of the callback. An
+			// attacker cannot set a cookie in the victim's browser for this
+			// origin, absent control of a sibling subdomain, which is what
+			// makes the binding the load-bearing part. Do not remove it.
+			//
+			// Named residual: that caveat is real here. A Domain=example.com
+			// cookie set from any compromised sibling subdomain IS sent to
+			// this origin and r.Cookie returns the first match, and
+			// dstream_sso_state is not __Host- prefixed (that requires
+			// Secure, which is false in local HTTP dev). Unlike
+			// dstream_session (HMAC) and dstream_csrf (bound to the session
+			// value), this cookie's entire security property is that its
+			// value cannot be injected — so it is the one cookie in the repo
+			// where a sibling-subdomain write is directly exploitable. Same
+			// caveat as internal/middleware/csrf.go's cookie-tossing note.
+			// See ssoStateCookieName in identity/sso.go.
+			//
+			// Both routes stay mounted when SSO is unconfigured and 404 from
+			// the handler, so the route table does not change shape with
+			// configuration.
+			r.Get("/sso/start", id.StartSSO)
+			r.Get("/sso/callback", id.CallbackSSO)
 		})
 
 		// Invite peek/accept: peek is fully public (so a logged-out user
@@ -161,8 +213,25 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 			// principal must have selected an active org.
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireOrg(d.Queries))
+				// DELETE ⇒ admin, for every route in this group including
+				// ones added later. RequireOrg must stay above: it is what
+				// resolves a session principal's membership row into
+				// Principal.Role (an API key carries its role from
+				// Authenticate already).
+				r.Use(auth.AdminForDestructive)
+
+				// adminOnly marks the privileged routes whose danger isn't
+				// implied by their method: secret material, outbound publish,
+				// and portal-access minting.
+				adminOnly := auth.RequireRole(auth.RoleAdmin)
 
 				r.Get("/audit", id.ListAudit)
+
+				// Current-period usage + history for the active org. Read-only
+				// for every role: quotas are granted by the platform operator
+				// at PATCH /admin/orgs/{org_id}/plan, not by the tenant.
+				r.Get("/usage", id.GetUsage)
+				r.Get("/usage/history", id.GetUsageHistory)
 
 				// Filter/transform dev-time preview (stateless pipeline funcs).
 				r.Post("/filter-preview", pipeline.FilterPreview)
@@ -235,8 +304,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 					r.Get("/{app_id}", ob.GetApplication)
 					r.Patch("/{app_id}", ob.PatchApplication)
 					r.Delete("/{app_id}", ob.DeleteApplication)
-					r.Post("/{app_id}/portal-access", ob.CreatePortalAccess)
-					r.Post("/{app_id}/portal-access/revoke", ob.RevokePortalAccess)
+					r.With(adminOnly).Post("/{app_id}/portal-access", ob.CreatePortalAccess)
+					r.With(adminOnly).Post("/{app_id}/portal-access/revoke", ob.RevokePortalAccess)
 
 					r.Route("/{app_id}/endpoints", func(r chi.Router) {
 						r.Get("/", ob.ListEndpoints)
@@ -244,8 +313,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 						r.Get("/{id}", ob.GetEndpoint)
 						r.Patch("/{id}", ob.PatchEndpoint)
 						r.Delete("/{id}", ob.DeleteEndpoint)
-						r.Get("/{id}/secret", ob.GetEndpointSecret)
-						r.Post("/{id}/rotate-secret", ob.RotateEndpointSecret)
+						r.With(adminOnly).Get("/{id}/secret", ob.GetEndpointSecret)
+						r.With(adminOnly).Post("/{id}/rotate-secret", ob.RotateEndpointSecret)
 						r.Post("/{id}/recover", ob.RecoverEndpoint)
 						r.Post("/{id}/test", ob.TestEndpoint)
 						r.Get("/{id}/attempts", ob.ListEndpointAttempts)
@@ -253,7 +322,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 
 					r.Route("/{app_id}/messages", func(r chi.Router) {
 						r.Get("/", ob.ListMessages)
-						r.Post("/", ob.CreateMessage)
+						r.With(adminOnly).Post("/", ob.CreateMessage)
 						r.Get("/{id}", ob.GetMessage)
 						r.Get("/{id}/attempts", ob.ListMessageAttempts)
 						r.Get("/{id}/deliveries", ob.ListMessageDeliveries)

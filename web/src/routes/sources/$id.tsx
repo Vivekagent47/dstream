@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Copy, MinusCircle, Pencil, Trash2, Webhook } from 'lucide-react'
 
 import { api, qk, type Connection, type Source } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow, copyText } from '#/components/detail-page'
 import { SourceMetrics } from '#/components/entity-metrics'
@@ -86,10 +87,7 @@ function SourceDetail() {
         help="This source's ingest URL, allowed methods, signing config, and recent activity."
         title={
           <span className="flex min-w-0 items-center gap-1.5">
-            <Link
-              to="/sources"
-              className="font-normal text-muted-foreground hover:text-foreground"
-            >
+            <Link to="/sources" className="font-normal text-muted-foreground hover:text-foreground">
               Sources
             </Link>
             <span className="font-normal text-muted-foreground">/</span>
@@ -114,7 +112,9 @@ function SourceDetail() {
           >
             {t.label}
             {t.key === 'connections' && connections && connections.length > 0 ? (
-              <Badge variant="secondary" className="px-1.5">{connections.length}</Badge>
+              <Badge variant="secondary" className="px-1.5">
+                {connections.length}
+              </Badge>
             ) : null}
           </Link>
         ))}
@@ -178,9 +178,7 @@ function OverviewTab({ src }: { src: Source }) {
           <DetailRow label="Name">
             <CopyValue value={src.name} what="Name" />
           </DetailRow>
-          {src.description ? (
-            <DetailRow label="Description">{src.description}</DetailRow>
-          ) : null}
+          {src.description ? <DetailRow label="Description">{src.description}</DetailRow> : null}
 
           <div className="border-t border-border pt-3 text-sm font-semibold">Configuration</div>
           <DetailRow label="Type">
@@ -194,7 +192,9 @@ function OverviewTab({ src }: { src: Source }) {
           <DetailRow label="HTTP methods">
             <span className="flex flex-wrap gap-1.5">
               {src.allowed_methods.map((m) => (
-                <Badge key={m} variant="outline" className="font-mono text-xs">{m}</Badge>
+                <Badge key={m} variant="outline" className="font-mono text-xs">
+                  {m}
+                </Badge>
               ))}
             </span>
           </DetailRow>
@@ -203,12 +203,8 @@ function OverviewTab({ src }: { src: Source }) {
           <DetailRow label="Source ID">
             <CopyValue value={src.id} what="Source ID" mono />
           </DetailRow>
-          <DetailRow label="Created at">
-            {new Date(src.created_at).toLocaleString()}
-          </DetailRow>
-          <DetailRow label="Last updated">
-            {new Date(src.updated_at).toLocaleString()}
-          </DetailRow>
+          <DetailRow label="Created at">{new Date(src.created_at).toLocaleString()}</DetailRow>
+          <DetailRow label="Last updated">{new Date(src.updated_at).toLocaleString()}</DetailRow>
         </div>
       </div>
 
@@ -275,6 +271,7 @@ function ConnectionsTab({ connections }: { connections: Connection[] | undefined
 function SettingsTab({ src }: { src: Source }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(src.name)
   const [description, setDescription] = useState(src.description)
@@ -322,8 +319,15 @@ function SettingsTab({ src }: { src: Source }) {
       {/* General */}
       <section className="space-y-4">
         <div>
-          <Label htmlFor="name" className="mb-2 block">Name</Label>
-          <Input id="name" value={name} onChange={(e) => setName(e.target.value)} className="w-full" />
+          <Label htmlFor="name" className="mb-2 block">
+            Name
+          </Label>
+          <Input
+            id="name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full"
+          />
         </div>
         <div>
           <Label htmlFor="description" className="mb-2 block">
@@ -379,15 +383,18 @@ function SettingsTab({ src }: { src: Source }) {
       </section>
 
       {/* Delete */}
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete source</h2>
-        <p className="text-sm text-muted-foreground">
-          Deletes this source and all associated connections. Incoming webhooks to its URL will fail.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete source
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete source</h2>
+          <p className="text-sm text-muted-foreground">
+            Deletes this source and all associated connections. Incoming webhooks to its URL will
+            fail.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete source
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
@@ -398,8 +405,14 @@ function SettingsTab({ src }: { src: Source }) {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>Cancel</Button>
-            <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
               {remove.isPending ? 'Deleting…' : 'Delete source'}
             </Button>
           </DialogFooter>

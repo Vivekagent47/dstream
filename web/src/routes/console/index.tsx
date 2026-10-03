@@ -69,7 +69,8 @@ function ConsoleOverview() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Admin overview"
+      <PageHeader
+        title="Admin overview"
         help="Platform-wide health across all tenants — orgs, users, event volume, and queue depth (super-admin)."
       />
 
@@ -142,7 +143,9 @@ function ConsoleOverview() {
                 <TableRow key={h.destination_id}>
                   <TableCell className="pl-4 font-medium">{h.destination_name}</TableCell>
                   <TableCell className="text-right tabular-nums">{h.total}</TableCell>
-                  <TableCell className="text-right tabular-nums text-destructive">{h.failed}</TableCell>
+                  <TableCell className="text-right text-destructive tabular-nums">
+                    {h.failed}
+                  </TableCell>
                   <TableCell className="pr-4 text-right tabular-nums">
                     {((h.failure_rate ?? 0) * 100).toFixed(1)}%
                   </TableCell>
@@ -178,7 +181,12 @@ function ConsoleOverview() {
         </div>
       </div>
 
-      <h2 className="px-6 pb-3 text-sm font-semibold">Organizations</h2>
+      <div className="flex items-baseline justify-between px-6 pb-3">
+        <h2 className="text-sm font-semibold">Organizations</h2>
+        <Link to="/console/usage" className="text-sm text-muted-foreground hover:text-foreground">
+          Manage quotas →
+        </Link>
+      </div>
       <div className="flex-1 overflow-x-auto">
         <Table>
           <TableHeader>

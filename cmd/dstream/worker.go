@@ -220,9 +220,11 @@ func workerCmd() *cobra.Command {
 			wg.Add(1)
 			go func() { defer wg.Done(); outboundHandler.RunReaper(ctx, dq) }()
 
-			// Background maintenance: purge expired magic-link tokens + invites.
+			// Background maintenance: purge expired magic-link tokens + invites,
+			// and roll per-org usage up into usage_rollups. Same rdb the hot path
+			// increments, so the sweep reconciles the counters it reads.
 			wg.Add(1)
-			go func() { defer wg.Done(); runMaintenance(ctx, q, log, cfg.PayloadRetention) }()
+			go func() { defer wg.Done(); runMaintenance(ctx, q, rdb, log, cfg.PayloadRetention) }()
 
 			<-ctx.Done()
 			log.Info("shutting down worker; draining in-flight deliveries", "drain", workerDrainWindow)

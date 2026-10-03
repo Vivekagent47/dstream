@@ -7,12 +7,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// Role is the org-membership role attached to a session principal.
+// Role ranks what a principal may do inside one org.
 //
-// API-key principals don't carry a DB role; the middleware assigns them
-// RoleAdmin as a sentinel so that role-gated handlers using
-// RequireMinRole(...) accept them, while still allowing session-only
-// handlers to reject API keys via RequireSession.
+// A session principal takes it from its org_members row; an API-key
+// principal takes it from the key's own api_keys.role column. Keys are
+// capped at admin — 'owner' is refused at creation and by a CHECK
+// constraint — and session-only handlers still reject keys outright via
+// RequireSession.
 type Role string
 
 const (

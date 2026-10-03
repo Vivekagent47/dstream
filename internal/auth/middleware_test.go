@@ -287,7 +287,11 @@ func TestRequireOrg_NonMember_403(t *testing.T) {
 	}
 }
 
-func TestRequireOrg_APIKey_PassesThroughAsAdmin(t *testing.T) {
+// RequireOrg passes an API-key principal through untouched: its role came
+// from the key row in Authenticate, and there is no membership row to
+// consult. The key must keep the role it authenticated with — overwriting it
+// with a sentinel is exactly the escalation this guards against.
+func TestRequireOrg_APIKey_PassesThroughKeepingItsRole(t *testing.T) {
 	pool := testPool(t)
 	q := store.New(pool)
 
@@ -298,14 +302,15 @@ func TestRequireOrg_APIKey_PassesThroughAsAdmin(t *testing.T) {
 	r = r.WithContext(WithPrincipal(r.Context(), Principal{
 		Source: SourceAPIKey,
 		OrgID:  uuid.New(),
+		Role:   RoleMember,
 	}))
 	rec := httptest.NewRecorder()
 	mw.ServeHTTP(rec, r)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", rec.Code)
 	}
-	if cap.p.Role != RoleAdmin {
-		t.Errorf("Role: got %q, want %q (sentinel for api_key)", cap.p.Role, RoleAdmin)
+	if cap.p.Role != RoleMember {
+		t.Errorf("Role: got %q, want %q (must not be re-stamped)", cap.p.Role, RoleMember)
 	}
 }
 
@@ -331,6 +336,9 @@ func TestAuthenticate_APIKey_PopulatesPrincipal(t *testing.T) {
 		Name:    "test",
 		Prefix:  prefix,
 		KeyHash: hash,
+		// Deliberately not admin: a principal that comes back as admin would
+		// mean the role is hardcoded rather than read off the key row.
+		Role: string(RoleMember),
 	})
 	if err != nil {
 		t.Fatalf("create api key: %v", err)
@@ -356,5 +364,8 @@ func TestAuthenticate_APIKey_PopulatesPrincipal(t *testing.T) {
 	}
 	if cap.p.APIKeyID != store.GoUUID(row.ID) {
 		t.Errorf("APIKeyID: got %s, want %s", cap.p.APIKeyID, store.GoUUID(row.ID))
+	}
+	if cap.p.Role != RoleMember {
+		t.Errorf("Role: got %q, want %q (from the key row)", cap.p.Role, RoleMember)
 	}
 }

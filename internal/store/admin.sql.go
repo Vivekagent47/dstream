@@ -32,7 +32,7 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 }
 
 const listAllOrganizations = `-- name: ListAllOrganizations :many
-SELECT id, name, slug, created_at, updated_at FROM organizations ORDER BY created_at DESC LIMIT 200
+SELECT id, name, slug, created_at, updated_at, plan, quota_events_soft, quota_events_hard, quota_messages_soft, quota_messages_hard, quota_period FROM organizations ORDER BY created_at DESC LIMIT 200
 `
 
 func (q *Queries) ListAllOrganizations(ctx context.Context) ([]Organization, error) {
@@ -50,6 +50,12 @@ func (q *Queries) ListAllOrganizations(ctx context.Context) ([]Organization, err
 			&i.Slug,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Plan,
+			&i.QuotaEventsSoft,
+			&i.QuotaEventsHard,
+			&i.QuotaMessagesSoft,
+			&i.QuotaMessagesHard,
+			&i.QuotaPeriod,
 		); err != nil {
 			return nil, err
 		}

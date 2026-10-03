@@ -306,7 +306,9 @@ function DeliveryControlFields({
                 className="w-full font-mono"
                 value={h.k}
                 onChange={(e) =>
-                  setHeaders((prev) => prev.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)))
+                  setHeaders((prev) =>
+                    prev.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)),
+                  )
                 }
                 placeholder="X-Custom-Header"
               />
@@ -314,7 +316,9 @@ function DeliveryControlFields({
                 className="w-full font-mono"
                 value={h.v}
                 onChange={(e) =>
-                  setHeaders((prev) => prev.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)))
+                  setHeaders((prev) =>
+                    prev.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)),
+                  )
                 }
                 placeholder="value"
               />
@@ -344,7 +348,10 @@ function DeliveryControlFields({
 
 // Comma-separated string → trimmed, non-empty list.
 function splitChannels(s: string): string[] {
-  return s.split(',').map((c) => c.trim()).filter(Boolean)
+  return s
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean)
 }
 
 // Header rows → object, dropping blank keys.
@@ -502,7 +509,10 @@ function sameFilters(a: Set<string>, b: string[] | null | undefined): boolean {
 
 // Key-order-insensitive so a save + backend round-trip doesn't leave the form
 // stuck "dirty" just because header keys came back in a different order.
-function sameHeaders(a: Record<string, string>, b: Record<string, string> | null | undefined): boolean {
+function sameHeaders(
+  a: Record<string, string>,
+  b: Record<string, string> | null | undefined,
+): boolean {
   const bb = b ?? {}
   const ak = Object.keys(a).sort()
   const bk = Object.keys(bb).sort()
@@ -510,7 +520,13 @@ function sameHeaders(a: Record<string, string>, b: Record<string, string> | null
   return ak.every((k, i) => bk[i] === k && a[k] === bb[k])
 }
 
-function EditEndpointDialog({ endpoint: ep, onClose }: { endpoint: Endpoint; onClose: () => void }) {
+function EditEndpointDialog({
+  endpoint: ep,
+  onClose,
+}: {
+  endpoint: Endpoint
+  onClose: () => void
+}) {
   const qc = useQueryClient()
   const [url, setUrl] = useState(ep.url)
   const [description, setDescription] = useState(ep.description)

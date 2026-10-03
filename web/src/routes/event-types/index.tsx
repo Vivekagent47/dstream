@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { MoreHorizontal, Plus, Search } from 'lucide-react'
 
 import { api, qk, type EventType } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
@@ -58,6 +59,7 @@ const textareaClass =
 function EventTypesPage() {
   const qc = useQueryClient()
   const { data: eventTypes } = useQuery(eventTypesQuery)
+  const { isAdmin } = useRole()
 
   const [q, setQ] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
@@ -140,13 +142,17 @@ function EventTypesPage() {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-40">
                       <DropdownMenuItem onClick={() => setEditTarget(et)}>Edit</DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onClick={() => setDeleteTarget(et)}
-                        className="text-destructive"
-                      >
-                        Delete
-                      </DropdownMenuItem>
+                      {isAdmin && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => setDeleteTarget(et)}
+                            className="text-destructive"
+                          >
+                            Delete
+                          </DropdownMenuItem>
+                        </>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </TableCell>

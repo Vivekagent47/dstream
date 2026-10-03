@@ -109,6 +109,7 @@ func TestMe_APIKey_ReturnsOrgIDOnly(t *testing.T) {
 		Name:    "t",
 		Prefix:  prefix,
 		KeyHash: hash,
+		Role:    "admin",
 	}); err != nil {
 		t.Fatalf("create key: %v", err)
 	}

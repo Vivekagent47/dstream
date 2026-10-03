@@ -28,6 +28,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/metrics"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
 // ingestTracer names spans for the ingest hot path. Bound to the global
@@ -66,6 +67,11 @@ type Handler struct {
 	// MaxWebhookHops rejects an ingest request whose Dstream-Webhook-Hops
 	// header has already reached this ceiling (loop guard). 0 disables.
 	MaxWebhookHops int
+
+	// Quota meters this org's inbound events against its plan and refuses at
+	// the hard ceiling. nil = no quota enforcement (a *usage.Gate is nil-safe,
+	// so no guard is needed at the call site).
+	Quota *usage.Gate
 
 	// In-process cache for source lookups keyed by ingest_token. The
 	// ingest hot path was hitting Postgres on every webhook (~0.5–1ms per
@@ -174,6 +180,22 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
+	}
+
+	// Per-org usage quota, after the rate limit and before the (up to 5 MiB)
+	// body read, for the same reason that one is there: an over-quota flood
+	// must not force large reads. src.OrgID is already on the cached source and
+	// the limits come from the gate's own snapshot, refreshed off the request
+	// path — so this costs one Redis INCR and no database query.
+	//
+	// Only the hard ceiling rejects. Past the soft limit the request is
+	// accepted as overage and the gate fires usage.quota_warning once per
+	// period, off this goroutine. Any Redis error fails open, matching the rate
+	// limiter above.
+	if dec := h.Quota.CheckIngest(ctx, store.GoUUID(src.OrgID)); dec == usage.OverHard {
+		w.Header().Set("Retry-After", usage.RetryAfter)
+		http.Error(w, "quota exceeded", http.StatusTooManyRequests)
+		return
 	}
 
 	body, err := func() ([]byte, error) {

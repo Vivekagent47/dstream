@@ -13,7 +13,11 @@ import { Label } from '#/components/ui/label'
 export const Route = createFileRoute('/settings/profile')({ component: ProfilePage })
 
 function ProfilePage() {
-  const { data: me, error: meError } = useQuery({ queryKey: qk.me(), queryFn: api.me, retry: false })
+  const { data: me, error: meError } = useQuery({
+    queryKey: qk.me(),
+    queryFn: api.me,
+    retry: false,
+  })
 
   if (meError) return <Navigate to="/" />
 
@@ -23,11 +27,7 @@ function ProfilePage() {
       <div className="flex-1 overflow-y-auto px-6 py-8">
         <div className="mx-auto max-w-3xl space-y-6">
           {me?.user && (
-            <ProfileCard
-              key={me.user.id}
-              email={me.user.email}
-              initialName={me.user.name ?? ''}
-            />
+            <ProfileCard key={me.user.id} email={me.user.email} initialName={me.user.name ?? ''} />
           )}
         </div>
       </div>
@@ -78,10 +78,7 @@ function ProfileCard({ email, initialName }: { email: string; initialName: strin
               onChange={(e) => setName(e.target.value)}
               placeholder="Your name"
             />
-            <Button
-              type="submit"
-              disabled={save.isPending || name.trim() === initialName.trim()}
-            >
+            <Button type="submit" disabled={save.isPending || name.trim() === initialName.trim()}>
               {save.isPending ? 'Saving…' : 'Save'}
             </Button>
           </div>

@@ -49,7 +49,8 @@ func (q *Queries) CountOrgMembershipsForUser(ctx context.Context, userID pgtype.
 }
 
 const createOrganization = `-- name: CreateOrganization :one
-INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at, updated_at
+INSERT INTO organizations (name, slug) VALUES ($1, $2)
+RETURNING id, name, slug, created_at, updated_at
 `
 
 type CreateOrganizationParams struct {
@@ -57,9 +58,25 @@ type CreateOrganizationParams struct {
 	Slug string `json:"slug"`
 }
 
-func (q *Queries) CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (Organization, error) {
+type CreateOrganizationRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Columns are named, NOT * / RETURNING *, on these four queries for the same
+// reason ListOrgsForUser below is pinned: internal/api/identity/orgs.go
+// serializes their result straight to JSON (POST /api/orgs, PATCH
+// /api/orgs/{org_id}), so a `SELECT *` here joins `plan` and every quota_*
+// column into those admin-visible responses on the next sqlc run. Per design
+// §7 limits are read through GET /api/usage and set through the super-admin
+// PATCH /admin/orgs/{org_id}/plan. Widening this list is a deliberate API
+// change; make it on purpose.
+func (q *Queries) CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error) {
 	row := q.db.QueryRow(ctx, createOrganization, arg.Name, arg.Slug)
-	var i Organization
+	var i CreateOrganizationRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -212,9 +229,17 @@ const getOrganizationByID = `-- name: GetOrganizationByID :one
 SELECT id, name, slug, created_at, updated_at FROM organizations WHERE id = $1
 `
 
-func (q *Queries) GetOrganizationByID(ctx context.Context, id pgtype.UUID) (Organization, error) {
+type GetOrganizationByIDRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetOrganizationByID(ctx context.Context, id pgtype.UUID) (GetOrganizationByIDRow, error) {
 	row := q.db.QueryRow(ctx, getOrganizationByID, id)
-	var i Organization
+	var i GetOrganizationByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -229,9 +254,17 @@ const getOrganizationBySlug = `-- name: GetOrganizationBySlug :one
 SELECT id, name, slug, created_at, updated_at FROM organizations WHERE slug = $1
 `
 
-func (q *Queries) GetOrganizationBySlug(ctx context.Context, slug string) (Organization, error) {
+type GetOrganizationBySlugRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetOrganizationBySlug(ctx context.Context, slug string) (GetOrganizationBySlugRow, error) {
 	row := q.db.QueryRow(ctx, getOrganizationBySlug, slug)
-	var i Organization
+	var i GetOrganizationBySlugRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -248,31 +281,6 @@ SELECT id, email, name, is_super_admin, created_at, updated_at, session_epoch FR
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
-	var i User
-	err := row.Scan(
-		&i.ID,
-		&i.Email,
-		&i.Name,
-		&i.IsSuperAdmin,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.SessionEpoch,
-	)
-	return i, err
-}
-
-const updateUserName = `-- name: UpdateUserName :one
-UPDATE users SET name = $2, updated_at = now() WHERE id = $1
-RETURNING id, email, name, is_super_admin, created_at, updated_at, session_epoch
-`
-
-type UpdateUserNameParams struct {
-	ID   pgtype.UUID `json:"id"`
-	Name *string     `json:"name"`
-}
-
-func (q *Queries) UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (User, error) {
-	row := q.db.QueryRow(ctx, updateUserName, arg.ID, arg.Name)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -367,6 +375,13 @@ type ListOrgsForUserRow struct {
 	Role      string             `json:"role"`
 }
 
+// Columns are named, NOT o.*, because this row type is serialized straight to
+// JSON by GET /api/orgs and GET /api/me. With o.* every column added to
+// organizations silently joins both public responses on the next sqlc run —
+// which is how the phase 5c quota columns nearly shipped to every member of
+// every org. Per design §7 limits are read through GET /api/usage and set
+// through the super-admin PATCH /admin/orgs/{org_id}/plan. Widening this
+// list is a deliberate API change; make it on purpose.
 func (q *Queries) ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error) {
 	rows, err := q.db.Query(ctx, listOrgsForUser, userID)
 	if err != nil {
@@ -467,15 +482,48 @@ type UpdateOrgNameParams struct {
 	Name string      `json:"name"`
 }
 
-func (q *Queries) UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (Organization, error) {
+type UpdateOrgNameRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (UpdateOrgNameRow, error) {
 	row := q.db.QueryRow(ctx, updateOrgName, arg.ID, arg.Name)
-	var i Organization
+	var i UpdateOrgNameRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.Slug,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateUserName = `-- name: UpdateUserName :one
+UPDATE users SET name = $2, updated_at = now() WHERE id = $1
+RETURNING id, email, name, is_super_admin, created_at, updated_at, session_epoch
+`
+
+type UpdateUserNameParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Name *string     `json:"name"`
+}
+
+func (q *Queries) UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserName, arg.ID, arg.Name)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.IsSuperAdmin,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SessionEpoch,
 	)
 	return i, err
 }

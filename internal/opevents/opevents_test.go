@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,6 +84,60 @@ func TestSeedOperationalApp(t *testing.T) {
 	for _, a := range apps {
 		if store.GoUUID(a.ID) == id1 {
 			t.Error("operational app must be excluded from ListApplicationsByOrg")
+		}
+	}
+}
+
+// Two publishes for the same org seed its op app concurrently — two workers
+// dead-lettering at once, or the soft and hard quota alerts moments apart.
+// EnsureOperationalApp is one statement, so the loser's INSERT hits ON CONFLICT
+// DO NOTHING while the UNION's SELECT still runs on a pre-commit snapshot and
+// returns no row; without the GetOperationalApp fallback the loser's
+// operational event is silently dropped.
+func TestSeedOperationalAppConcurrent(t *testing.T) {
+	const n = 8
+	// Its own pool: testQ caps at 2 connections, which serializes the seeds
+	// enough that the race barely reproduces. One connection per goroutine is
+	// what makes the statements actually overlap.
+	dsn := os.Getenv("DSTREAM_TEST_DB_URL")
+	if dsn == "" {
+		t.Skip("DSTREAM_TEST_DB_URL not set")
+	}
+	pool, err := store.NewPool(context.Background(), dsn, n)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	q := store.New(pool)
+	org := seedOrg(t, q)
+	ids := make([]uuid.UUID, n)
+	errs := make([]error, n)
+	var wg, ready sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		ready.Add(1)
+		go func() {
+			defer wg.Done()
+			// Dial and warm this goroutine's connection BEFORE the start gate:
+			// an unwarmed pool staggers the goroutines by milliseconds, which is
+			// long enough for the winner to commit before the losers' statements
+			// even begin — and then nothing races.
+			_, _ = pool.Exec(context.Background(), "SELECT 1")
+			ready.Done()
+			<-start
+			ids[i], errs[i] = SeedOperationalApp(context.Background(), q, org)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("seed %d: %v", i, errs[i])
+		}
+		if ids[i] != ids[0] {
+			t.Fatalf("seed %d returned %s, want %s", i, ids[i], ids[0])
 		}
 	}
 }

@@ -14,7 +14,26 @@ CREATE TABLE organizations (
     name        TEXT NOT NULL,                -- display name shown in the dashboard
     slug        TEXT NOT NULL UNIQUE,         -- URL-safe identifier used in dashboard routes
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Plan and quota. A new org lands on the free tier here, in SQL, so every
+    -- CreateOrganization call site gets it without Go involvement:
+    -- cmd/dstream/admin.go, internal/auth/magiclink.go (magic-link bootstrap),
+    -- and internal/api/identity/orgs.go.
+    --
+    -- These four defaults are the free row of internal/usage/plans.go's
+    -- Presets map, deliberately duplicated. internal/usage/plans_test.go
+    -- asserts they agree; change both or neither.
+    --
+    -- 0 still means unlimited on both tiers, which is what `enterprise` uses
+    -- and what `custom` uses when an operator wants a tenant uncapped.
+    plan                TEXT   NOT NULL DEFAULT 'free'
+                          CHECK (plan IN ('free','pro','enterprise','custom')),
+    quota_events_soft   BIGINT NOT NULL DEFAULT 8000,
+    quota_events_hard   BIGINT NOT NULL DEFAULT 10000,
+    quota_messages_soft BIGINT NOT NULL DEFAULT 8000,
+    quota_messages_hard BIGINT NOT NULL DEFAULT 10000,
+    quota_period        TEXT   NOT NULL DEFAULT 'month'
+                          CHECK (quota_period IN ('day','month'))
 );
 
 -- users: humans who log into the dashboard (magic-link auth, no passwords).
@@ -54,6 +73,13 @@ CREATE TABLE api_keys (
     id            UUID PRIMARY KEY DEFAULT uuidv7(),
     org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,          -- human label ("CI deploy key")
+    -- Role this key authenticates as, using the same ladder as org_members.
+    -- 'owner' is deliberately not allowed: owner-gated actions are org
+    -- deletion and ownership transfer, which a machine credential must never
+    -- reach. Defaults to 'admin' so keys minted before this column keep
+    -- exactly the access they had.
+    role          TEXT NOT NULL DEFAULT 'admin'
+                    CHECK (role IN ('admin', 'member')),
     prefix        TEXT NOT NULL,          -- public, indexed part of the key; identifies the row without exposing the secret
     key_hash      BYTEA NOT NULL,         -- hash of the full secret; raw key shown once at creation, never stored
     last_used_at  TIMESTAMPTZ,            -- updated on successful auth; stale keys are candidates for cleanup
@@ -465,3 +491,23 @@ CREATE TABLE message_delivery_attempts (
   attempted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX mda_delivery_attempt_idx ON message_delivery_attempts (delivery_id, attempt_num);
+
+-- =========================================================================
+-- Usage metering
+-- =========================================================================
+
+-- usage_rollups: the authoritative per-org usage record, written by the
+-- maintenance sweep. The composite PK makes the rollup an idempotent upsert,
+-- which matters because the sweep re-runs the current period on every worker
+-- restart. Redis holds a counter for the hot-path decision; THIS is the
+-- billing record.
+CREATE TABLE usage_rollups (
+    org_id       UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    period_start TIMESTAMPTZ NOT NULL,
+    metric       TEXT        NOT NULL
+                   CHECK (metric IN ('requests','events','messages','attempts')),
+    count        BIGINT      NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, period_start, metric)
+);
+CREATE INDEX usage_rollups_period_idx ON usage_rollups (period_start DESC);

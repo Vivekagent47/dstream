@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { Pencil, Trash2 } from 'lucide-react'
 
 import { api, qk, type Connection, type EventsPage as EventsPageData } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
@@ -446,7 +447,10 @@ function StatCard({ label, value }: { label: string; value: number | undefined }
 
 // Parse "10000, 30000, 60000" into [10000, 30000, 60000]; null = invalid.
 function parseSchedule(s: string): number[] | null {
-  const parts = s.split(',').map((x) => x.trim()).filter((x) => x !== '')
+  const parts = s
+    .split(',')
+    .map((x) => x.trim())
+    .filter((x) => x !== '')
   if (parts.length === 0) return null
   const nums = parts.map(Number)
   if (nums.some((n) => !Number.isInteger(n) || n <= 0)) return null
@@ -456,6 +460,7 @@ function parseSchedule(s: string): number[] | null {
 function SettingsTab({ conn }: { conn: Connection }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(conn.name ?? '')
   const [maxRetries, setMaxRetries] = useState(String(conn.max_retries))
@@ -559,8 +564,7 @@ function SettingsTab({ conn }: { conn: Connection }) {
     Number(jitter) !== conn.retry_jitter_pct ||
     filterExpr !== (conn.filter_expr ?? '') ||
     transformJs !== (conn.transform_js ?? '') ||
-    (strategy === 'custom' &&
-      schedule !== (conn.custom_retry_schedule ?? []).join(', '))
+    (strategy === 'custom' && schedule !== (conn.custom_retry_schedule ?? []).join(', '))
 
   const strategyLabel = (v: string | null) => (v ? capitalize(v) : 'Strategy')
 
@@ -569,8 +573,8 @@ function SettingsTab({ conn }: { conn: Connection }) {
       <section className="space-y-4">
         <h2 className="text-sm font-semibold">Retry policy</h2>
         <p className="text-sm text-muted-foreground">
-          How failed deliveries are retried. Changes apply to future events only — already
-          queued deliveries keep the policy they were enqueued with.
+          How failed deliveries are retried. Changes apply to future events only — already queued
+          deliveries keep the policy they were enqueued with.
         </p>
         <div>
           <Label htmlFor="conn-name" className="mb-2 block">
@@ -589,7 +593,9 @@ function SettingsTab({ conn }: { conn: Connection }) {
             <Label className="mb-2 block">Strategy</Label>
             <Select
               value={strategy}
-              onValueChange={(v) => setStrategy((v ?? 'exponential') as Connection['retry_strategy'])}
+              onValueChange={(v) =>
+                setStrategy((v ?? 'exponential') as Connection['retry_strategy'])
+              }
             >
               <SelectTrigger className="w-full">
                 <SelectValue>{strategyLabel}</SelectValue>
@@ -603,7 +609,9 @@ function SettingsTab({ conn }: { conn: Connection }) {
             </Select>
           </div>
           <div>
-            <Label htmlFor="max-retries" className="mb-2 block">Max retries</Label>
+            <Label htmlFor="max-retries" className="mb-2 block">
+              Max retries
+            </Label>
             <Input
               id="max-retries"
               type="number"
@@ -617,7 +625,9 @@ function SettingsTab({ conn }: { conn: Connection }) {
         {strategy !== 'custom' ? (
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
-              <Label htmlFor="base-ms" className="mb-2 block">Base delay (ms)</Label>
+              <Label htmlFor="base-ms" className="mb-2 block">
+                Base delay (ms)
+              </Label>
               <Input
                 id="base-ms"
                 type="number"
@@ -627,7 +637,9 @@ function SettingsTab({ conn }: { conn: Connection }) {
               />
             </div>
             <div>
-              <Label htmlFor="cap-ms" className="mb-2 block">Cap (ms)</Label>
+              <Label htmlFor="cap-ms" className="mb-2 block">
+                Cap (ms)
+              </Label>
               <Input
                 id="cap-ms"
                 type="number"
@@ -637,7 +649,9 @@ function SettingsTab({ conn }: { conn: Connection }) {
               />
             </div>
             <div>
-              <Label htmlFor="jitter" className="mb-2 block">Jitter (±%)</Label>
+              <Label htmlFor="jitter" className="mb-2 block">
+                Jitter (±%)
+              </Label>
               <Input
                 id="jitter"
                 type="number"
@@ -684,16 +698,18 @@ function SettingsTab({ conn }: { conn: Connection }) {
         </Button>
       </section>
 
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete connection</h2>
-        <p className="text-sm text-muted-foreground">
-          New events from this source stop routing to this destination. Already-queued
-          deliveries are unaffected.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete connection
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete connection</h2>
+          <p className="text-sm text-muted-foreground">
+            New events from this source stop routing to this destination. Already-queued deliveries
+            are unaffected.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete connection
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
@@ -704,8 +720,14 @@ function SettingsTab({ conn }: { conn: Connection }) {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>Cancel</Button>
-            <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
               {remove.isPending ? 'Deleting…' : 'Delete connection'}
             </Button>
           </DialogFooter>

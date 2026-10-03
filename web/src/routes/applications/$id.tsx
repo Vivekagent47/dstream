@@ -10,14 +10,8 @@ import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 
-import {
-  api,
-  qk,
-  type Application,
-  type Endpoint,
-  type Page,
-  type Message,
-} from '#/lib/api'
+import { api, qk, type Application, type Endpoint, type Page, type Message } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
 import { PageHeader } from '#/components/TopBar'
@@ -99,6 +93,7 @@ function ApplicationDetail() {
   const { tab = 'overview' } = Route.useSearch()
   const [sendOpen, setSendOpen] = useState(false)
   const { data: app } = useQuery(applicationQuery(id))
+  const { isAdmin } = useRole()
 
   if (!app) {
     return (
@@ -126,9 +121,12 @@ function ApplicationDetail() {
           </span>
         }
         actions={
-          <Button size="sm" onClick={() => setSendOpen(true)}>
-            Send message
-          </Button>
+          // POST /applications/{id}/messages is adminOnly server-side.
+          isAdmin ? (
+            <Button size="sm" onClick={() => setSendOpen(true)}>
+              Send message
+            </Button>
+          ) : undefined
         }
       />
 
@@ -163,6 +161,7 @@ function ApplicationDetail() {
 }
 
 export function OverviewTab({ app }: { app: Application }) {
+  const { isAdmin } = useRole()
   const { data: endpoints } = useQuery({
     queryKey: qk.endpoints(app.id),
     queryFn: () => api.listEndpoints(app.id),
@@ -213,27 +212,29 @@ export function OverviewTab({ app }: { app: Application }) {
         </div>
       </div>
 
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-base font-semibold">App Portal</h2>
-        <p className="text-sm text-muted-foreground">
-          Share a scoped link so this application&rsquo;s owner can manage their own endpoints.
-        </p>
-        <div className="flex items-center gap-2 pt-1">
-          <Button size="sm" disabled={copyLink.isPending} onClick={() => copyLink.mutate()}>
-            {copyLink.isPending ? 'Generating…' : 'Copy portal link'}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={revoke.isPending}
-            onClick={() => {
-              if (window.confirm('Revoke all portal links for this application?')) revoke.mutate()
-            }}
-          >
-            {revoke.isPending ? 'Revoking…' : 'Revoke all links'}
-          </Button>
-        </div>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-base font-semibold">App Portal</h2>
+          <p className="text-sm text-muted-foreground">
+            Share a scoped link so this application&rsquo;s owner can manage their own endpoints.
+          </p>
+          <div className="flex items-center gap-2 pt-1">
+            <Button size="sm" disabled={copyLink.isPending} onClick={() => copyLink.mutate()}>
+              {copyLink.isPending ? 'Generating…' : 'Copy portal link'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={revoke.isPending}
+              onClick={() => {
+                if (window.confirm('Revoke all portal links for this application?')) revoke.mutate()
+              }}
+            >
+              {revoke.isPending ? 'Revoking…' : 'Revoke all links'}
+            </Button>
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -294,9 +295,7 @@ export function EndpointsTab({ appId }: { appId: string }) {
                         <Badge variant="secondary">{e.rate_limit}/s</Badge>
                       )}
                       {Object.keys(e.headers ?? {}).length > 0 && (
-                        <Badge variant="secondary">
-                          {Object.keys(e.headers).length} headers
-                        </Badge>
+                        <Badge variant="secondary">{Object.keys(e.headers).length} headers</Badge>
                       )}
                     </div>
                   </TableCell>
@@ -361,7 +360,12 @@ function AddEndpointDialog({
         ...(filters.size > 0 ? { filter_event_types: [...filters] } : {}),
         ...(rateLimit.trim() ? { rate_limit: Number(rateLimit) } : {}),
         ...(channels.trim()
-          ? { channels: channels.split(',').map((c) => c.trim()).filter(Boolean) }
+          ? {
+              channels: channels
+                .split(',')
+                .map((c) => c.trim())
+                .filter(Boolean),
+            }
           : {}),
         ...(headers.filter((h) => h.k.trim()).length
           ? {
@@ -401,8 +405,8 @@ function AddEndpointDialog({
         <DialogHeader>
           <DialogTitle>Add endpoint</DialogTitle>
           <DialogDescription>
-            Where this application&rsquo;s messages are delivered. A signing secret is generated
-            and shown once on creation.
+            Where this application&rsquo;s messages are delivered. A signing secret is generated and
+            shown once on creation.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -475,7 +479,8 @@ function AddEndpointDialog({
           </div>
           <div>
             <Label htmlFor="ep-rate-limit" className="mb-2 block">
-              Rate limit <span className="text-muted-foreground">(optional, per sec — 0 = unlimited)</span>
+              Rate limit{' '}
+              <span className="text-muted-foreground">(optional, per sec — 0 = unlimited)</span>
             </Label>
             <Input
               id="ep-rate-limit"
@@ -630,6 +635,7 @@ function MessagesTab({ appId }: { appId: string }) {
 function SettingsTab({ app }: { app: Application }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(app.name)
   const [uid, setUid] = useState(app.uid ?? '')
@@ -691,9 +697,7 @@ function SettingsTab({ app }: { app: Application }) {
   }
 
   const dirty =
-    name !== app.name ||
-    uid !== (app.uid ?? '') ||
-    metadata !== fmtMetadata(app.metadata)
+    name !== app.name || uid !== (app.uid ?? '') || metadata !== fmtMetadata(app.metadata)
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -740,15 +744,17 @@ function SettingsTab({ app }: { app: Application }) {
         </Button>
       </section>
 
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete application</h2>
-        <p className="text-sm text-muted-foreground">
-          Removes the application, its endpoints, and message history. This cannot be undone.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete application
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete application</h2>
+          <p className="text-sm text-muted-foreground">
+            Removes the application, its endpoints, and message history. This cannot be undone.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete application
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Plus } from 'lucide-react'
 
 import { api, qk, type Bookmark, type CaptureRule, type Source } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { PageHeader } from '#/components/TopBar'
@@ -80,6 +81,7 @@ export const Route = createFileRoute('/fixtures/')({
 function FixturesPage() {
   const qc = useQueryClient()
   const { data: sources } = useQuery(sourcesQuery)
+  const { isAdmin } = useRole()
 
   const [sourceId, setSourceId] = useState('all')
   const [tag, setTag] = useState('')
@@ -92,10 +94,7 @@ function FixturesPage() {
   }
   const { data: bookmarks, error } = useQuery(bookmarksQuery(params))
 
-  const srcName = useMemo(
-    () => new Map((sources ?? []).map((s) => [s.id, s.name])),
-    [sources],
-  )
+  const srcName = useMemo(() => new Map((sources ?? []).map((s) => [s.id, s.name])), [sources])
 
   // Every mutation below only touches one row's cache-invisible server state;
   // invalidating the whole 'bookmarks' prefix refreshes every filtered view
@@ -238,20 +237,22 @@ function FixturesPage() {
                     <Button size="sm" variant="outline" onClick={() => setEditBookmark(b)}>
                       Edit
                     </Button>
-                    <ConfirmDialog
-                      title={`Delete ${b.name}?`}
-                      description="This removes the saved fixture. It doesn't affect past events."
-                      confirmLabel="Delete"
-                      destructive
-                      pending={remove.isPending}
-                      onConfirm={() => remove.mutate(b.id)}
-                    >
-                      {(open) => (
-                        <Button size="sm" variant="ghost" onClick={open}>
-                          Delete
-                        </Button>
-                      )}
-                    </ConfirmDialog>
+                    {isAdmin && (
+                      <ConfirmDialog
+                        title={`Delete ${b.name}?`}
+                        description="This removes the saved fixture. It doesn't affect past events."
+                        confirmLabel="Delete"
+                        destructive
+                        pending={remove.isPending}
+                        onConfirm={() => remove.mutate(b.id)}
+                      >
+                        {(open) => (
+                          <Button size="sm" variant="ghost" onClick={open}>
+                            Delete
+                          </Button>
+                        )}
+                      </ConfirmDialog>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -330,7 +331,9 @@ function BookmarkEditDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit fixture</DialogTitle>
-          <DialogDescription>Rename this fixture or update its description and tags.</DialogDescription>
+          <DialogDescription>
+            Rename this fixture or update its description and tags.
+          </DialogDescription>
         </DialogHeader>
         <form
           onSubmit={(e) => {
@@ -391,6 +394,7 @@ function BookmarkEditDialog({
 function CaptureRulesSection({ sources }: { sources: Source[] }) {
   const qc = useQueryClient()
   const { data: rules, error } = useQuery(captureRulesQuery)
+  const { isAdmin } = useRole()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<CaptureRule | null>(null)
 
@@ -475,20 +479,22 @@ function CaptureRulesSection({ sources }: { sources: Source[] }) {
                   <Button size="sm" variant="outline" onClick={() => openEdit(rule)}>
                     Edit
                   </Button>
-                  <ConfirmDialog
-                    title={`Delete ${rule.name}?`}
-                    description="This stops auto-capturing new fixtures for this rule. It doesn't remove fixtures already saved."
-                    confirmLabel="Delete"
-                    destructive
-                    pending={remove.isPending}
-                    onConfirm={() => remove.mutate(rule.id)}
-                  >
-                    {(open) => (
-                      <Button size="sm" variant="ghost" onClick={open}>
-                        Delete
-                      </Button>
-                    )}
-                  </ConfirmDialog>
+                  {isAdmin && (
+                    <ConfirmDialog
+                      title={`Delete ${rule.name}?`}
+                      description="This stops auto-capturing new fixtures for this rule. It doesn't remove fixtures already saved."
+                      confirmLabel="Delete"
+                      destructive
+                      pending={remove.isPending}
+                      onConfirm={() => remove.mutate(rule.id)}
+                    >
+                      {(open) => (
+                        <Button size="sm" variant="ghost" onClick={open}>
+                          Delete
+                        </Button>
+                      )}
+                    </ConfirmDialog>
+                  )}
                 </div>
               </TableCell>
             </TableRow>
@@ -654,7 +660,8 @@ function CaptureRuleDialog({
               className="h-4 w-4"
             />
             <Label htmlFor="rule-enabled">
-              Enabled{!rule && <span className="text-muted-foreground"> (new rules start enabled)</span>}
+              Enabled
+              {!rule && <span className="text-muted-foreground"> (new rules start enabled)</span>}
             </Label>
           </div>
           <DialogFooter>
@@ -704,7 +711,12 @@ function ImportFixtureDialog({
         source_id: sourceId,
         name: name.trim(),
         ...(tags.trim()
-          ? { tags: tags.split(',').map((t) => t.trim()).filter(Boolean) }
+          ? {
+              tags: tags
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean),
+            }
           : {}),
       }),
     onSuccess: () => {
@@ -767,7 +779,9 @@ function ImportFixtureDialog({
             <Select value={sourceId} onValueChange={(v) => setSourceId(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue>
-                  {(v: string | null) => sources.find((src) => src.id === v)?.name ?? 'Select a source'}
+                  {(v: string | null) =>
+                    sources.find((src) => src.id === v)?.name ?? 'Select a source'
+                  }
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>

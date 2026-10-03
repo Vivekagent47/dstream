@@ -20,6 +20,7 @@ type ApiKey struct {
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
+	Role       string             `json:"role"`
 }
 
 type Application struct {
@@ -240,11 +241,17 @@ type OrgMember struct {
 }
 
 type Organization struct {
-	ID        pgtype.UUID        `json:"id"`
-	Name      string             `json:"name"`
-	Slug      string             `json:"slug"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	ID                pgtype.UUID        `json:"id"`
+	Name              string             `json:"name"`
+	Slug              string             `json:"slug"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Plan              string             `json:"plan"`
+	QuotaEventsSoft   int64              `json:"quota_events_soft"`
+	QuotaEventsHard   int64              `json:"quota_events_hard"`
+	QuotaMessagesSoft int64              `json:"quota_messages_soft"`
+	QuotaMessagesHard int64              `json:"quota_messages_hard"`
+	QuotaPeriod       string             `json:"quota_period"`
 }
 
 type Request struct {
@@ -297,6 +304,14 @@ type Source struct {
 	Enabled        bool               `json:"enabled"`
 	Description    string             `json:"description"`
 	AllowedMethods []string           `json:"allowed_methods"`
+}
+
+type UsageRollup struct {
+	OrgID       pgtype.UUID        `json:"org_id"`
+	PeriodStart pgtype.Timestamptz `json:"period_start"`
+	Metric      string             `json:"metric"`
+	Count       int64              `json:"count"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type User struct {

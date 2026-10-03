@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Pencil, Send, TerminalSquare, Trash2 } from 'lucide-react'
 
 import { api, qk, type Connection, type Destination } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
 import { DestinationMetrics } from '#/components/entity-metrics'
@@ -111,7 +112,9 @@ function DestinationDetail() {
           >
             {t.label}
             {t.key === 'connections' && connections && connections.length > 0 ? (
-              <Badge variant="secondary" className="px-1.5">{connections.length}</Badge>
+              <Badge variant="secondary" className="px-1.5">
+                {connections.length}
+              </Badge>
             ) : null}
           </Link>
         ))}
@@ -151,9 +154,7 @@ function OverviewTab({ dest }: { dest: Destination }) {
           <DetailRow label="Name">
             <CopyValue value={dest.name} what="Name" />
           </DetailRow>
-          {dest.description ? (
-            <DetailRow label="Description">{dest.description}</DetailRow>
-          ) : null}
+          {dest.description ? <DetailRow label="Description">{dest.description}</DetailRow> : null}
           <DetailRow label="Type">
             {dest.type === 'http' ? (
               <Badge variant="secondary" className="gap-1">
@@ -259,6 +260,7 @@ function numOrNull(s: string): number | null {
 function SettingsTab({ dest }: { dest: Destination }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
 
   const [name, setName] = useState(dest.name)
   const [description, setDescription] = useState(dest.description)
@@ -326,8 +328,15 @@ function SettingsTab({ dest }: { dest: Destination }) {
       {/* General */}
       <section className="space-y-4">
         <div>
-          <Label htmlFor="name" className="mb-2 block">Name</Label>
-          <Input id="name" value={name} onChange={(e) => setName(e.target.value)} className="w-full" />
+          <Label htmlFor="name" className="mb-2 block">
+            Name
+          </Label>
+          <Input
+            id="name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full"
+          />
         </div>
         <div>
           <Label htmlFor="description" className="mb-2 block">
@@ -342,7 +351,9 @@ function SettingsTab({ dest }: { dest: Destination }) {
         </div>
         {dest.type === 'http' ? (
           <div>
-            <Label htmlFor="url" className="mb-2 block">URL</Label>
+            <Label htmlFor="url" className="mb-2 block">
+              URL
+            </Label>
             <Input
               id="url"
               value={url}
@@ -352,7 +363,11 @@ function SettingsTab({ dest }: { dest: Destination }) {
             />
           </div>
         ) : null}
-        <Button size="sm" onClick={() => save.mutate()} disabled={!dirty || save.isPending || !limitsValid}>
+        <Button
+          size="sm"
+          onClick={() => save.mutate()}
+          disabled={!dirty || save.isPending || !limitsValid}
+        >
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
       </section>
@@ -361,35 +376,61 @@ function SettingsTab({ dest }: { dest: Destination }) {
       <section className="space-y-3 border-t border-border pt-6">
         <h2 className="text-sm font-semibold">Delivery limits</h2>
         <p className="text-sm text-muted-foreground">
-          Empty means unlimited. Rate limit caps deliveries per second; burst allows short
-          spikes above it; max in-flight caps concurrent deliveries.
+          Empty means unlimited. Rate limit caps deliveries per second; burst allows short spikes
+          above it; max in-flight caps concurrent deliveries.
         </p>
         <div className="grid gap-4 sm:grid-cols-3">
           <div>
-            <Label htmlFor="rps" className="mb-2 block">Rate limit (req/s)</Label>
-            <Input id="rps" type="number" min="0" value={rps} onChange={(e) => setRps(e.target.value)} />
+            <Label htmlFor="rps" className="mb-2 block">
+              Rate limit (req/s)
+            </Label>
+            <Input
+              id="rps"
+              type="number"
+              min="0"
+              value={rps}
+              onChange={(e) => setRps(e.target.value)}
+            />
           </div>
           <div>
-            <Label htmlFor="burst" className="mb-2 block">Burst</Label>
-            <Input id="burst" type="number" min="0" value={burst} onChange={(e) => setBurst(e.target.value)} />
+            <Label htmlFor="burst" className="mb-2 block">
+              Burst
+            </Label>
+            <Input
+              id="burst"
+              type="number"
+              min="0"
+              value={burst}
+              onChange={(e) => setBurst(e.target.value)}
+            />
           </div>
           <div>
-            <Label htmlFor="inflight" className="mb-2 block">Max in-flight</Label>
-            <Input id="inflight" type="number" min="0" value={inflight} onChange={(e) => setInflight(e.target.value)} />
+            <Label htmlFor="inflight" className="mb-2 block">
+              Max in-flight
+            </Label>
+            <Input
+              id="inflight"
+              type="number"
+              min="0"
+              value={inflight}
+              onChange={(e) => setInflight(e.target.value)}
+            />
           </div>
         </div>
       </section>
 
       {/* Delete */}
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-sm font-semibold text-destructive">Delete destination</h2>
-        <p className="text-sm text-muted-foreground">
-          Deletes this destination and all associated connections. Deliveries to it will stop.
-        </p>
-        <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete destination
-        </Button>
-      </section>
+      {isAdmin && (
+        <section className="space-y-2 border-t border-border pt-6">
+          <h2 className="text-sm font-semibold text-destructive">Delete destination</h2>
+          <p className="text-sm text-muted-foreground">
+            Deletes this destination and all associated connections. Deliveries to it will stop.
+          </p>
+          <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="h-4 w-4" /> Delete destination
+          </Button>
+        </section>
+      )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
@@ -400,8 +441,14 @@ function SettingsTab({ dest }: { dest: Destination }) {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>Cancel</Button>
-            <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
               {remove.isPending ? 'Deleting…' : 'Delete destination'}
             </Button>
           </DialogFooter>

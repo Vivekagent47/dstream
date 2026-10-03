@@ -20,6 +20,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
+	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
 type sendMessageReq struct {
@@ -37,6 +38,17 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	app, ok := d.appForOrg(w, r, p.OrgID)
 	if !ok {
+		return
+	}
+	// Per-org usage quota, before the (up to 5 MiB) body read for the same
+	// reason the ingest gate sits there: an over-quota flood must not force
+	// large reads. p.OrgID is already on the Principal and the limits come from
+	// the gate's snapshot, so this costs one Redis INCR and no query. Only the
+	// hard ceiling rejects; past the soft limit the publish is accepted as
+	// overage and the gate warns once per period. Any Redis error fails open.
+	if dec := d.Quota.CheckPublish(r.Context(), p.OrgID); dec == usage.OverHard {
+		w.Header().Set("Retry-After", usage.RetryAfter)
+		httpx.Err(w, http.StatusTooManyRequests, "quota exceeded")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 5<<20))

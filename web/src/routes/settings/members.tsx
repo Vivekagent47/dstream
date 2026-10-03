@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Plus } from 'lucide-react'
 
 import { api, qk, type Role } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { capitalize } from '#/lib/utils'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { PageHeader } from '#/components/TopBar'
@@ -48,8 +49,7 @@ function MembersPage() {
     retry: false,
   })
   const orgId = me?.active_org_id
-  const myRole = me?.orgs?.find((o) => o.id === orgId)?.role
-  const canManage = myRole === 'owner' || myRole === 'admin'
+  const { isAdmin: canManage } = useRole()
 
   const members = useQuery({
     queryKey: orgId ? qk.members(orgId) : ['members', 'none'],
@@ -190,9 +190,7 @@ function MembersPage() {
         Viewing {rows.length} {rows.length === 1 ? 'member' : 'members'}
       </footer>
 
-      {orgId && (
-        <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} orgId={orgId} />
-      )}
+      {orgId && <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} orgId={orgId} />}
     </div>
   )
 }
@@ -255,9 +253,14 @@ function InviteDialog({
           </div>
           <div>
             <Label className="mb-2 block">Role</Label>
-            <Select value={role} onValueChange={(v) => setRole((v as 'admin' | 'member') ?? 'member')}>
+            <Select
+              value={role}
+              onValueChange={(v) => setRole((v as 'admin' | 'member') ?? 'member')}
+            >
               <SelectTrigger className="w-full">
-                <SelectValue>{(v: string | null) => (v ? capitalize(v) : 'Select a role')}</SelectValue>
+                <SelectValue>
+                  {(v: string | null) => (v ? capitalize(v) : 'Select a role')}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {(['admin', 'member'] as const).map((r) => (

@@ -72,6 +72,7 @@ type Config struct {
 	Redis  RedisConfig  `mapstructure:"redis"`
 	Worker WorkerConfig `mapstructure:"worker"`
 	SMTP   SMTPConfig   `mapstructure:"smtp"`
+	OIDC   OIDCConfig   `mapstructure:"oidc"`
 
 	Tracing TracingConfig `mapstructure:"tracing"`
 }
@@ -98,6 +99,57 @@ type SMTPConfig struct {
 	User string `mapstructure:"user"`
 	Pass string `mapstructure:"pass"`
 	From string `mapstructure:"from"`
+}
+
+// OIDCConfig configures instance-level single sign-on: one IdP for the whole
+// deployment. Per-org IdP connections are deliberately out of scope — see the
+// phase 5b design doc.
+//
+// SSO is enabled by a non-empty Issuer. There is deliberately no separate
+// boolean, which could drift out of sync with the credentials.
+type OIDCConfig struct {
+	Issuer       string   `mapstructure:"issuer"`
+	ClientID     string   `mapstructure:"client_id"`
+	ClientSecret string   `mapstructure:"client_secret"`
+	Scopes       []string `mapstructure:"scopes"`
+	// DefaultOrgSlug, when set, joins first-time SSO users to that org at
+	// DefaultRole instead of minting each one a personal workspace — the
+	// common self-host shape, where everyone from the IdP works at one company.
+	DefaultOrgSlug string `mapstructure:"default_org"`
+	DefaultRole    string `mapstructure:"default_role"`
+	// Enforce refuses magic-link requests so they cannot be used to bypass
+	// IdP policy. `dstream admin magic-link` remains as a break-glass, since
+	// a broken IdP would otherwise lock every human out of the deployment.
+	Enforce bool `mapstructure:"enforce"`
+}
+
+// Enabled reports whether SSO is configured at all.
+func (o OIDCConfig) Enabled() bool { return o.Issuer != "" }
+
+// ValidateOIDC rejects configurations that would fail confusingly later —
+// inside the auth path at someone's first login attempt, rather than at boot.
+func (c Config) ValidateOIDC() error {
+	o := c.OIDC
+	if !o.Enabled() {
+		if o.Enforce {
+			return fmt.Errorf("config: DSTREAM_OIDC_ENFORCE is set without DSTREAM_OIDC_ISSUER — that disables every way to log in")
+		}
+		return nil
+	}
+	if o.ClientID == "" {
+		return fmt.Errorf("config: DSTREAM_OIDC_ISSUER is set but DSTREAM_OIDC_CLIENT_ID is empty")
+	}
+	if o.ClientSecret == "" {
+		return fmt.Errorf("config: DSTREAM_OIDC_ISSUER is set but DSTREAM_OIDC_CLIENT_SECRET is empty")
+	}
+	switch o.DefaultRole {
+	case "", "member", "admin":
+	case "owner":
+		return fmt.Errorf("config: DSTREAM_OIDC_DEFAULT_ROLE cannot be 'owner' — owner is reserved for explicit promotion")
+	default:
+		return fmt.Errorf("config: DSTREAM_OIDC_DEFAULT_ROLE %q must be 'member' or 'admin'", o.DefaultRole)
+	}
+	return nil
 }
 
 type TracingConfig struct {
@@ -161,6 +213,19 @@ func Load() (Config, error) {
 	v.SetDefault("smtp.user", "")
 	v.SetDefault("smtp.pass", "")
 	v.SetDefault("smtp.from", "noreply@localhost")
+
+	// Every oidc.* key needs a registered default, even the empty ones: viper's
+	// AutomaticEnv+Unmarshal only reads env for keys it already knows (same
+	// gotcha as tracing.otlp_endpoint below). Without these lines
+	// DSTREAM_OIDC_CLIENT_SECRET is silently dropped and SSO fails at a user's
+	// first login with an empty-credential error from the IdP.
+	v.SetDefault("oidc.issuer", "")
+	v.SetDefault("oidc.client_id", "")
+	v.SetDefault("oidc.client_secret", "")
+	v.SetDefault("oidc.scopes", "openid,email,profile")
+	v.SetDefault("oidc.default_org", "")
+	v.SetDefault("oidc.default_role", "member")
+	v.SetDefault("oidc.enforce", false)
 
 	v.SetDefault("tracing.enabled", false)
 	// Empty default is load-bearing: viper's AutomaticEnv+Unmarshal only reads

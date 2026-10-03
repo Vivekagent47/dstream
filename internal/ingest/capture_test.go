@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/dqueue"
@@ -26,9 +27,16 @@ import (
 type captureEnv struct {
 	h   *Handler
 	q   *store.Queries
-	org store.Organization
+	org store.CreateOrganizationRow
 	src store.Source
 	mux *chi.Mux
+	// pool backs q; quota_test.go's setQuotas still writes the org's events
+	// pair + period with raw SQL. Quota writes now live on the super-admin
+	// surface (PATCH /admin/orgs/{org_id}/plan, via store.UpdateOrgQuota),
+	// but that query replaces plan and both tiers together, and setQuotas
+	// needs to leave plan and the messages tier untouched — so raw SQL
+	// targeting just the two columns it means to change still fits better.
+	pool *pgxpool.Pool
 }
 
 func newCaptureEnv(t *testing.T) *captureEnv {
@@ -85,7 +93,7 @@ func newCaptureEnv(t *testing.T) *captureEnv {
 	}
 	mux := chi.NewRouter()
 	h.Mount(mux)
-	return &captureEnv{h: h, q: q, org: org, src: src, mux: mux}
+	return &captureEnv{h: h, q: q, org: org, src: src, mux: mux, pool: pool}
 }
 
 func (e *captureEnv) post(t *testing.T, body string) *httptest.ResponseRecorder {

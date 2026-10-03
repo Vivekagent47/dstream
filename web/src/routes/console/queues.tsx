@@ -51,17 +51,26 @@ function QueuesView() {
   }
   const requeue = useMutation({
     mutationFn: (raw: string) => api.adminRequeueDead(raw),
-    onSuccess: (r) => { toast.success(r.requeued ? 'Requeued' : 'Item already moved'); invalidate() },
+    onSuccess: (r) => {
+      toast.success(r.requeued ? 'Requeued' : 'Item already moved')
+      invalidate()
+    },
     onError: (e) => toast.error((e as Error).message),
   })
   const promote = useMutation({
     mutationFn: (raw: string) => api.adminPromoteScheduled(raw),
-    onSuccess: (r) => { toast.success(r.promoted ? 'Promoted' : 'Item already moved'); invalidate() },
+    onSuccess: (r) => {
+      toast.success(r.promoted ? 'Promoted' : 'Item already moved')
+      invalidate()
+    },
     onError: (e) => toast.error((e as Error).message),
   })
   const drain = useMutation({
     mutationFn: () => api.adminDrainDead(),
-    onSuccess: (r) => { toast.success(`Drained ${r.drained}`); invalidate() },
+    onSuccess: (r) => {
+      toast.success(`Drained ${r.drained}`)
+      invalidate()
+    },
     onError: (e) => toast.error((e as Error).message),
   })
 
@@ -69,11 +78,19 @@ function QueuesView() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Delivery queue" help="Inspect and act on individual queued/scheduled/processing/dead events." />
+      <PageHeader
+        title="Delivery queue"
+        help="Inspect and act on individual queued/scheduled/processing/dead events."
+      />
       <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
         <div className="flex items-center gap-2">
           {LANES.map((l) => (
-            <Button key={l} size="sm" variant={l === lane ? 'default' : 'outline'} onClick={() => setLane(l)}>
+            <Button
+              key={l}
+              size="sm"
+              variant={l === lane ? 'default' : 'outline'}
+              onClick={() => setLane(l)}
+            >
               {l}
             </Button>
           ))}
@@ -98,7 +115,12 @@ function QueuesView() {
         {lane === 'pending' && (
           <div className="flex flex-wrap gap-2">
             {(orgs.data ?? []).map((o) => (
-              <Button key={o.org_id} size="sm" variant={o.org_id === org ? 'default' : 'outline'} onClick={() => setOrg(o.org_id)}>
+              <Button
+                key={o.org_id}
+                size="sm"
+                variant={o.org_id === org ? 'default' : 'outline'}
+                onClick={() => setOrg(o.org_id)}
+              >
                 {o.org_name || o.org_id.slice(0, 8)} ({o.pending})
               </Button>
             ))}
@@ -121,21 +143,47 @@ function QueuesView() {
             {rows.map((it) => (
               <TableRow key={it.raw}>
                 <TableCell className="pl-4 font-mono text-xs">
-                  {it.decode_error ? <span className="text-destructive">decode error</span> : it.event_id.slice(0, 8)}
+                  {it.decode_error ? (
+                    <span className="text-destructive">decode error</span>
+                  ) : (
+                    it.event_id.slice(0, 8)
+                  )}
                 </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">{it.org_id.slice(0, 8)}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
+                  {it.org_id.slice(0, 8)}
+                </TableCell>
                 <TableCell className="tabular-nums">{it.attempt}</TableCell>
-                <TableCell className="text-muted-foreground">{ageMs(it.enqueued_at_unix_ms)}</TableCell>
-                {lane === 'scheduled' && <TableCell className="text-muted-foreground">in {ageMs(2 * Date.now() - (it.next_run_ms ?? 0))}</TableCell>}
-                {lane === 'processing' && <TableCell className="text-muted-foreground">{ageMs(2 * Date.now() - (it.lease_deadline_ms ?? 0))}</TableCell>}
+                <TableCell className="text-muted-foreground">
+                  {ageMs(it.enqueued_at_unix_ms)}
+                </TableCell>
+                {lane === 'scheduled' && (
+                  <TableCell className="text-muted-foreground">
+                    in {ageMs(2 * Date.now() - (it.next_run_ms ?? 0))}
+                  </TableCell>
+                )}
+                {lane === 'processing' && (
+                  <TableCell className="text-muted-foreground">
+                    {ageMs(2 * Date.now() - (it.lease_deadline_ms ?? 0))}
+                  </TableCell>
+                )}
                 <TableCell className="pr-4 text-right">
                   {lane === 'dead' && !it.decode_error && (
-                    <Button size="sm" variant="outline" onClick={() => requeue.mutate(it.raw)} disabled={requeue.isPending}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => requeue.mutate(it.raw)}
+                      disabled={requeue.isPending}
+                    >
                       Requeue
                     </Button>
                   )}
                   {lane === 'scheduled' && !it.decode_error && (
-                    <Button size="sm" variant="outline" onClick={() => promote.mutate(it.raw)} disabled={promote.isPending}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => promote.mutate(it.raw)}
+                      disabled={promote.isPending}
+                    >
                       Promote
                     </Button>
                   )}
@@ -152,7 +200,9 @@ function QueuesView() {
           </TableBody>
         </Table>
         {items.data?.truncated && (
-          <p className="text-xs text-muted-foreground">Showing the first {rows.length} — more exist.</p>
+          <p className="text-xs text-muted-foreground">
+            Showing the first {rows.length} — more exist.
+          </p>
         )}
       </div>
     </div>

@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
 
 import { api, qk, type Bookmark, type Scenario, type ScenarioReplayResult } from '#/lib/api'
+import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { PageHeader } from '#/components/TopBar'
@@ -65,6 +66,7 @@ function ScenariosPage() {
   const qc = useQueryClient()
   const { data: scenarios, error } = useQuery(scenariosQuery)
   const { data: bookmarks } = useQuery(bookmarksQuery)
+  const { isAdmin } = useRole()
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -133,20 +135,22 @@ function ScenariosPage() {
                     <Button size="sm" variant="outline" onClick={() => setReplayId(s.id)}>
                       Replay
                     </Button>
-                    <ConfirmDialog
-                      title={`Delete ${s.name}?`}
-                      description="This removes the scenario. It doesn't affect the fixtures it replays."
-                      confirmLabel="Delete"
-                      destructive
-                      pending={remove.isPending}
-                      onConfirm={() => remove.mutate(s.id)}
-                    >
-                      {(open) => (
-                        <Button size="sm" variant="ghost" onClick={open}>
-                          Delete
-                        </Button>
-                      )}
-                    </ConfirmDialog>
+                    {isAdmin && (
+                      <ConfirmDialog
+                        title={`Delete ${s.name}?`}
+                        description="This removes the scenario. It doesn't affect the fixtures it replays."
+                        confirmLabel="Delete"
+                        destructive
+                        pending={remove.isPending}
+                        onConfirm={() => remove.mutate(s.id)}
+                      >
+                        {(open) => (
+                          <Button size="sm" variant="ghost" onClick={open}>
+                            Delete
+                          </Button>
+                        )}
+                      </ConfirmDialog>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -377,7 +381,12 @@ function ScenarioDialog({
                   >
                     <ArrowDown className="h-4 w-4" />
                   </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={() => removeStep(step.key)}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => removeStep(step.key)}
+                  >
                     <X className="h-4 w-4" />
                   </Button>
                 </div>

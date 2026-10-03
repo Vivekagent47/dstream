@@ -164,6 +164,7 @@ func TestLog_APIKeyPrincipal_WritesAPIKeyID(t *testing.T) {
 		Name:    "audit-test",
 		Prefix:  prefix,
 		KeyHash: hash,
+		Role:    "admin",
 	})
 	if err != nil {
 		t.Fatalf("create api key: %v", err)

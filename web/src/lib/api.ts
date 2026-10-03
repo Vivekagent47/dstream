@@ -189,6 +189,7 @@ export interface Invite {
 export interface APIKey {
   id: string
   name: string
+  role: 'admin' | 'member'
   prefix: string
   created_at: string
   last_used_at: string | null
@@ -198,6 +199,7 @@ export interface APIKey {
 export interface APIKeyCreateResult {
   id: string
   name: string
+  role: 'admin' | 'member'
   prefix: string
   key: string
 }
@@ -231,6 +233,14 @@ export interface MeResponse {
   orgs?: Org[]
   active_org_id?: string
   api_key?: { org_id: string }
+}
+
+// AuthMethods is what the unauthenticated login page asks for before it
+// renders any control: `sso` is true when an IdP is configured, `magic_link`
+// is false when SSO is enforced (the server 403s magic-link requests then).
+export interface AuthMethods {
+  sso: boolean
+  magic_link: boolean
 }
 
 export interface InvitePeek {
@@ -449,10 +459,82 @@ export interface ScenarioReplayResult {
   error?: string
 }
 
+// Usage and quotas (phase 5c; admin-managed since 2026-10-03). `0` on any
+// limit means unlimited. A new org lands on the free tier via the
+// organizations column defaults — see internal/usage/plans.go, which is the
+// source of truth for what a plan name grants.
+export type Plan = 'free' | 'pro' | 'enterprise' | 'custom'
+export type QuotaPeriod = 'day' | 'month'
+
+export interface UsageLimits {
+  events_soft: number
+  events_hard: number
+  messages_soft: number
+  messages_hard: number
+}
+
+export interface OrgQuota {
+  plan: Plan
+  period: QuotaPeriod
+  limits: UsageLimits
+}
+
+// GET /api/usage. `partial` is always true — the current period is still
+// accumulating, so a chart must not render it as a completed, lower bar.
+// `usage` counts lag real traffic slightly: the hot-path counter increments
+// once per request while the authoritative sweep counts real `events` rows,
+// so a source that fans out to several connections crosses its real limit
+// later than the live counter here suggests.
+export interface Usage extends OrgQuota {
+  period_start: string
+  partial: boolean
+  usage: {
+    requests: number
+    events: number
+    messages: number
+    attempts: number
+  }
+}
+
+// GET /admin/usage — one row per org in the whole deployment, each against
+// its OWN limits and period. Super-admin only.
+export interface AdminOrgUsage {
+  org_id: string
+  org_name: string
+  org_slug: string
+  plan: Plan
+  period: QuotaPeriod
+  period_start: string
+  partial: boolean
+  usage: {
+    requests: number
+    events: number
+    messages: number
+    attempts: number
+  }
+  quota_events_soft: number
+  quota_events_hard: number
+  quota_messages_soft: number
+  quota_messages_hard: number
+}
+
+// GET /admin/plans — the preset table from internal/usage/plans.go, so the
+// console shows what a tier grants without restating the numbers here.
+// `custom` is the last entry and carries no limits: it means "numbers the
+// operator types", which is why it is flagged rather than preset.
+export interface PlanPreset {
+  plan: Plan
+  events_soft: number
+  events_hard: number
+  messages_soft: number
+  messages_hard: number
+  period: QuotaPeriod
+  custom?: boolean
+}
+
 export const api = {
   me: () => http.get<MeResponse>('/api/me').then((r) => r.data),
-  updateMe: (input: { name: string }) =>
-    http.patch<MeUser>('/api/me', input).then((r) => r.data),
+  updateMe: (input: { name: string }) => http.patch<MeUser>('/api/me', input).then((r) => r.data),
 
   requestMagicLink: (email: string) =>
     http.post<void>('/api/auth/magic-link/request', { email }).then((r) => r.data),
@@ -462,6 +544,20 @@ export const api = {
   verifyMagicLink: (token: string) =>
     http.post<void>('/api/auth/magic-link/verify', { token }).then((r) => r.data),
   logout: () => http.post<void>('/api/auth/logout').then((r) => r.data),
+
+  // Deadlined, unlike every other call here: the login page renders no
+  // sign-in control until this answers, so a proxy that accepts the
+  // connection and never replies would leave no way in at all. 5s then fail,
+  // which the caller treats as "offer both methods" — see login.tsx.
+  authMethods: () =>
+    http.get<AuthMethods>('/api/auth/methods', { timeout: 5000 }).then((r) => r.data),
+  // Deliberately a URL builder, not a call: /api/auth/sso/start 302s to the
+  // IdP, so it has to be reached by a document navigation (anchor href or
+  // location.assign). An XHR would follow the redirect inside JS and the
+  // handshake would never reach the browser. Relative on purpose — same
+  // origin as the document, which is where /api is proxied.
+  ssoStartUrl: (returnTo = '/connections') =>
+    `/api/auth/sso/start?return_to=${encodeURIComponent(returnTo)}`,
 
   // Orgs
   listMyOrgs: () => http.get<Org[]>('/api/orgs').then((r) => r.data),
@@ -496,8 +592,10 @@ export const api = {
   // API keys
   listAPIKeys: (org_id: string) =>
     http.get<APIKey[]>(`/api/orgs/${org_id}/api-keys`).then((r) => r.data),
-  createAPIKey: (org_id: string, name: string) =>
-    http.post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name }).then((r) => r.data),
+  createAPIKey: (org_id: string, name: string, role?: 'admin' | 'member') =>
+    http
+      .post<APIKeyCreateResult>(`/api/orgs/${org_id}/api-keys`, { name, role })
+      .then((r) => r.data),
   revokeAPIKey: (org_id: string, id: string) =>
     http.delete<void>(`/api/orgs/${org_id}/api-keys/${id}`).then((r) => r.data),
 
@@ -521,8 +619,7 @@ export const api = {
         params: { lane, org: opts?.org, limit: opts?.limit },
       })
       .then((r) => r.data),
-  adminQueueOrgs: () =>
-    http.get<QueueOrgPending[]>('/admin/queues/orgs').then((r) => r.data),
+  adminQueueOrgs: () => http.get<QueueOrgPending[]>('/admin/queues/orgs').then((r) => r.data),
   adminRequeueDead: (raw: string) =>
     http.post<{ requeued: boolean }>('/admin/queues/dead/requeue', { raw }).then((r) => r.data),
   adminPromoteScheduled: (raw: string) =>
@@ -531,6 +628,22 @@ export const api = {
       .then((r) => r.data),
   adminDrainDead: () =>
     http.post<{ drained: number }>('/admin/queues/dead/drain').then((r) => r.data),
+  adminUsage: () => http.get<AdminOrgUsage[]>('/admin/usage').then((r) => r.data),
+  adminPlans: () => http.get<PlanPreset[]>('/admin/plans').then((r) => r.data),
+  // The only quota write in the product. A preset plan rejects explicit
+  // limits and quota_period with 400 — move the org to `custom` first, which
+  // is a PATCH of its own and keeps the audit log readable.
+  adminPatchOrgPlan: (
+    org_id: string,
+    input: {
+      plan?: Plan
+      quota_period?: QuotaPeriod
+      quota_events_soft?: number
+      quota_events_hard?: number
+      quota_messages_soft?: number
+      quota_messages_hard?: number
+    },
+  ) => http.patch<OrgQuota>(`/admin/orgs/${org_id}/plan`, input).then((r) => r.data),
 
   // Sources
   listSources: () => http.get<Source[]>('/api/sources').then((r) => r.data),
@@ -564,8 +677,7 @@ export const api = {
         params: sourceId ? { source_id: sourceId } : undefined,
       })
       .then((r) => r.data),
-  getConnection: (id: string) =>
-    http.get<Connection>(`/api/connections/${id}`).then((r) => r.data),
+  getConnection: (id: string) => http.get<Connection>(`/api/connections/${id}`).then((r) => r.data),
   createConnection: (input: {
     source_id: string
     destination_id: string
@@ -574,8 +686,7 @@ export const api = {
   }) => http.post<Connection>('/api/connections', input).then((r) => r.data),
   patchConnection: (id: string, input: Partial<Connection>) =>
     http.patch<Connection>(`/api/connections/${id}`, input).then((r) => r.data),
-  deleteConnection: (id: string) =>
-    http.delete<void>(`/api/connections/${id}`).then((r) => r.data),
+  deleteConnection: (id: string) => http.delete<void>(`/api/connections/${id}`).then((r) => r.data),
   testConnection: (id: string) =>
     http.post<{ event_id: string }>(`/api/connections/${id}/test`).then((r) => r.data),
   getConnectionStats: (id: string) =>
@@ -615,8 +726,7 @@ export const api = {
     http.post<Application>('/api/applications', input).then((r) => r.data),
   updateApplication: (id: string, input: { name?: string; uid?: string; metadata?: unknown }) =>
     http.patch<Application>(`/api/applications/${id}`, input).then((r) => r.data),
-  deleteApplication: (id: string) =>
-    http.delete(`/api/applications/${id}`).then(() => undefined),
+  deleteApplication: (id: string) => http.delete(`/api/applications/${id}`).then(() => undefined),
   // The org's operational application (get-or-create); dstream delivers
   // endpoint.disabled / message.attempt.exhausted events to its endpoints.
   getOperationalApp: () => http.get<Application>('/api/operational-app').then((r) => r.data),
@@ -652,7 +762,9 @@ export const api = {
       channels?: string[]
     },
   ) =>
-    http.post<EndpointWithSecret>(`/api/applications/${appId}/endpoints`, input).then((r) => r.data),
+    http
+      .post<EndpointWithSecret>(`/api/applications/${appId}/endpoints`, input)
+      .then((r) => r.data),
   getEndpoint: (appId: string, id: string) =>
     http.get<Endpoint>(`/api/applications/${appId}/endpoints/${id}`).then((r) => r.data),
   updateEndpoint: (
@@ -669,7 +781,8 @@ export const api = {
       filter_expr?: string | null
       transform_js?: string | null
     },
-  ) => http.patch<Endpoint>(`/api/applications/${appId}/endpoints/${id}`, input).then((r) => r.data),
+  ) =>
+    http.patch<Endpoint>(`/api/applications/${appId}/endpoints/${id}`, input).then((r) => r.data),
   deleteEndpoint: (appId: string, id: string) =>
     http.delete(`/api/applications/${appId}/endpoints/${id}`).then(() => undefined),
   getEndpointSecret: (appId: string, id: string) =>
@@ -700,10 +813,11 @@ export const api = {
     input: { event_type: string; payload: unknown; event_id?: string; channels?: string[] },
   ) =>
     http
-      .post<{ message_id: string; event_id?: string; idempotent_replay: boolean }>(
-        `/api/applications/${appId}/messages`,
-        input,
-      )
+      .post<{
+        message_id: string
+        event_id?: string
+        idempotent_replay: boolean
+      }>(`/api/applications/${appId}/messages`, input)
       .then((r) => r.data),
   listMessages: (appId: string, cursor?: string) =>
     http
@@ -723,9 +837,9 @@ export const api = {
       .then((r) => r.data),
   replayDelivery: (appId: string, msgId: string, endpointId: string) =>
     http
-      .post<{ delivery_id: string }>(
-        `/api/applications/${appId}/messages/${msgId}/endpoints/${endpointId}/replay`,
-      )
+      .post<{
+        delivery_id: string
+      }>(`/api/applications/${appId}/messages/${msgId}/endpoints/${endpointId}/replay`)
       .then((r) => r.data),
 
   // Filter/transform dev-time preview (stateless authed aids).
@@ -737,9 +851,7 @@ export const api = {
   // App Portal — mint a scoped, expiring link the application owner uses to
   // manage their own endpoints; revoke invalidates all outstanding links.
   createPortalAccess: (appId: string) =>
-    http
-      .post<PortalAccess>(`/api/applications/${appId}/portal-access`)
-      .then((r) => r.data),
+    http.post<PortalAccess>(`/api/applications/${appId}/portal-access`).then((r) => r.data),
   revokePortalAccess: (appId: string) =>
     http.post(`/api/applications/${appId}/portal-access/revoke`).then(() => undefined),
 
@@ -762,10 +874,8 @@ export const api = {
         created_at: string
       }>('/api/bookmarks', input)
       .then((r) => r.data),
-  updateBookmark: (
-    id: string,
-    input: { name?: string; description?: string; tags?: string[] },
-  ) => http.patch<Bookmark>(`/api/bookmarks/${id}`, input).then((r) => r.data),
+  updateBookmark: (id: string, input: { name?: string; description?: string; tags?: string[] }) =>
+    http.patch<Bookmark>(`/api/bookmarks/${id}`, input).then((r) => r.data),
   importBookmark: (body: {
     source_id: string
     name: string
@@ -782,10 +892,11 @@ export const api = {
     http.post<{ event_ids: string[] }>(`/api/bookmarks/${id}/replay`).then((r) => r.data),
   replayBookmarkTo: (id: string, url: string) =>
     http
-      .post<{ status: number; duration_ms: number; response_body: string }>(
-        `/api/bookmarks/${id}/replay-to`,
-        { url },
-      )
+      .post<{
+        status: number
+        duration_ms: number
+        response_body: string
+      }>(`/api/bookmarks/${id}/replay-to`, { url })
       .then((r) => r.data),
   // A plain browser navigation (anchor download) bypasses axios, so this
   // builds the URL from the same base the axios instance targets.
@@ -831,19 +942,26 @@ export const api = {
     http
       .post<{ results: ScenarioReplayResult[] }>(`/api/scenarios/${id}/replay-to`, { url })
       .then((r) => r.data),
+
+  // Usage and quotas
+  getUsage: () => http.get<Usage>('/api/usage').then((r) => r.data),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
 // stay in sync with the API surface.
 export const qk = {
   me: () => ['me'] as const,
+  authMethods: () => ['auth-methods'] as const,
   adminOverview: () => ['admin', 'overview'] as const,
   adminOrgs: () => ['admin', 'orgs'] as const,
   adminQueues: () => ['admin', 'queues'] as const,
-  adminQueueItems: (lane: string, org?: string) => ['admin', 'queue-items', lane, org ?? ''] as const,
+  adminQueueItems: (lane: string, org?: string) =>
+    ['admin', 'queue-items', lane, org ?? ''] as const,
   adminQueueOrgs: () => ['admin', 'queue-orgs'] as const,
   adminHotDestinations: () => ['admin', 'destinations', 'hot'] as const,
   adminSystem: () => ['admin', 'system'] as const,
+  adminUsage: () => ['admin', 'usage'] as const,
+  adminPlans: () => ['admin', 'plans'] as const,
   orgs: () => ['orgs'] as const,
   members: (org_id: string) => ['members', org_id] as const,
   invites: (org_id: string) => ['invites', org_id] as const,
@@ -894,8 +1012,8 @@ export const qk = {
     ['applications', appId, 'messages', id, 'attempts'] as const,
   bookmarks: (params?: { source_id?: string; tag?: string }) =>
     ['bookmarks', params ?? {}] as const,
-  captureRules: (params?: { source_id?: string }) =>
-    ['capture-rules', params ?? {}] as const,
+  captureRules: (params?: { source_id?: string }) => ['capture-rules', params ?? {}] as const,
   scenarios: () => ['scenarios'] as const,
   scenario: (id: string) => ['scenarios', id] as const,
+  usage: () => ['usage'] as const,
 }

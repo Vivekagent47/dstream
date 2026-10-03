@@ -88,8 +88,7 @@ export const portalApi = {
       transform_js?: string | null
     },
   ) => http.patch<Endpoint>(`/api/portal/endpoints/${id}`, input).then((r) => r.data),
-  deleteEndpoint: (id: string) =>
-    http.delete(`/api/portal/endpoints/${id}`).then(() => undefined),
+  deleteEndpoint: (id: string) => http.delete(`/api/portal/endpoints/${id}`).then(() => undefined),
   getEndpointSecret: (id: string) =>
     http.get<{ secret: string }>(`/api/portal/endpoints/${id}/secret`).then((r) => r.data),
   rotateEndpointSecret: (id: string, input?: { secret?: string }) =>
@@ -101,9 +100,7 @@ export const portalApi = {
   recoverEndpoint: (id: string, input: { since: string }) =>
     http.post<RecoverResult>(`/api/portal/endpoints/${id}/recover`, input).then((r) => r.data),
   listEndpointAttempts: (id: string) =>
-    http
-      .get<MessageDeliveryAttempt[]>(`/api/portal/endpoints/${id}/attempts`)
-      .then((r) => r.data),
+    http.get<MessageDeliveryAttempt[]>(`/api/portal/endpoints/${id}/attempts`).then((r) => r.data),
 
   listMessages: (cursor?: string) =>
     http
@@ -112,18 +109,12 @@ export const portalApi = {
   getMessage: (id: string) =>
     http.get<MessageDetail>(`/api/portal/messages/${id}`).then((r) => r.data),
   listMessageDeliveries: (id: string) =>
-    http
-      .get<MessageDelivery[]>(`/api/portal/messages/${id}/deliveries`)
-      .then((r) => r.data),
+    http.get<MessageDelivery[]>(`/api/portal/messages/${id}/deliveries`).then((r) => r.data),
   listMessageAttempts: (id: string) =>
-    http
-      .get<MessageDeliveryAttempt[]>(`/api/portal/messages/${id}/attempts`)
-      .then((r) => r.data),
+    http.get<MessageDeliveryAttempt[]>(`/api/portal/messages/${id}/attempts`).then((r) => r.data),
   replayDelivery: (msgId: string, endpointId: string) =>
     http
-      .post<{ delivery_id: string }>(
-        `/api/portal/messages/${msgId}/endpoints/${endpointId}/replay`,
-      )
+      .post<{ delivery_id: string }>(`/api/portal/messages/${msgId}/endpoints/${endpointId}/replay`)
       .then((r) => r.data),
 
   listEventTypes: () => http.get<EventType[]>('/api/portal/event-types').then((r) => r.data),
