@@ -29,6 +29,7 @@ import { api, qk, type AuthMethods } from '#/lib/api'
 export function useAuthMethods(): { methods: AuthMethods | null; fromServer: boolean } {
   const q = useQuery({ queryKey: qk.authMethods(), queryFn: api.authMethods, retry: false })
   if (q.data) return { methods: q.data, fromServer: true }
-  if (q.isError || q.isPaused) return { methods: { sso: true, magic_link: true }, fromServer: false }
+  if (q.isError || q.isPaused)
+    return { methods: { sso: true, magic_link: true }, fromServer: false }
   return { methods: null, fromServer: false }
 }

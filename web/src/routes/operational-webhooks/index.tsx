@@ -12,14 +12,19 @@ export const Route = createFileRoute('/operational-webhooks/')({
 })
 
 function OperationalWebhooksPage() {
-  const { data: app, error, isLoading } = useQuery({
+  const {
+    data: app,
+    error,
+    isLoading,
+  } = useQuery({
     queryKey: qk.operationalApp(),
     queryFn: api.getOperationalApp,
   })
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Operational webhooks"
+      <PageHeader
+        title="Operational webhooks"
         help="Platform notifications about your own account — delivery failures and endpoint health."
       />
       <div className="flex-1 overflow-y-auto px-6 py-4">

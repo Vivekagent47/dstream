@@ -9,13 +9,7 @@ import { useRole } from '#/lib/useRole'
 import { PageHeader } from '#/components/TopBar'
 import { ConfirmDialog } from '#/components/ConfirmDialog'
 import { Button, buttonVariants } from '#/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '#/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#/components/ui/card'
 import { Input } from '#/components/ui/input'
 import { Label } from '#/components/ui/label'
 import {
@@ -84,141 +78,135 @@ function OrgSettingsPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Organization settings"
-        help="Your organization's name and profile."
-      />
+      <PageHeader title="Organization settings" help="Your organization's name and profile." />
       <div className="flex-1 overflow-y-auto px-6 py-8">
         <div className="mx-auto max-w-3xl space-y-6">
+          {orgId && (
+            <RenameOrgCard
+              key={`${orgId}:${activeOrg?.name ?? ''}`}
+              orgId={orgId}
+              initialName={activeOrg?.name ?? ''}
+              isAdmin={isAdmin}
+            />
+          )}
 
-      {orgId && (
-        <RenameOrgCard
-          key={`${orgId}:${activeOrg?.name ?? ''}`}
-          orgId={orgId}
-          initialName={activeOrg?.name ?? ''}
-          isAdmin={isAdmin}
-        />
-      )}
+          <Card>
+            <CardHeader>
+              <CardTitle>Usage</CardTitle>
+              <CardDescription>
+                See this org&rsquo;s metered traffic against its plan limits for the current period.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link to="/settings/usage" className={buttonVariants({ variant: 'outline' })}>
+                View usage
+              </Link>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Usage</CardTitle>
-          <CardDescription>
-            See this org&rsquo;s metered traffic against its plan limits for the current period.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Link to="/settings/usage" className={buttonVariants({ variant: 'outline' })}>
-            View usage
-          </Link>
-        </CardContent>
-      </Card>
+          {isOwner && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Transfer ownership</CardTitle>
+                <CardDescription>
+                  Promote a current member to owner. You&rsquo;ll be demoted to admin.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <Label>New owner</Label>
+                  <div className="flex gap-3">
+                    <Select value={transferTo} onValueChange={(v) => setTransferTo(v ?? '')}>
+                      <SelectTrigger className="flex-1">
+                        <SelectValue>
+                          {(value: string | null) => {
+                            if (!value) return 'Pick a member'
+                            const m = members.data?.find((mem) => mem.user_id === value)
+                            return m?.email ?? value
+                          }}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {members.data
+                          ?.filter((m) => m.user_id !== me?.user?.id)
+                          .map((m) => (
+                            <SelectItem key={m.user_id} value={m.user_id}>
+                              {m.email}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    <ConfirmDialog
+                      title="Transfer ownership?"
+                      description="You will be demoted to admin. The new owner gains full control of this org, including the right to delete it."
+                      confirmLabel="Transfer"
+                      destructive
+                      pending={transfer.isPending}
+                      onConfirm={() => transfer.mutate()}
+                    >
+                      {(open) => (
+                        <Button onClick={open} disabled={!transferTo || transfer.isPending}>
+                          {transfer.isPending ? 'Transferring…' : 'Transfer'}
+                        </Button>
+                      )}
+                    </ConfirmDialog>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-      {isOwner && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Transfer ownership</CardTitle>
-            <CardDescription>
-              Promote a current member to owner. You&rsquo;ll be demoted to admin.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <Label>New owner</Label>
-              <div className="flex gap-3">
-                <Select
-                  value={transferTo}
-                  onValueChange={(v) => setTransferTo(v ?? '')}
+          {isOwner && (
+            <Card className="border-destructive/40">
+              <CardHeader>
+                <CardTitle className="text-destructive">Delete organization</CardTitle>
+                <CardDescription>
+                  Permanently removes this org, all members, sources, destinations, events, and
+                  audit logs. This cannot be undone.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+                  Delete organization
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          <Dialog
+            open={confirmDelete}
+            onOpenChange={(o) => {
+              setConfirmDelete(o)
+              if (!o) setDeleteText('')
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete {activeOrg?.name}?</DialogTitle>
+                <DialogDescription>
+                  Type <strong>{activeOrg?.name}</strong> to confirm. This action is permanent.
+                </DialogDescription>
+              </DialogHeader>
+              <Input
+                value={deleteText}
+                onChange={(e) => setDeleteText(e.target.value)}
+                placeholder={activeOrg?.name}
+                autoFocus
+              />
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={deleteText !== activeOrg?.name || removeOrg.isPending}
+                  onClick={() => removeOrg.mutate()}
                 >
-                  <SelectTrigger className="flex-1">
-                    <SelectValue>
-                      {(value: string | null) => {
-                        if (!value) return 'Pick a member'
-                        const m = members.data?.find((mem) => mem.user_id === value)
-                        return m?.email ?? value
-                      }}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {members.data
-                      ?.filter((m) => m.user_id !== me?.user?.id)
-                      .map((m) => (
-                        <SelectItem key={m.user_id} value={m.user_id}>
-                          {m.email}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-                <ConfirmDialog
-                  title="Transfer ownership?"
-                  description="You will be demoted to admin. The new owner gains full control of this org, including the right to delete it."
-                  confirmLabel="Transfer"
-                  destructive
-                  pending={transfer.isPending}
-                  onConfirm={() => transfer.mutate()}
-                >
-                  {(open) => (
-                    <Button onClick={open} disabled={!transferTo || transfer.isPending}>
-                      {transfer.isPending ? 'Transferring…' : 'Transfer'}
-                    </Button>
-                  )}
-                </ConfirmDialog>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {isOwner && (
-        <Card className="border-destructive/40">
-          <CardHeader>
-            <CardTitle className="text-destructive">Delete organization</CardTitle>
-            <CardDescription>
-              Permanently removes this org, all members, sources, destinations, events, and audit
-              logs. This cannot be undone.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-              Delete organization
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      <Dialog
-        open={confirmDelete}
-        onOpenChange={(o) => {
-          setConfirmDelete(o)
-          if (!o) setDeleteText('')
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete {activeOrg?.name}?</DialogTitle>
-            <DialogDescription>
-              Type <strong>{activeOrg?.name}</strong> to confirm. This action is permanent.
-            </DialogDescription>
-          </DialogHeader>
-          <Input
-            value={deleteText}
-            onChange={(e) => setDeleteText(e.target.value)}
-            placeholder={activeOrg?.name}
-            autoFocus
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDelete(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteText !== activeOrg?.name || removeOrg.isPending}
-              onClick={() => removeOrg.mutate()}
-            >
-              {removeOrg.isPending ? 'Deleting…' : 'Delete forever'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+                  {removeOrg.isPending ? 'Deleting…' : 'Delete forever'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>

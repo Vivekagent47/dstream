@@ -83,12 +83,16 @@ function AuditPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Audit log"
+      <PageHeader
+        title="Audit log"
         help="A record of security-relevant actions taken in this organization."
       />
 
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3">
-        <Select value={actorId || 'all'} onValueChange={(v) => setActorId(v === 'all' || !v ? '' : v)}>
+        <Select
+          value={actorId || 'all'}
+          onValueChange={(v) => setActorId(v === 'all' || !v ? '' : v)}
+        >
           <SelectTrigger className="w-[200px]">
             <SelectValue>
               {(v: string | null) => {
@@ -177,7 +181,9 @@ function AuditPage() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => setExpanded((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                        onClick={() =>
+                          setExpanded((prev) => ({ ...prev, [row.id]: !prev[row.id] }))
+                        }
                       >
                         {open ? 'Hide' : 'Details'}
                       </Button>

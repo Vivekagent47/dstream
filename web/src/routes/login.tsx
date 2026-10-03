@@ -196,7 +196,8 @@ function Login() {
               )}
 
               <p className="mt-6 text-center text-xs text-muted-foreground">
-                By continuing you agree to the terms of the dstream instance you&apos;re signing into.
+                By continuing you agree to the terms of the dstream instance you&apos;re signing
+                into.
               </p>
             </>
           )}

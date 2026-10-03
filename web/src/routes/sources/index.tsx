@@ -81,7 +81,8 @@ function SourcesPage() {
   }, [sources, q, status, order])
 
   const patch = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.updateSource(id, { enabled }),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.updateSource(id, { enabled }),
     onSuccess: (_r, v) => {
       qc.invalidateQueries({ queryKey: qk.sources() })
       toast.success(v.enabled ? 'Source enabled' : 'Source disabled')
@@ -275,7 +276,13 @@ function SourceRowMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Source actions" disabled={pending}>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8"
+          aria-label="Source actions"
+          disabled={pending}
+        >
           <MoreHorizontal className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>

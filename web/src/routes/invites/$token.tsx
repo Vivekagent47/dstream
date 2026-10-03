@@ -7,13 +7,7 @@ import { toast } from 'sonner'
 import { api, qk } from '#/lib/api'
 import { useAuthMethods } from '#/lib/useAuthMethods'
 import { Button, buttonVariants } from '#/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '#/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#/components/ui/card'
 
 export const Route = createFileRoute('/invites/$token')({ component: InvitePage })
 

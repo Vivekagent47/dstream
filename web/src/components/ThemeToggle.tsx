@@ -62,10 +62,7 @@ export default function ThemeToggle() {
     window.localStorage.setItem('theme', nextMode)
   }
 
-  const label =
-    mode === 'auto'
-      ? 'Theme: system. Switch to light.'
-      : `Theme: ${mode}. Switch mode.`
+  const label = mode === 'auto' ? 'Theme: system. Switch to light.' : `Theme: ${mode}. Switch mode.`
 
   const Icon = mode === 'auto' ? Monitor : mode === 'dark' ? Moon : Sun
 

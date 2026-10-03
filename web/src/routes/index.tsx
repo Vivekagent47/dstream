@@ -36,7 +36,9 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function Section({ children }: { children: React.ReactNode }) {
-  return <section className="border-b border-border px-6 py-16 sm:px-10 sm:py-20">{children}</section>
+  return (
+    <section className="border-b border-border px-6 py-16 sm:px-10 sm:py-20">{children}</section>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -66,7 +68,7 @@ function Hero() {
           </svg>
         </span>
       </h1>
-      <p className="mx-auto mt-8 max-w-xl text-lg text-muted-foreground text-pretty">
+      <p className="mx-auto mt-8 max-w-xl text-lg text-pretty text-muted-foreground">
         Reliable infrastructure to receive, route, retry, and replay every webhook — without
         building the delivery plumbing yourself.
       </p>
@@ -181,12 +183,7 @@ function FlowDiagram() {
         className="fill-primary/5 stroke-primary"
         strokeWidth="2"
       />
-      <text
-        x={360}
-        y={146}
-        textAnchor="middle"
-        className="fill-primary text-[15px] font-bold"
-      >
+      <text x={360} y={146} textAnchor="middle" className="fill-primary text-[15px] font-bold">
         dstream
       </text>
       <text x={360} y={166} textAnchor="middle" className="fill-muted-foreground text-[10px]">
@@ -369,8 +366,8 @@ function TunnelSection() {
           Forward live traffic to localhost
         </h2>
         <p className="mt-4 text-muted-foreground">
-          The CLI tunnel streams real webhook payloads to your machine — the whole team can share one
-          source and debug against production traffic.
+          The CLI tunnel streams real webhook payloads to your machine — the whole team can share
+          one source and debug against production traffic.
         </p>
       </div>
       <div className="mx-auto mt-10 max-w-2xl space-y-3">

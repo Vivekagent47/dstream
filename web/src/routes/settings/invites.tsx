@@ -51,7 +51,8 @@ function InvitesPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title="Pending invites"
+      <PageHeader
+        title="Pending invites"
         help="Outstanding invitations to join this organization."
       />
 

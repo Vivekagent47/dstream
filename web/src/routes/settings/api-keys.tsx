@@ -136,7 +136,12 @@ function APIKeysPage() {
                       onConfirm={() => revoke.mutate(k.id)}
                     >
                       {(open) => (
-                        <Button size="sm" variant="ghost" onClick={open} disabled={revoke.isPending}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={open}
+                          disabled={revoke.isPending}
+                        >
                           Revoke
                         </Button>
                       )}
@@ -268,9 +273,14 @@ function CreateKeyDialog({
           </div>
           <div>
             <Label className="mb-2 block">Role</Label>
-            <Select value={role} onValueChange={(v) => setRole((v as 'admin' | 'member') ?? 'admin')}>
+            <Select
+              value={role}
+              onValueChange={(v) => setRole((v as 'admin' | 'member') ?? 'admin')}
+            >
               <SelectTrigger className="w-full">
-                <SelectValue>{(v: string | null) => (v ? capitalize(v) : 'Select a role')}</SelectValue>
+                <SelectValue>
+                  {(v: string | null) => (v ? capitalize(v) : 'Select a role')}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {(['admin', 'member'] as const).map((r) => (
@@ -281,8 +291,8 @@ function CreateKeyDialog({
               </SelectContent>
             </Select>
             <p className="mt-2 text-xs text-muted-foreground">
-              A member key can read and write, but cannot delete resources, read endpoint
-              secrets, publish messages, or mint or revoke portal links.
+              A member key can read and write, but cannot delete resources, read endpoint secrets,
+              publish messages, or mint or revoke portal links.
             </p>
           </div>
           <DialogFooter>

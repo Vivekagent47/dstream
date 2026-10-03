@@ -62,9 +62,7 @@ function ApplicationsPage() {
       />
 
       <div className="flex-1 overflow-x-auto">
-        {error && (
-          <p className="px-6 py-3 text-sm text-destructive">{(error as Error).message}</p>
-        )}
+        {error && <p className="px-6 py-3 text-sm text-destructive">{(error as Error).message}</p>}
         <Table>
           <TableHeader>
             <TableRow>

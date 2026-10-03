@@ -2,7 +2,15 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Bookmark, ChevronDown, ChevronRight, Copy, MoveRight, RotateCcw, Terminal } from 'lucide-react'
+import {
+  Bookmark,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  MoveRight,
+  RotateCcw,
+  Terminal,
+} from 'lucide-react'
 
 import { api, qk, type Attempt, type EventDetail } from '#/lib/api'
 import { capitalize } from '#/lib/utils'
@@ -100,7 +108,11 @@ function EventDetail() {
           <span className="font-mono text-xs">{ev.id}</span>
         </div>
         <div className="flex items-center gap-2">
-          <ActionButton icon={Terminal} label="cURL" onClick={() => copyText(buildCurl(ev), 'cURL command')} />
+          <ActionButton
+            icon={Terminal}
+            label="cURL"
+            onClick={() => copyText(buildCurl(ev), 'cURL command')}
+          />
           <ActionButton
             icon={Bookmark}
             label={saveFixture.isPending ? 'Saving…' : 'Save as fixture'}
@@ -231,12 +243,11 @@ function EventDetail() {
               </div>
             </CollapseSection>
 
-            <CollapseSection
-              title="Body"
-              onCopy={() => copyText(ev.request.body, 'Body')}
-            >
+            <CollapseSection title="Body" onCopy={() => copyText(ev.request.body, 'Body')}>
               <pre className="overflow-x-auto rounded-md bg-muted/50 p-3 font-mono text-xs">
-                {prettyBody(ev.request.body) || <span className="text-muted-foreground">Empty body.</span>}
+                {prettyBody(ev.request.body) || (
+                  <span className="text-muted-foreground">Empty body.</span>
+                )}
               </pre>
             </CollapseSection>
           </section>

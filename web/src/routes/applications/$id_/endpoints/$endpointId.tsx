@@ -1,20 +1,10 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import {
-  queryOptions,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 
-import {
-  api,
-  qk,
-  type Endpoint,
-  type MessageDeliveryAttempt,
-} from '#/lib/api'
+import { api, qk, type Endpoint, type MessageDeliveryAttempt } from '#/lib/api'
 import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
@@ -365,9 +355,7 @@ function TestDialog({
             ) : (
               <Select value={eventType} onValueChange={(v) => setEventType(v ?? '')}>
                 <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {(v: string | null) => v || 'Select an event type'}
-                  </SelectValue>
+                  <SelectValue>{(v: string | null) => v || 'Select an event type'}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {active.map((et) => (
@@ -471,9 +459,7 @@ function RecoverDialog({
 
 function statusBadge(status: number | null | undefined) {
   if (status == null) return <span className="text-muted-foreground">—</span>
-  return (
-    <Badge variant={status >= 200 && status < 300 ? 'success' : 'destructive'}>{status}</Badge>
-  )
+  return <Badge variant={status >= 200 && status < 300 ? 'success' : 'destructive'}>{status}</Badge>
 }
 
 function DeliveriesTab({ appId, endpointId }: { appId: string; endpointId: string }) {
@@ -501,8 +487,8 @@ function DeliveriesTab({ appId, endpointId }: { appId: string; endpointId: strin
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Most recent delivery attempts for this endpoint (server-capped). Replay lives on the
-        message detail page.
+        Most recent delivery attempts for this endpoint (server-capped). Replay lives on the message
+        detail page.
       </p>
       <div className="rounded-lg border border-border">
         <Table>
@@ -569,9 +555,7 @@ function AttemptRow({
                   Response headers
                 </div>
                 <pre className="overflow-x-auto rounded border border-border bg-muted px-3 py-2 font-mono text-xs">
-                  {a.response_headers != null
-                    ? JSON.stringify(a.response_headers, null, 2)
-                    : '—'}
+                  {a.response_headers != null ? JSON.stringify(a.response_headers, null, 2) : '—'}
                 </pre>
               </div>
               <div>
@@ -598,7 +582,10 @@ function sameFilters(a: Set<string>, b: string[] | null | undefined): boolean {
 
 // Key-order-insensitive so a save + backend round-trip doesn't leave the form
 // stuck "dirty" just because header keys came back in a different order.
-function sameHeaders(a: Record<string, string>, b: Record<string, string> | null | undefined): boolean {
+function sameHeaders(
+  a: Record<string, string>,
+  b: Record<string, string> | null | undefined,
+): boolean {
   const bb = b ?? {}
   const ak = Object.keys(a).sort()
   const bk = Object.keys(bb).sort()
@@ -649,7 +636,10 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
   // = "no change", so clearing needs an explicit empty value. rate_limit 0 =
   // unlimited, channels [] = all, headers {} = none.
   const rateLimitNum = rateLimit.trim() ? Number(rateLimit) : 0
-  const channelsArr = channels.split(',').map((c) => c.trim()).filter(Boolean)
+  const channelsArr = channels
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean)
   const headersObj = Object.fromEntries(
     headers.filter((h) => h.k.trim()).map((h) => [h.k.trim(), h.v]),
   )
@@ -859,7 +849,11 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
             transformPreview={api.transformPreview}
           />
         </div>
-        <Button size="sm" onClick={() => save.mutate()} disabled={!dirty || save.isPending || !url.trim()}>
+        <Button
+          size="sm"
+          onClick={() => save.mutate()}
+          disabled={!dirty || save.isPending || !url.trim()}
+        >
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
       </section>
@@ -888,7 +882,11 @@ function SettingsTab({ ep, appId }: { ep: Endpoint; appId: string }) {
             <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
               Cancel
             </Button>
-            <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
               {remove.isPending ? 'Deleting…' : 'Delete endpoint'}
             </Button>
           </DialogFooter>

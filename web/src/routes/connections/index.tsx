@@ -115,10 +115,7 @@ function ConnectionsPage() {
 
   // Server returns IDs only — join names from the lists the create dialog
   // needs anyway. Fall back to the raw ID if a lookup misses.
-  const srcName = useMemo(
-    () => new Map((sources ?? []).map((s) => [s.id, s.name])),
-    [sources],
-  )
+  const srcName = useMemo(() => new Map((sources ?? []).map((s) => [s.id, s.name])), [sources])
   const destName = useMemo(
     () => new Map((destinations ?? []).map((d) => [d.id, d.name])),
     [destinations],
@@ -299,13 +296,13 @@ function ConnectionsPage() {
                     {/* branch from the trunk to this row */}
                     <span
                       className={
-                        'absolute left-0 top-1/2 w-6 border-t ' +
+                        'absolute top-1/2 left-0 w-6 border-t ' +
                         (c.enabled ? 'border-border' : 'border-dashed border-border')
                       }
                     />
                     {/* connection name pill on the edge */}
                     {c.name ? (
-                      <span className="shrink-0 rounded border border-border bg-card px-2 py-0.5 font-mono text-xs uppercase tracking-wide text-muted-foreground">
+                      <span className="shrink-0 rounded border border-border bg-card px-2 py-0.5 font-mono text-xs tracking-wide text-muted-foreground uppercase">
                         {c.name}
                       </span>
                     ) : null}
@@ -325,7 +322,11 @@ function ConnectionsPage() {
                       aria-label={c.enabled ? 'Disable connection' : 'Enable connection'}
                       className="grid h-7 w-7 shrink-0 place-items-center rounded border border-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                     >
-                      {c.enabled ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                      {c.enabled ? (
+                        <Pause className="h-3.5 w-3.5" />
+                      ) : (
+                        <Play className="h-3.5 w-3.5" />
+                      )}
                     </button>
                     <Link
                       to="/connections/$id"
@@ -343,7 +344,9 @@ function ConnectionsPage() {
                       params={{ id: c.destination_id }}
                       className={
                         'flex w-64 shrink-0 items-center gap-2.5 rounded-lg border px-3.5 py-3 text-sm transition-colors hover:border-foreground/30 ' +
-                        (c.enabled ? 'border-border bg-card' : 'border-dashed border-border bg-card/50 text-muted-foreground')
+                        (c.enabled
+                          ? 'border-border bg-card'
+                          : 'border-dashed border-border bg-card/50 text-muted-foreground')
                       }
                     >
                       {destType.get(c.destination_id) === 'cli' ? (
@@ -356,7 +359,7 @@ function ConnectionsPage() {
                       </span>
                     </Link>
                     {/* 24h delivery stat */}
-                    <span className="w-24 shrink-0 text-right font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <span className="w-24 shrink-0 text-right font-mono text-[11px] tracking-wide text-muted-foreground uppercase">
                       {statText(stats?.[c.id])}
                     </span>
                     {/* expand to detail + overflow menu */}
@@ -393,90 +396,93 @@ function ConnectionsPage() {
       )}
 
       {view === 'table' && (
-      <div className="flex-1 overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="pl-6">Name</TableHead>
-              <TableHead>Source</TableHead>
-              <TableHead className="w-[40px]" />
-              <TableHead>Destination</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Retry</TableHead>
-              <TableHead>24h</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="w-[52px] pr-6" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.map((c) => (
-              <TableRow key={c.id}>
-                <TableCell className="pl-6 font-medium">
-                  {c.name || <span className="text-muted-foreground">(unnamed)</span>}
-                </TableCell>
-                <TableCell>
-                  <Link
-                    to="/sources/$id"
-                    params={{ id: c.source_id }}
-                    className="flex items-center gap-2.5 font-medium hover:underline"
-                  >
-                    <Inbox className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    {srcName.get(c.source_id) ?? c.source_id}
-                  </Link>
-                </TableCell>
-                <TableCell>
-                  <MoveRight className="h-4 w-4 text-muted-foreground" />
-                </TableCell>
-                <TableCell>
-                  <Link
-                    to="/destinations/$id"
-                    params={{ id: c.destination_id }}
-                    className="flex items-center gap-2.5 font-medium hover:underline"
-                  >
-                    <Send className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    {destName.get(c.destination_id) ?? c.destination_id}
-                  </Link>
-                </TableCell>
-                <TableCell>
-                  {c.enabled ? (
-                    <Badge variant="success">Active</Badge>
-                  ) : (
-                    <Badge variant="secondary">Disabled</Badge>
-                  )}
-                </TableCell>
-                <TableCell className="whitespace-nowrap text-muted-foreground">
-                  {c.retry_strategy} · {c.max_retries} retries
-                </TableCell>
-                <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                  {statText(stats?.[c.id])}
-                </TableCell>
-                <TableCell className="whitespace-nowrap text-muted-foreground">
-                  {new Date(c.created_at).toLocaleDateString()}
-                </TableCell>
-                <TableCell className="pr-6 text-right">
-                  <ConnectionRowMenu
-                    connection={c}
-                    onView={() => navigate({ to: '/connections/$id', params: { id: c.id } })}
-                    onToggle={() => patch.mutate({ id: c.id, enabled: !c.enabled })}
-                    onDelete={() => setDeleteTarget(c)}
-                    canDelete={isAdmin}
-                    pending={patch.isPending}
-                  />
-                </TableCell>
-              </TableRow>
-            ))}
-            {filtered.length === 0 && (
+        <div className="flex-1 overflow-x-auto">
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
-                  {connections && connections.length > 0
-                    ? 'No connections match these filters.'
-                    : 'No connections yet — connect a source to a destination to start routing events.'}
-                </TableCell>
+                <TableHead className="pl-6">Name</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead className="w-[40px]" />
+                <TableHead>Destination</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Retry</TableHead>
+                <TableHead>24h</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="w-[52px] pr-6" />
               </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((c) => (
+                <TableRow key={c.id}>
+                  <TableCell className="pl-6 font-medium">
+                    {c.name || <span className="text-muted-foreground">(unnamed)</span>}
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      to="/sources/$id"
+                      params={{ id: c.source_id }}
+                      className="flex items-center gap-2.5 font-medium hover:underline"
+                    >
+                      <Inbox className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      {srcName.get(c.source_id) ?? c.source_id}
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <MoveRight className="h-4 w-4 text-muted-foreground" />
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      to="/destinations/$id"
+                      params={{ id: c.destination_id }}
+                      className="flex items-center gap-2.5 font-medium hover:underline"
+                    >
+                      <Send className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      {destName.get(c.destination_id) ?? c.destination_id}
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    {c.enabled ? (
+                      <Badge variant="success">Active</Badge>
+                    ) : (
+                      <Badge variant="secondary">Disabled</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
+                    {c.retry_strategy} · {c.max_retries} retries
+                  </TableCell>
+                  <TableCell className="font-mono text-xs whitespace-nowrap text-muted-foreground">
+                    {statText(stats?.[c.id])}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
+                    {new Date(c.created_at).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell className="pr-6 text-right">
+                    <ConnectionRowMenu
+                      connection={c}
+                      onView={() => navigate({ to: '/connections/$id', params: { id: c.id } })}
+                      onToggle={() => patch.mutate({ id: c.id, enabled: !c.enabled })}
+                      onDelete={() => setDeleteTarget(c)}
+                      canDelete={isAdmin}
+                      pending={patch.isPending}
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+              {filtered.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={9}
+                    className="py-12 text-center text-sm text-muted-foreground"
+                  >
+                    {connections && connections.length > 0
+                      ? 'No connections match these filters.'
+                      : 'No connections yet — connect a source to a destination to start routing events.'}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
       <footer className="border-t border-border px-6 py-3 text-sm text-muted-foreground">
@@ -607,8 +613,8 @@ function CreateConnectionDialog({
         <DialogHeader>
           <DialogTitle>New connection</DialogTitle>
           <DialogDescription>
-            Route events from a source to a destination. Retry policy defaults apply; edit via
-            API for now.
+            Route events from a source to a destination. Retry policy defaults apply; edit via API
+            for now.
           </DialogDescription>
         </DialogHeader>
         <form

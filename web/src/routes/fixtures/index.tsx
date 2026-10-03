@@ -94,10 +94,7 @@ function FixturesPage() {
   }
   const { data: bookmarks, error } = useQuery(bookmarksQuery(params))
 
-  const srcName = useMemo(
-    () => new Map((sources ?? []).map((s) => [s.id, s.name])),
-    [sources],
-  )
+  const srcName = useMemo(() => new Map((sources ?? []).map((s) => [s.id, s.name])), [sources])
 
   // Every mutation below only touches one row's cache-invisible server state;
   // invalidating the whole 'bookmarks' prefix refreshes every filtered view
@@ -334,7 +331,9 @@ function BookmarkEditDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit fixture</DialogTitle>
-          <DialogDescription>Rename this fixture or update its description and tags.</DialogDescription>
+          <DialogDescription>
+            Rename this fixture or update its description and tags.
+          </DialogDescription>
         </DialogHeader>
         <form
           onSubmit={(e) => {
@@ -661,7 +660,8 @@ function CaptureRuleDialog({
               className="h-4 w-4"
             />
             <Label htmlFor="rule-enabled">
-              Enabled{!rule && <span className="text-muted-foreground"> (new rules start enabled)</span>}
+              Enabled
+              {!rule && <span className="text-muted-foreground"> (new rules start enabled)</span>}
             </Label>
           </div>
           <DialogFooter>
@@ -711,7 +711,12 @@ function ImportFixtureDialog({
         source_id: sourceId,
         name: name.trim(),
         ...(tags.trim()
-          ? { tags: tags.split(',').map((t) => t.trim()).filter(Boolean) }
+          ? {
+              tags: tags
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean),
+            }
           : {}),
       }),
     onSuccess: () => {
@@ -774,7 +779,9 @@ function ImportFixtureDialog({
             <Select value={sourceId} onValueChange={(v) => setSourceId(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue>
-                  {(v: string | null) => sources.find((src) => src.id === v)?.name ?? 'Select a source'}
+                  {(v: string | null) =>
+                    sources.find((src) => src.id === v)?.name ?? 'Select a source'
+                  }
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>

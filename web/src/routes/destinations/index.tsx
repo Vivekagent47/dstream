@@ -368,7 +368,9 @@ function CreateDestinationDialog({
             <Label className="mb-2 block">Type</Label>
             <Select value={type} onValueChange={(v) => setType((v as 'http' | 'cli') ?? 'http')}>
               <SelectTrigger className="w-full">
-                <SelectValue>{(v: string | null) => (v ? typeLabel(v) : 'Select a type')}</SelectValue>
+                <SelectValue>
+                  {(v: string | null) => (v ? typeLabel(v) : 'Select a type')}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {DEST_TYPES.map((t) => (

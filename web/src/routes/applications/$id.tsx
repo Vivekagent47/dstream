@@ -10,14 +10,7 @@ import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 
-import {
-  api,
-  qk,
-  type Application,
-  type Endpoint,
-  type Page,
-  type Message,
-} from '#/lib/api'
+import { api, qk, type Application, type Endpoint, type Page, type Message } from '#/lib/api'
 import { useRole } from '#/lib/useRole'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow } from '#/components/detail-page'
@@ -302,9 +295,7 @@ export function EndpointsTab({ appId }: { appId: string }) {
                         <Badge variant="secondary">{e.rate_limit}/s</Badge>
                       )}
                       {Object.keys(e.headers ?? {}).length > 0 && (
-                        <Badge variant="secondary">
-                          {Object.keys(e.headers).length} headers
-                        </Badge>
+                        <Badge variant="secondary">{Object.keys(e.headers).length} headers</Badge>
                       )}
                     </div>
                   </TableCell>
@@ -369,7 +360,12 @@ function AddEndpointDialog({
         ...(filters.size > 0 ? { filter_event_types: [...filters] } : {}),
         ...(rateLimit.trim() ? { rate_limit: Number(rateLimit) } : {}),
         ...(channels.trim()
-          ? { channels: channels.split(',').map((c) => c.trim()).filter(Boolean) }
+          ? {
+              channels: channels
+                .split(',')
+                .map((c) => c.trim())
+                .filter(Boolean),
+            }
           : {}),
         ...(headers.filter((h) => h.k.trim()).length
           ? {
@@ -409,8 +405,8 @@ function AddEndpointDialog({
         <DialogHeader>
           <DialogTitle>Add endpoint</DialogTitle>
           <DialogDescription>
-            Where this application&rsquo;s messages are delivered. A signing secret is generated
-            and shown once on creation.
+            Where this application&rsquo;s messages are delivered. A signing secret is generated and
+            shown once on creation.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -483,7 +479,8 @@ function AddEndpointDialog({
           </div>
           <div>
             <Label htmlFor="ep-rate-limit" className="mb-2 block">
-              Rate limit <span className="text-muted-foreground">(optional, per sec — 0 = unlimited)</span>
+              Rate limit{' '}
+              <span className="text-muted-foreground">(optional, per sec — 0 = unlimited)</span>
             </Label>
             <Input
               id="ep-rate-limit"
@@ -700,9 +697,7 @@ function SettingsTab({ app }: { app: Application }) {
   }
 
   const dirty =
-    name !== app.name ||
-    uid !== (app.uid ?? '') ||
-    metadata !== fmtMetadata(app.metadata)
+    name !== app.name || uid !== (app.uid ?? '') || metadata !== fmtMetadata(app.metadata)
 
   return (
     <div className="max-w-3xl space-y-8">

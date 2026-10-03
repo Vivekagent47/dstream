@@ -381,7 +381,12 @@ function ScenarioDialog({
                   >
                     <ArrowDown className="h-4 w-4" />
                   </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={() => removeStep(step.key)}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => removeStep(step.key)}
+                  >
                     <X className="h-4 w-4" />
                   </Button>
                 </div>

@@ -121,7 +121,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenu>
             {PLATFORM.map((item) => (
               <SidebarMenuItem key={item.to}>
-                <SidebarMenuButton asChild isActive={isActive(item.to, item.prefix)} tooltip={item.label}>
+                <SidebarMenuButton
+                  asChild
+                  isActive={isActive(item.to, item.prefix)}
+                  tooltip={item.label}
+                >
                   <Link to={item.to}>
                     <item.icon />
                     <span>{item.label}</span>
@@ -201,7 +205,7 @@ function NavUser() {
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <span className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-xs font-semibold">
+              <span className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-xs font-semibold text-sidebar-primary-foreground">
                 {email.charAt(0).toUpperCase()}
               </span>
               <span className="grid flex-1 text-left text-sm leading-tight">
@@ -210,7 +214,11 @@ function NavUser() {
               <ChevronsUpDown className="ml-auto size-4" />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-(--radix-dropdown-menu-trigger-width) min-w-56" side="top" align="start">
+          <DropdownMenuContent
+            className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
+            side="top"
+            align="start"
+          >
             <DropdownMenuItem onClick={() => logout.mutate()} disabled={logout.isPending}>
               <LogOut className="mr-2 h-4 w-4" /> Sign out
             </DropdownMenuItem>
