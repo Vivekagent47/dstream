@@ -35,6 +35,7 @@ import { Route as OrgsNewRouteImport } from './routes/orgs/new'
 import { Route as InvitesTokenRouteImport } from './routes/invites/$token'
 import { Route as EventsIdRouteImport } from './routes/events/$id'
 import { Route as DestinationsIdRouteImport } from './routes/destinations/$id'
+import { Route as ConsoleUsageRouteImport } from './routes/console/usage'
 import { Route as ConsoleQueuesRouteImport } from './routes/console/queues'
 import { Route as ConnectionsIdRouteImport } from './routes/connections/$id'
 import { Route as AuthVerifyRouteImport } from './routes/auth/verify'
@@ -175,6 +176,11 @@ const DestinationsIdRoute = DestinationsIdRouteImport.update({
   path: '/destinations/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConsoleUsageRoute = ConsoleUsageRouteImport.update({
+  id: '/console/usage',
+  path: '/console/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ConsoleQueuesRoute = ConsoleQueuesRouteImport.update({
   id: '/console/queues',
   path: '/console/queues',
@@ -226,6 +232,7 @@ export interface FileRoutesByFullPath {
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/console/queues': typeof ConsoleQueuesRoute
+  '/console/usage': typeof ConsoleUsageRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -261,6 +268,7 @@ export interface FileRoutesByTo {
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/console/queues': typeof ConsoleQueuesRoute
+  '/console/usage': typeof ConsoleUsageRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -298,6 +306,7 @@ export interface FileRoutesById {
   '/auth/verify': typeof AuthVerifyRoute
   '/connections/$id': typeof ConnectionsIdRoute
   '/console/queues': typeof ConsoleQueuesRoute
+  '/console/usage': typeof ConsoleUsageRoute
   '/destinations/$id': typeof DestinationsIdRoute
   '/events/$id': typeof EventsIdRoute
   '/invites/$token': typeof InvitesTokenRoute
@@ -336,6 +345,7 @@ export interface FileRouteTypes {
     | '/auth/verify'
     | '/connections/$id'
     | '/console/queues'
+    | '/console/usage'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -371,6 +381,7 @@ export interface FileRouteTypes {
     | '/auth/verify'
     | '/connections/$id'
     | '/console/queues'
+    | '/console/usage'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -407,6 +418,7 @@ export interface FileRouteTypes {
     | '/auth/verify'
     | '/connections/$id'
     | '/console/queues'
+    | '/console/usage'
     | '/destinations/$id'
     | '/events/$id'
     | '/invites/$token'
@@ -444,6 +456,7 @@ export interface RootRouteChildren {
   AuthVerifyRoute: typeof AuthVerifyRoute
   ConnectionsIdRoute: typeof ConnectionsIdRoute
   ConsoleQueuesRoute: typeof ConsoleQueuesRoute
+  ConsoleUsageRoute: typeof ConsoleUsageRoute
   DestinationsIdRoute: typeof DestinationsIdRoute
   EventsIdRoute: typeof EventsIdRoute
   InvitesTokenRoute: typeof InvitesTokenRoute
@@ -654,6 +667,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DestinationsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/console/usage': {
+      id: '/console/usage'
+      path: '/console/usage'
+      fullPath: '/console/usage'
+      preLoaderRoute: typeof ConsoleUsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/console/queues': {
       id: '/console/queues'
       path: '/console/queues'
@@ -737,6 +757,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthVerifyRoute: AuthVerifyRoute,
   ConnectionsIdRoute: ConnectionsIdRoute,
   ConsoleQueuesRoute: ConsoleQueuesRoute,
+  ConsoleUsageRoute: ConsoleUsageRoute,
   DestinationsIdRoute: DestinationsIdRoute,
   EventsIdRoute: EventsIdRoute,
   InvitesTokenRoute: InvitesTokenRoute,
