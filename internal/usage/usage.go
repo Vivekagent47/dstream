@@ -55,11 +55,13 @@ func (d Decision) String() string {
 
 // Check turns a count and the org's two limits into a decision.
 //
-// A limit of 0 means unlimited, at both tiers, and 0 is the migration default
-// for every quota column — so each comparison is guarded by "limit > 0"
-// first. A bare `count >= limit` would reject every request on a deployment
-// that configured nothing. Consequently an org with a soft limit and no
-// ceiling can never escalate to OverHard however far over it runs.
+// A limit of 0 means unlimited, at both tiers independently — but 0 is no
+// longer the default for every quota column; a new org lands on the free
+// preset instead (internal/usage/plans.go). Each comparison is still guarded
+// by "limit > 0" first: a bare `count >= limit` would otherwise reject every
+// request for a plan left at zero on purpose (enterprise, or custom).
+// Consequently an org with a soft limit and no ceiling can never escalate to
+// OverHard however far over it runs.
 func Check(count, soft, hard int64) Decision {
 	if hard > 0 && count >= hard {
 		return OverHard

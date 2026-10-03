@@ -47,7 +47,11 @@ const (
 )
 
 // Limits is one org's quota row: the two enforced pairs and the period they
-// are counted over. Zero means unlimited at every tier (the column default).
+// are counted over. Zero still means unlimited at every tier, independently —
+// but it is no longer the column default; a new org lands on the free preset
+// instead (plans.go). Also the shape of a plan preset — see Presets in
+// plans.go, which fills this struct in per product tier instead of declaring
+// its own.
 type Limits struct {
 	EventsSoft   int64
 	EventsHard   int64
@@ -101,11 +105,15 @@ func (g *Gate) check(ctx context.Context, orgID uuid.UUID, metric string) Decisi
 	if metric == MetricMessages {
 		soft, hard = lim.MessagesSoft, lim.MessagesHard
 	}
-	// Unlimited is the migration default for every org, so this is the common
-	// path and it must cost nothing: no Redis round-trip, no alert, no
-	// rejection. A cache miss lands here too, by returning the zero Limits.
-	// The rollup sweep still records this org's usage in Postgres, which is
-	// where usage reporting reads from anyway.
+	// Zero means unlimited, but it is no longer the common case: free and pro
+	// both carry nonzero limits, so most requests take the Incr+alert path
+	// below instead. This branch now serves only genuinely-unlimited orgs —
+	// enterprise (all four columns 0 by design) or a custom org a super-admin
+	// left at 0 — plus a cache miss, which lands here too by returning the
+	// zero Limits. It still must cost nothing when it does hit: no Redis
+	// round-trip, no alert, no rejection. The rollup sweep still records this
+	// org's usage in Postgres, which is where usage reporting reads from
+	// anyway.
 	if soft == 0 && hard == 0 {
 		return Allow
 	}

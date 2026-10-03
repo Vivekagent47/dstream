@@ -15,15 +15,23 @@ CREATE TABLE organizations (
     slug        TEXT NOT NULL UNIQUE,         -- URL-safe identifier used in dashboard routes
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Plan and quota. Every column defaults, so an existing deployment
-    -- backfills in the same ALTER with no data migration. 0 means unlimited
-    -- on both tiers: a deployment that configures nothing rejects nothing.
+    -- Plan and quota. A new org lands on the free tier here, in SQL, so every
+    -- CreateOrganization call site gets it without Go involvement:
+    -- cmd/dstream/admin.go, internal/auth/magiclink.go (magic-link bootstrap),
+    -- and internal/api/identity/orgs.go.
+    --
+    -- These four defaults are the free row of internal/usage/plans.go's
+    -- Presets map, deliberately duplicated. internal/usage/plans_test.go
+    -- asserts they agree; change both or neither.
+    --
+    -- 0 still means unlimited on both tiers, which is what `enterprise` uses
+    -- and what `custom` uses when an operator wants a tenant uncapped.
     plan                TEXT   NOT NULL DEFAULT 'free'
                           CHECK (plan IN ('free','pro','enterprise','custom')),
-    quota_events_soft   BIGINT NOT NULL DEFAULT 0,
-    quota_events_hard   BIGINT NOT NULL DEFAULT 0,
-    quota_messages_soft BIGINT NOT NULL DEFAULT 0,
-    quota_messages_hard BIGINT NOT NULL DEFAULT 0,
+    quota_events_soft   BIGINT NOT NULL DEFAULT 8000,
+    quota_events_hard   BIGINT NOT NULL DEFAULT 10000,
+    quota_messages_soft BIGINT NOT NULL DEFAULT 8000,
+    quota_messages_hard BIGINT NOT NULL DEFAULT 10000,
     quota_period        TEXT   NOT NULL DEFAULT 'month'
                           CHECK (quota_period IN ('day','month'))
 );
