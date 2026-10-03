@@ -379,8 +379,9 @@ type UpdateOrgQuotaRow struct {
 	QuotaPeriod       string `json:"quota_period"`
 }
 
-// Sets plan + limits together (PATCH /api/orgs/{org_id}/plan, owner-only).
-// RETURNING is pinned the same way GetOrgQuota is, for the same reason.
+// Sets plan + limits together (PATCH /admin/orgs/{org_id}/plan, super-admin
+// only — a tenant cannot change its own quota). RETURNING is pinned the same
+// way GetOrgQuota is, for the same reason.
 func (q *Queries) UpdateOrgQuota(ctx context.Context, arg UpdateOrgQuotaParams) (UpdateOrgQuotaRow, error) {
 	row := q.db.QueryRow(ctx, updateOrgQuota,
 		arg.ID,

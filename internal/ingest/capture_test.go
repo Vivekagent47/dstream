@@ -30,8 +30,12 @@ type captureEnv struct {
 	org store.CreateOrganizationRow
 	src store.Source
 	mux *chi.Mux
-	// pool backs q; quota_test.go writes the org's plan limits with raw SQL
-	// because no query sets them yet (the owner-only PATCH is a later task).
+	// pool backs q; quota_test.go's setQuotas still writes the org's events
+	// pair + period with raw SQL. Quota writes now live on the super-admin
+	// surface (PATCH /admin/orgs/{org_id}/plan, via store.UpdateOrgQuota),
+	// but that query replaces plan and both tiers together, and setQuotas
+	// needs to leave plan and the messages tier untouched — so raw SQL
+	// targeting just the two columns it means to change still fits better.
 	pool *pgxpool.Pool
 }
 

@@ -83,8 +83,9 @@ SELECT plan, quota_events_soft, quota_events_hard,
 FROM organizations WHERE id = $1;
 
 -- name: UpdateOrgQuota :one
--- Sets plan + limits together (PATCH /api/orgs/{org_id}/plan, owner-only).
--- RETURNING is pinned the same way GetOrgQuota is, for the same reason.
+-- Sets plan + limits together (PATCH /admin/orgs/{org_id}/plan, super-admin
+-- only — a tenant cannot change its own quota). RETURNING is pinned the same
+-- way GetOrgQuota is, for the same reason.
 UPDATE organizations
    SET plan = $2,
        quota_events_soft = $3,

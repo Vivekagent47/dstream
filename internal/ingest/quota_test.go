@@ -22,7 +22,7 @@ import (
 func quotaLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // setQuotas writes this org's events quota pair and period straight onto the
-// row. There is no query for it yet — the owner-only PATCH /api/orgs/{id}/plan
+// row. There is no query for it yet — the super-admin PATCH /admin/orgs/{org_id}/plan
 // is a later task — and the gate reads these through ListOrgQuotas.
 func (e *captureEnv) setQuotas(t *testing.T, soft, hard int64, period string) {
 	t.Helper()
@@ -184,11 +184,16 @@ func TestIngestQuota_OverHard_429WithRetryAfter(t *testing.T) {
 	}
 }
 
-// 0 means unlimited and 0 is every column's migration default: a deployment
-// that configures nothing must reject nothing, however high the count.
+// 0 means unlimited on a tier, regardless of what an org's defaults are: an
+// org explicitly configured with 0/0 must reject nothing, however high the
+// count.
 func TestIngestQuota_ZeroLimitsNeverReject(t *testing.T) {
 	e := newCaptureEnv(t)
-	// No setQuotas call: the org keeps the migration defaults (0/0, 'month').
+	// Zeros set explicitly, not inherited: the organizations defaults are
+	// the free tier (8000/10000) since plan presets landed, so an org that
+	// configures nothing is limited, not unlimited. 0 still means unlimited
+	// per tier — that is what this test pins.
+	e.setQuotas(t, 0, 0, "month")
 	e.withQuota(t, e.h.Redis)
 	cur := usage.PeriodStart(time.Now(), "month")
 	if err := usage.SetCounter(context.Background(), e.h.Redis, e.orgID(), "events", cur, 10_000); err != nil {

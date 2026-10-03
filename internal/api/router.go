@@ -201,12 +201,6 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 				r.Post("/invites", id.CreateInvite)
 				r.Delete("/invites/{id}", id.DeleteInvite)
 
-				// Owner-only: gated inline in the handler, not by
-				// AdminForDestructive above (a PATCH isn't covered by that
-				// DELETE-only rule anyway) — a quota change is a spend
-				// decision, stricter than this group's admin default.
-				r.Patch("/plan", id.PatchOrgPlan)
-
 				r.Get("/api-keys", id.ListAPIKeys)
 				r.Post("/api-keys", id.CreateAPIKey)
 				r.Delete("/api-keys/{id}", id.RevokeAPIKey)
@@ -233,9 +227,9 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 
 				r.Get("/audit", id.ListAudit)
 
-				// Current-period usage + history for the active org. Any
-				// member can read; the owner-only write lives at
-				// PATCH /api/orgs/{org_id}/plan above (identity group).
+				// Current-period usage + history for the active org. Read-only
+				// for every role: quotas are granted by the platform operator
+				// at PATCH /admin/orgs/{org_id}/plan, not by the tenant.
 				r.Get("/usage", id.GetUsage)
 				r.Get("/usage/history", id.GetUsageHistory)
 

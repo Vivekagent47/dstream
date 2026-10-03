@@ -3,9 +3,9 @@
 -- serializes their result straight to JSON (POST /api/orgs, PATCH
 -- /api/orgs/{org_id}), so a `SELECT *` here joins `plan` and every quota_*
 -- column into those admin-visible responses on the next sqlc run. Per design
--- §7 limits are read through GET /api/usage and set through the owner-only
--- PATCH /orgs/{id}/plan. Widening this list is a deliberate API change; make
--- it on purpose.
+-- §7 limits are read through GET /api/usage and set through the super-admin
+-- PATCH /admin/orgs/{org_id}/plan. Widening this list is a deliberate API
+-- change; make it on purpose.
 -- name: CreateOrganization :one
 INSERT INTO organizations (name, slug) VALUES ($1, $2)
 RETURNING id, name, slug, created_at, updated_at;
@@ -101,8 +101,8 @@ DELETE FROM org_members m
 -- organizations silently joins both public responses on the next sqlc run —
 -- which is how the phase 5c quota columns nearly shipped to every member of
 -- every org. Per design §7 limits are read through GET /api/usage and set
--- through the owner-only PATCH /orgs/{id}/plan. Widening this list is a
--- deliberate API change; make it on purpose.
+-- through the super-admin PATCH /admin/orgs/{org_id}/plan. Widening this
+-- list is a deliberate API change; make it on purpose.
 SELECT o.id, o.name, o.slug, o.created_at, o.updated_at, m.role
   FROM organizations o
   JOIN org_members m ON m.org_id = o.id

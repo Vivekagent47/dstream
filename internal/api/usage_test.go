@@ -158,75 +158,49 @@ func TestGetUsageHistory_InvalidMetric_400(t *testing.T) {
 	}
 }
 
-// --- PATCH /api/orgs/{org_id}/plan ---
+// --- PATCH /api/orgs/{org_id}/plan is gone ---
 
-// TestPatchOrgPlan_OwnerOnly is the inline-gated test the brief calls for:
-// /plan lives in the identity group, which the 5a route matrix deliberately
-// excludes, so owner-only has no matrix row to prove it.
-func TestPatchOrgPlan_OwnerOnly(t *testing.T) {
+// TestTenantCannotPatchOwnPlan is the hole this change closes, pinned.
+//
+// 5c shipped an owner-only PATCH here, which let the owner of an org raise
+// their own ceiling — the one thing the ceiling exists to prevent. Quotas are
+// now granted by the platform operator at PATCH /admin/orgs/{org_id}/plan,
+// behind auth.SuperAdminOnly.
+//
+// Asserting on "not 200, and the row is unchanged" rather than one exact
+// status: with the route deleted and no sibling method on the pattern, chi
+// answers 404, but adding a future GET /plan would make the same request a
+// 405. Either is correct; a 200, or a changed row, is not.
+func TestTenantCannotPatchOwnPlan(t *testing.T) {
 	pool := testPool(t)
 	q := store.New(pool)
 	owner, oid := seedUserAndOrg(t, q)
-	adminID := seedUser(t, q)
-	addMember(t, q, oid, adminID, "admin")
+	ctx := context.Background()
 
-	router, signer := newTestRouter(q)
-
-	// admin -> 403, even though admin can write everything else in this group.
-	req := requestWithSessionBody(t, signer, http.MethodPatch, "/api/orgs/"+oid.String()+"/plan", adminID, oid, map[string]any{
-		"plan": "pro",
-	})
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("admin patch plan: got %d want 403; body=%s", rec.Code, rec.Body.String())
-	}
-
-	// owner -> 200, applied; omitted fields (quota_period) stay untouched.
-	req = requestWithSessionBody(t, signer, http.MethodPatch, "/api/orgs/"+oid.String()+"/plan", owner, oid, map[string]any{
-		"plan":              "pro",
-		"quota_events_soft": 1000,
-		"quota_events_hard": 5000,
-	})
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("owner patch plan: got %d want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	row, err := q.GetOrgQuota(context.Background(), store.UUID(oid))
+	before, err := q.GetOrgQuota(ctx, store.UUID(oid))
 	if err != nil {
 		t.Fatalf("get org quota: %v", err)
 	}
-	if row.Plan != "pro" || row.QuotaEventsSoft != 1000 || row.QuotaEventsHard != 5000 {
-		t.Errorf("quota not applied: %+v", row)
-	}
-	if row.QuotaPeriod != "month" {
-		t.Errorf("quota_period: got %q, want untouched default (partial update)", row.QuotaPeriod)
-	}
-}
 
-// TestPatchOrgPlan_InvalidValues_400NotServerError is the guard for the
-// binding constraint: plan and quota_period are CHECK-constrained in the
-// schema, so an unvalidated bad value reaches Postgres as a 500. Each case
-// here must be rejected by the handler first.
-func TestPatchOrgPlan_InvalidValues_400NotServerError(t *testing.T) {
-	pool := testPool(t)
-	q := store.New(pool)
-	owner, oid := seedUserAndOrg(t, q)
 	router, signer := newTestRouter(q)
+	req := requestWithSessionBody(t, signer, http.MethodPatch,
+		"/api/orgs/"+oid.String()+"/plan", owner, oid, map[string]any{
+			"plan":              "enterprise",
+			"quota_events_hard": 999999999,
+		})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
 
-	cases := []map[string]any{
-		{"plan": "bogus"},
-		{"quota_period": "week"},
-		{"quota_events_soft": -1},
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("owner patch plan: got %d, want 404 or 405 — the tenant-side quota write must not exist; body=%s",
+			rec.Code, rec.Body.String())
 	}
-	for _, body := range cases {
-		req := requestWithSessionBody(t, signer, http.MethodPatch, "/api/orgs/"+oid.String()+"/plan", owner, oid, body)
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("body=%v: got %d want 400 (must reject before hitting the DB CHECK constraint); resp=%s",
-				body, rec.Code, rec.Body.String())
-		}
+
+	after, err := q.GetOrgQuota(ctx, store.UUID(oid))
+	if err != nil {
+		t.Fatalf("get org quota: %v", err)
+	}
+	if after != before {
+		t.Errorf("quota changed via the tenant plane: %+v -> %+v", before, after)
 	}
 }

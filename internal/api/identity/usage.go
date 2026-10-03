@@ -1,19 +1,14 @@
 package identity
 
 import (
-	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
-	"github.com/Vivekagent47/dstream/internal/audit"
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/store"
 	"github.com/Vivekagent47/dstream/internal/usage"
@@ -23,12 +18,6 @@ import (
 // /api/usage seeds all four at 0 so a metric with no rollup row yet (a new
 // org, or a sweep that hasn't run) reads as zero instead of being absent.
 var usageMetrics = [...]string{"requests", "events", "messages", "attempts"}
-
-// validPlans / validPeriods mirror the CHECK constraints added by
-// db/migrations/20261002043243_usage_metering.sql, so PatchOrgPlan rejects a
-// bad value with 400 instead of letting Postgres reject it with 500.
-var validPlans = map[string]bool{"free": true, "pro": true, "enterprise": true, "custom": true}
-var validPeriods = map[string]bool{"day": true, "month": true}
 
 const (
 	defaultHistoryPeriods = 12
@@ -46,8 +35,9 @@ func isUsageMetric(m string) bool {
 	return false
 }
 
-// quotaView shapes an org's plan + limits, shared by GET /api/usage and the
-// PATCH /plan response so the two surfaces agree on shape.
+// quotaView shapes an org's plan + limits for GET /api/usage. The super-admin
+// write at PATCH /admin/orgs/{org_id}/plan returns the same shape, so the two
+// surfaces agree.
 func quotaView(plan, period string, eventsSoft, eventsHard, messagesSoft, messagesHard int64) map[string]any {
 	return map[string]any{
 		"plan":   plan,
@@ -185,131 +175,3 @@ func periodsAgo(current time.Time, period string, n int) time.Time {
 	return current.AddDate(0, -(n - 1), 0)
 }
 
-// PatchOrgPlan serves PATCH /api/orgs/{org_id}/plan — sets the org's plan and
-// quota limits. Partial update: an omitted field keeps its current value.
-//
-// Owner-only, deliberately stricter than this phase's default of
-// admin-for-destructive (internal/auth/rbac.go): changing a quota is a spend
-// decision, not a destructive op in the delete-a-resource sense, and an org
-// admin is not the right authority to raise their own ceiling or grant
-// themselves more capacity. A future reader may be tempted to "fix" this down
-// to admin to match the rest of the identity group's write gating — don't;
-// this is the one write in the group that is intentionally narrower.
-func (d Handlers) PatchOrgPlan(w http.ResponseWriter, r *http.Request) {
-	if err := auth.RequireSession(r.Context()); err != nil {
-		httpx.Err(w, http.StatusForbidden, "session required")
-		return
-	}
-	orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
-	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "invalid org_id")
-		return
-	}
-	p, _ := auth.FromContext(r.Context())
-	caller, err := d.Queries.GetOrgMember(r.Context(), store.GetOrgMemberParams{
-		OrgID:  store.UUID(orgID),
-		UserID: store.UUID(p.UserID),
-	})
-	if err != nil {
-		httpx.Err(w, http.StatusForbidden, "not a member")
-		return
-	}
-	if auth.Role(caller.Role) != auth.RoleOwner {
-		httpx.Err(w, http.StatusForbidden, "owner required")
-		return
-	}
-
-	var body struct {
-		Plan              *string `json:"plan,omitempty"`
-		QuotaEventsSoft   *int64  `json:"quota_events_soft,omitempty"`
-		QuotaEventsHard   *int64  `json:"quota_events_hard,omitempty"`
-		QuotaMessagesSoft *int64  `json:"quota_messages_soft,omitempty"`
-		QuotaMessagesHard *int64  `json:"quota_messages_hard,omitempty"`
-		QuotaPeriod       *string `json:"quota_period,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpx.Err(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-
-	current, err := d.Queries.GetOrgQuota(r.Context(), store.UUID(orgID))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.Err(w, http.StatusNotFound, "org not found")
-			return
-		}
-		d.Log.Error("patch plan: get org quota", "err", err)
-		httpx.Err(w, http.StatusInternalServerError, "patch plan")
-		return
-	}
-
-	next := store.UpdateOrgQuotaParams{
-		ID:                store.UUID(orgID),
-		Plan:              current.Plan,
-		QuotaEventsSoft:   current.QuotaEventsSoft,
-		QuotaEventsHard:   current.QuotaEventsHard,
-		QuotaMessagesSoft: current.QuotaMessagesSoft,
-		QuotaMessagesHard: current.QuotaMessagesHard,
-		QuotaPeriod:       current.QuotaPeriod,
-	}
-	if body.Plan != nil {
-		next.Plan = *body.Plan
-	}
-	if body.QuotaPeriod != nil {
-		next.QuotaPeriod = *body.QuotaPeriod
-	}
-	if body.QuotaEventsSoft != nil {
-		next.QuotaEventsSoft = *body.QuotaEventsSoft
-	}
-	if body.QuotaEventsHard != nil {
-		next.QuotaEventsHard = *body.QuotaEventsHard
-	}
-	if body.QuotaMessagesSoft != nil {
-		next.QuotaMessagesSoft = *body.QuotaMessagesSoft
-	}
-	if body.QuotaMessagesHard != nil {
-		next.QuotaMessagesHard = *body.QuotaMessagesHard
-	}
-
-	// Validate before writing: plan and quota_period are CHECK-constrained in
-	// the schema (db/migrations/20261002043243_usage_metering.sql), so an
-	// invalid value here is a 500 from Postgres unless it's rejected first.
-	if !validPlans[next.Plan] {
-		httpx.Err(w, http.StatusBadRequest, "plan must be one of free|pro|enterprise|custom")
-		return
-	}
-	if !validPeriods[next.QuotaPeriod] {
-		httpx.Err(w, http.StatusBadRequest, "quota_period must be one of day|month")
-		return
-	}
-	for _, v := range [...]int64{next.QuotaEventsSoft, next.QuotaEventsHard, next.QuotaMessagesSoft, next.QuotaMessagesHard} {
-		if v < 0 {
-			httpx.Err(w, http.StatusBadRequest, "quota values must be >= 0")
-			return
-		}
-	}
-
-	updated, err := d.Queries.UpdateOrgQuota(r.Context(), next)
-	if err != nil {
-		d.Log.Error("patch plan: update", "err", err)
-		httpx.Err(w, http.StatusInternalServerError, "patch plan")
-		return
-	}
-
-	audit.Log(r.Context(), d.Queries, d.Log, audit.Entry{
-		Action:     "org.plan.update",
-		TargetType: "org",
-		TargetID:   audit.PtrUUID(orgID),
-		OrgID:      orgID,
-		Metadata: map[string]any{
-			"plan":                updated.Plan,
-			"quota_period":        updated.QuotaPeriod,
-			"quota_events_soft":   updated.QuotaEventsSoft,
-			"quota_events_hard":   updated.QuotaEventsHard,
-			"quota_messages_soft": updated.QuotaMessagesSoft,
-			"quota_messages_hard": updated.QuotaMessagesHard,
-		},
-	})
-	httpx.WriteJSON(w, http.StatusOK, quotaView(updated.Plan, updated.QuotaPeriod,
-		updated.QuotaEventsSoft, updated.QuotaEventsHard, updated.QuotaMessagesSoft, updated.QuotaMessagesHard))
-}

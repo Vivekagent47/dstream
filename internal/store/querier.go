@@ -84,9 +84,9 @@ type Querier interface {
 	// serializes their result straight to JSON (POST /api/orgs, PATCH
 	// /api/orgs/{org_id}), so a `SELECT *` here joins `plan` and every quota_*
 	// column into those admin-visible responses on the next sqlc run. Per design
-	// §7 limits are read through GET /api/usage and set through the owner-only
-	// PATCH /orgs/{id}/plan. Widening this list is a deliberate API change; make
-	// it on purpose.
+	// §7 limits are read through GET /api/usage and set through the super-admin
+	// PATCH /admin/orgs/{org_id}/plan. Widening this list is a deliberate API
+	// change; make it on purpose.
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
 	CreateScenario(ctx context.Context, arg CreateScenarioParams) (Scenario, error)
@@ -249,8 +249,8 @@ type Querier interface {
 	// organizations silently joins both public responses on the next sqlc run —
 	// which is how the phase 5c quota columns nearly shipped to every member of
 	// every org. Per design §7 limits are read through GET /api/usage and set
-	// through the owner-only PATCH /orgs/{id}/plan. Widening this list is a
-	// deliberate API change; make it on purpose.
+	// through the super-admin PATCH /admin/orgs/{org_id}/plan. Widening this
+	// list is a deliberate API change; make it on purpose.
 	ListOrgsForUser(ctx context.Context, userID pgtype.UUID) ([]ListOrgsForUserRow, error)
 	ListPendingOrgInvitesByEmail(ctx context.Context, email string) ([]OrgInvite, error)
 	ListScenarioSteps(ctx context.Context, scenarioID pgtype.UUID) ([]ListScenarioStepsRow, error)
@@ -340,8 +340,9 @@ type Querier interface {
 	UpdateEventType(ctx context.Context, arg UpdateEventTypeParams) (EventType, error)
 	UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error
 	UpdateOrgName(ctx context.Context, arg UpdateOrgNameParams) (UpdateOrgNameRow, error)
-	// Sets plan + limits together (PATCH /api/orgs/{org_id}/plan, owner-only).
-	// RETURNING is pinned the same way GetOrgQuota is, for the same reason.
+	// Sets plan + limits together (PATCH /admin/orgs/{org_id}/plan, super-admin
+	// only — a tenant cannot change its own quota). RETURNING is pinned the same
+	// way GetOrgQuota is, for the same reason.
 	UpdateOrgQuota(ctx context.Context, arg UpdateOrgQuotaParams) (UpdateOrgQuotaRow, error)
 	UpdateScenario(ctx context.Context, arg UpdateScenarioParams) (Scenario, error)
 	UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error)
