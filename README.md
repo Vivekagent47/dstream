@@ -340,16 +340,24 @@ provider of any kind here** — no Stripe, no invoices, no subscriptions. This
 is the meter a future biller would read, not a biller; set nothing and
 nothing changes.
 
-**Every quota defaults to `0`, and `0` means unlimited** — on both the soft
-and hard tier, for both gated metrics. An upgraded deployment that configures
-nothing rejects nothing; quotas are opt-in per org via the owner-only
-`PATCH /api/orgs/{org_id}/plan`, or the usage card on the org settings page.
+**A new org lands on the free tier, not on unlimited.** `quota_events_soft`/
+`hard` and `quota_messages_soft`/`hard` default to `8,000`/`10,000` each,
+period `month` — the column defaults do that with no Go code running.
+**`0` still means unlimited, independently per tier** — `enterprise` is all
+four columns at `0` on purpose, and a plan can carry a soft warning with no
+hard ceiling. But `0` is no longer what a fresh or never-configured org gets,
+so **an upgraded deployment is enforced out of the box**: an org already
+pushing more than 10,000 events or messages a month starts seeing `429`s as
+soon as the migration backfills its row — not after someone opts in. Quotas
+are granted by the platform operator, never by the org itself: `PATCH
+/admin/orgs/{org_id}/plan` (super-admin only, session-only — no API key
+reaches it) sets the plan, or on `custom`, the raw numbers.
 
 | Column (on `organizations`) | Default | Meaning |
 | --- | --- | --- |
 | `plan` | `free` | Label only (`free`/`pro`/`enterprise`/`custom`) — nothing in dstream changes behavior by plan name, only the limit columns below do. |
-| `quota_events_soft` / `quota_events_hard` | `0` / `0` | Soft warns, hard rejects. `0` = that tier never fires. |
-| `quota_messages_soft` / `quota_messages_hard` | `0` / `0` | Same shape, for outbound publishes. |
+| `quota_events_soft` / `quota_events_hard` | `8,000` / `10,000` | Soft warns, hard rejects. `0` = that tier never fires. |
+| `quota_messages_soft` / `quota_messages_hard` | `8,000` / `10,000` | Same shape, for outbound publishes. |
 | `quota_period` | `month` | `day` or `month` — the bucket the hourly sweep rolls counts into. |
 
 **Only the hard ceiling ever returns `429`.** Crossing the soft limit accepts
@@ -385,9 +393,11 @@ oldest periods it claims to cover. The current, still-open period is always
 marked `"partial": true` in `GET /api/usage` so a chart never renders it as a
 completed, lower bar.
 
-Dashboard: **Settings → Organization → View usage.** API: `GET /api/usage`,
-`GET /api/usage/history?metric=&periods=`, `PATCH /api/orgs/{org_id}/plan`
-(owner-only). Cross-tenant view for operators: `/admin/usage` (super-admin).
+Dashboard: **Settings → Organization → View usage** (read-only for every
+role). API: `GET /api/usage`, `GET /api/usage/history?metric=&periods=`.
+Quotas are set by the operator, not the tenant: `PATCH
+/admin/orgs/{org_id}/plan` and `GET /admin/plans` (both super-admin).
+Cross-tenant view for operators: `/admin/usage` (super-admin).
 
 ### Scaling workers
 
@@ -414,7 +424,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d --scale worker=3
 Secure by default:
 
 - **Role-based access control** — members read, create and edit an org's sources, connections, destinations and endpoints; admins additionally delete, read and rotate endpoint secrets, publish outbound messages, and mint or revoke App Portal access; owners additionally delete the org and transfer ownership. Members keep full create and edit rights over routing configuration, including destination and endpoint URLs. API keys carry their own role (default `admin`, so existing keys are unaffected). **Upgrading from an earlier version:** existing `member` users lose delete, secret, publish and App Portal mint/revoke access — promote anyone who needs it to `admin`.
-- **Usage quotas are owner-gated** — `PATCH /api/orgs/{org_id}/plan` requires `owner`, stricter than this phase's default of admin-for-destructive, because changing a spend limit is a spend decision. Reading usage (`GET /api/usage`) is member-level, same as the rest of the traffic plane.
+- **Usage quotas are operator-granted, not tenant-editable** — no role inside an org, owner included, can change its own quota. `PATCH /admin/orgs/{org_id}/plan` sets the plan and its limits, and sits behind `auth.SuperAdminOnly`, a session-only gate no API key can reach. Reading usage (`GET /api/usage`) stays member-level, same as the rest of the traffic plane.
 - **SSRF-guarded delivery** — the worker refuses to POST to loopback/private/link-local (cloud-metadata) addresses; checked at dial time to defeat DNS rebinding.
 - **Session revocation** — signed cookies carry an epoch; logout invalidates all of a user's sessions.
 - **Single sign-on shares the session model** — an OIDC login goes through the same signer and the same account bootstrap as a magic-link login, so epoch revocation ("log out everywhere") covers SSO users too, and neither method can escalate a role an existing member already holds. The callback has to be a `GET` (an IdP redirects the browser back by navigation), so its state is **bound to the browser** by a short-lived `dstream_sso_state` cookie on top of being single-use in Redis — without that binding the callback would be a session-fixation primitive, since anyone can mint a state at the unauthenticated start endpoint. **Named residual:** that cookie's whole security property is that its value can't be injected, and it is not `__Host-` prefixed (which would require `Secure`, false in local HTTP dev) — so unlike `dstream_session` (HMAC-signed) and `dstream_csrf` (bound to the session value), a cookie tossed from a **compromised sibling subdomain** is directly exploitable against this one. If you serve dstream on a shared parent domain, treat every sibling subdomain as part of its trust boundary. SSO changes nothing about API-key auth or the App Portal.

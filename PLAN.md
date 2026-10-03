@@ -332,19 +332,22 @@ oldest periods it claims to cover. Rollups start accumulating at deploy; the
 current, still-open period is always marked `"partial": true` in
 `GET /api/usage` so a chart never renders it as a completed, lower bar.
 
-**Surfaces:** `GET /api/usage` and `GET /api/usage/history` (member),
-`PATCH /api/orgs/{org_id}/plan` (**owner-only** — a quota change is a spend
-decision, stricter than this phase's admin-for-destructive default),
+**Surfaces:** `GET /api/usage` and `GET /api/usage/history` (member,
+read-only — no tenant role can change its own quota). `PATCH
+/admin/orgs/{org_id}/plan` and `GET /admin/plans` (super-admin only: a quota
+is granted by the platform operator, not the tenant it governs),
 `GET /admin/usage` (super-admin, cross-tenant). The dashboard's usage card
-lives on Settings → Organization → View usage; its quota-editing form renders
-only for an owner, matching the API.
+lives on Settings → Organization → View usage, read-only for every role now;
+setting a plan or its limits happens on `/console/usage`, the operator-only
+page.
 
 **Folded in from the Task 5 review:** a `SELECT *` on `organizations` had been
 serializing `plan` and all five quota columns into `POST /api/orgs` and
 `PATCH /api/orgs/{org_id}` responses (any admin) since the migration landed —
 not a confidentiality break (`GET /api/usage` already exposes limits at member
-level), but a contract inconsistency against the owner-only write gate above.
-Closed by pinning `GetOrganizationByID`, `GetOrganizationBySlug`,
+level), but a contract inconsistency against the owner-only write gate that
+stood at the time (since superseded by a super-admin-only gate). Closed by
+pinning `GetOrganizationByID`, `GetOrganizationBySlug`,
 `CreateOrganization` and `UpdateOrgName` to explicit column lists and
 regenerating with `sqlc` — the same treatment `ListOrgsForUser` already got
 for the same reason.
