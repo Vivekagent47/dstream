@@ -46,6 +46,14 @@ func Mount(parent chi.Router, d Deps) {
 		// Cross-tenant usage view: every org against its own limits.
 		r.Get("/usage", d.handleUsage)
 
+		// Plan and quota administration. Quotas are granted by the platform
+		// operator, never by the tenant: an org raising its own ceiling is
+		// the thing the ceiling exists to prevent. The traffic plane must
+		// therefore carry no quota write of its own — see
+		// internal/api/router.go.
+		r.Get("/plans", d.handleListPlans)
+		r.Patch("/orgs/{org_id}/plan", d.handlePatchOrgPlan)
+
 		// Custom admin pages (Phase 1.4 scope).
 		r.Get("/overview", d.handleOverview)
 		r.Get("/orgs", d.handleListOrgs)
