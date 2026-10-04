@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 
 import { api, qk, type AdminOrgUsage, type Plan, type PlanPreset } from '#/lib/api'
+import { formatAgainst, quotaState } from '#/lib/quota'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
@@ -30,17 +31,15 @@ export const Route = createFileRoute('/console/usage')({
   errorComponent: AuthErrorBoundary,
 })
 
-// 0 means unlimited, per tier independently — so a count with no ceiling gets
-// a dash rather than "/ 0", which would read as zero capacity.
-function against(count: number, hard: number): string {
-  return hard === 0
-    ? `${count.toLocaleString()} / ∞`
-    : `${count.toLocaleString()} / ${hard.toLocaleString()}`
-}
+// The 0-means-unlimited rules live in #/lib/quota, shared with the tenant's
+// own usage page so the operator and the customer never read the same numbers
+// differently. Covered by src/lib/quota.test.ts.
+const against = formatAgainst
 
 function state(count: number, soft: number, hard: number) {
-  if (hard > 0 && count >= hard) return { label: 'At ceiling', variant: 'destructive' as const }
-  if (soft > 0 && count >= soft) return { label: 'Over soft', variant: 'warning' as const }
+  const q = quotaState(count, soft, hard)
+  if (q.overHard) return { label: 'At ceiling', variant: 'destructive' as const }
+  if (q.overSoft) return { label: 'Over soft', variant: 'warning' as const }
   return null
 }
 

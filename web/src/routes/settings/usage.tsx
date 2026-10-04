@@ -2,6 +2,7 @@ import { createFileRoute, Navigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, qk } from '#/lib/api'
+import { quotaState } from '#/lib/quota'
 import { PageHeader } from '#/components/TopBar'
 import { Badge } from '#/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#/components/ui/card'
@@ -100,7 +101,89 @@ function UsagePage() {
               )}
             </CardContent>
           </Card>
+
+          {data && <UsageTrend period={data.period} />}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// UsageTrend renders GET /api/usage/history for the two gated metrics.
+//
+// Deliberately hand-drawn bars rather than a chart library: twelve values per
+// metric with no axes, tooltips or interaction does not justify pulling one
+// in, and the page has no other chart to share it with.
+function UsageTrend({ period }: { period: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Recent {period === 'day' ? 'days' : 'months'}</CardTitle>
+        <CardDescription>
+          The last 12 periods for the two metrics that are enforced. The final bar is the current
+          period and is still filling.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {GATED_METRICS.map((m) => (
+          <MetricHistory key={m.key} metric={m.key} label={m.label} />
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function MetricHistory({ metric, label }: { metric: 'events' | 'messages'; label: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: qk.usageHistory(metric, 12),
+    queryFn: () => api.getUsageHistory(metric, 12),
+    retry: false,
+  })
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading {label}…</p>
+  const rows = data?.periods ?? []
+  if (rows.length === 0) {
+    return (
+      <div>
+        <div className="text-sm font-medium">{label}</div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          No history yet — rollups start accumulating from the first sweep after deploy.
+        </p>
+      </div>
+    )
+  }
+
+  // Scale against the tallest bar, not the limit: the limit can be 0
+  // (unlimited), and a trend is about shape rather than headroom — the meters
+  // above already show headroom. max||1 avoids dividing by zero on an
+  // all-empty history.
+  const max = Math.max(...rows.map((r) => r.count), 1)
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          peak {max.toLocaleString()}
+        </span>
+      </div>
+      <div className="mt-2 flex h-16 items-end gap-1">
+        {rows.map((r) => (
+          <div
+            key={r.period_start}
+            className="flex-1"
+            title={`${new Date(r.period_start).toLocaleDateString()} — ${r.count.toLocaleString()}${
+              r.partial ? ' (still filling)' : ''
+            }`}
+          >
+            <div
+              // A zero-count period still gets a hairline, so the bar is
+              // visibly "there and empty" rather than missing entirely.
+              className={`w-full rounded-sm ${r.partial ? 'bg-primary/40' : 'bg-primary'}`}
+              style={{ height: `${Math.max(2, (r.count / max) * 56)}px` }}
+            />
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -119,15 +202,10 @@ function UsageMeter({
   soft: number
   hard: number
 }) {
-  // 0 means unlimited (design §4.1) independently per tier: hard == 0 means
-  // no ceiling to scale a bar against, but soft > 0 with hard == 0 is a
-  // legitimate "warn me, never reject" config, and overSoft must still fire
-  // in that state — it must never be gated behind hard having a value.
-  const noCeiling = hard === 0
-  const fullyUnlimited = noCeiling && soft === 0
-  const overHard = !noCeiling && count >= hard
-  const overSoft = soft > 0 && count >= soft
-  const pct = noCeiling ? 0 : Math.min(100, (count / hard) * 100)
+  // The 0-means-unlimited rules live in #/lib/quota, shared with the
+  // operator console so the two pages cannot drift, and covered by
+  // src/lib/quota.test.ts.
+  const { noCeiling, fullyUnlimited, overSoft, overHard, pct } = quotaState(count, soft, hard)
   const barColor = overHard ? 'bg-destructive' : overSoft ? 'bg-amber-800' : 'bg-primary'
 
   return (
