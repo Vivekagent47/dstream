@@ -26,6 +26,36 @@ func RequireRole(min Role) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireAdminForURLChange gates a delivery-URL change at RoleAdmin, for
+// handlers whose route is otherwise member-writable. It returns true when the
+// caller may proceed and has already written the 403 when they may not.
+//
+// Call it only when the request actually changes the URL — a member editing a
+// destination's name or an endpoint's retry policy is ordinary member work and
+// stays allowed, which is why this is a handler-level check rather than a
+// RequireRole mark on the route.
+//
+// Why a URL is privileged where the rest of the same PATCH is not: changing it
+// silently redirects traffic that is already flowing, to a host the caller
+// chooses. The SSRF and loop guards (deliver.ValidateDestinationURL,
+// deliver.IsSelfHost) stop the request reaching dstream itself or a private
+// address, but neither stops it reaching an attacker's public endpoint — and
+// nobody is notified. A member who can do that can quietly exfiltrate every
+// payload an org receives.
+//
+// Scope note, so the next reader knows what this does NOT cover: creating a
+// destination or an endpoint is still member-level, so a member can add a new
+// sink. That is a visible act — a new row in a list someone is looking at —
+// where repointing an existing one is not, and widening the admin line to
+// cover creation is a product decision, not a security patch. See PLAN.md §8.
+func RequireAdminForURLChange(w http.ResponseWriter, r *http.Request) bool {
+	if err := RequireMinRole(r.Context(), RoleAdmin); err != nil {
+		http.Error(w, "changing a delivery URL requires the admin role", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // AdminForDestructive gates every DELETE in the group it's mounted on at
 // RoleAdmin and passes every other method through untouched.
 //

@@ -496,6 +496,23 @@ export interface Usage extends OrgQuota {
   }
 }
 
+// The four metrics usage_rollups tracks. `events` and `messages` are the two
+// the gate enforces; `requests` and `attempts` are counted only.
+export type UsageMetric = 'requests' | 'events' | 'messages' | 'attempts'
+
+// GET /api/usage/history — prior periods of ONE metric, oldest first. The
+// most recent entry is the current, still-open period and carries
+// `partial: true`, so a chart must not render it as a completed, lower bar.
+export interface UsageHistory {
+  metric: UsageMetric
+  period: QuotaPeriod
+  periods: Array<{
+    period_start: string
+    count: number
+    partial: boolean
+  }>
+}
+
 // GET /admin/usage — one row per org in the whole deployment, each against
 // its OWN limits and period. Super-admin only.
 export interface AdminOrgUsage {
@@ -945,6 +962,12 @@ export const api = {
 
   // Usage and quotas
   getUsage: () => http.get<Usage>('/api/usage').then((r) => r.data),
+  // Prior periods of one metric, for the trend strip on the usage page.
+  // `periods` is capped server-side at 100.
+  getUsageHistory: (metric: UsageMetric, periods = 12) =>
+    http
+      .get<UsageHistory>('/api/usage/history', { params: { metric, periods } })
+      .then((r) => r.data),
 }
 
 // Stable query keys for react-query. Keep keyed factories here so call sites
@@ -1016,4 +1039,5 @@ export const qk = {
   scenarios: () => ['scenarios'] as const,
   scenario: (id: string) => ['scenarios', id] as const,
   usage: () => ['usage'] as const,
+  usageHistory: (metric: string, periods: number) => ['usage', 'history', metric, periods] as const,
 }

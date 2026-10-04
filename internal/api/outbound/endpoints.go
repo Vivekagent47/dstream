@@ -406,6 +406,22 @@ func (d Handlers) PatchEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.URL != nil {
+		// Repointing a live endpoint is an admin act; the rest of this PATCH
+		// stays member-level. Compared against the stored URL rather than
+		// gated on the field's presence, because the endpoint edit form sends
+		// `url` on every save — a member changing only a description would
+		// otherwise be refused. Costs one SELECT on PATCHes that carry a URL.
+		// See auth.RequireAdminForURLChange.
+		cur, err := d.Queries.GetEndpointForApp(r.Context(), store.GetEndpointForAppParams{
+			ID: store.UUID(id), AppID: app.ID,
+		})
+		if err != nil {
+			httpx.Err(w, http.StatusNotFound, "not found")
+			return
+		}
+		if *body.URL != cur.Url && !auth.RequireAdminForURLChange(w, r) {
+			return
+		}
 		if err := deliver.ValidateDestinationURL(*body.URL); err != nil {
 			httpx.Err(w, http.StatusBadRequest, "invalid url: "+err.Error())
 			return
