@@ -233,11 +233,26 @@ func TestRollupExcludesTestEvents(t *testing.T) {
 	orgID := seedOrg(t, pool, "month")
 	seedTraffic(t, pool, orgID, 2, time.Now(), false)
 	seedTraffic(t, pool, orgID, 3, time.Now(), true) // replayed fixtures
+	seedAttempts(t, pool, orgID, time.Now())         // one per event, test and real
 
 	rollupUsage(ctx, q, nil, quiet())
 
 	if got := usageFor(t, q, orgID, "events", cur); got != 2 {
 		t.Errorf("events = %d, want 2 (the 3 is_test events must not be metered)", got)
+	}
+
+	// The replay also wrote a real `requests` row and real `attempts` rows.
+	// Metering those would charge for the dev loop just as surely as metering
+	// the events would — the exclusion has to follow the traffic, not stop at
+	// the one table that happens to carry the flag.
+	//
+	// seedTraffic inserts exactly one request per call, so two calls produce
+	// two requests and only the non-test one counts.
+	if got := usageFor(t, q, orgID, "requests", cur); got != 1 {
+		t.Errorf("requests = %d, want 1 (the replay's request row must not be metered)", got)
+	}
+	if got := usageFor(t, q, orgID, "attempts", cur); got != 2 {
+		t.Errorf("attempts = %d, want 2 (attempts against is_test events must not be metered)", got)
 	}
 }
 

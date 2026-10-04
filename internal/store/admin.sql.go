@@ -7,6 +7,8 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countOrganizations = `-- name: CountOrganizations :one
@@ -32,30 +34,38 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 }
 
 const listAllOrganizations = `-- name: ListAllOrganizations :many
-SELECT id, name, slug, created_at, updated_at, plan, quota_events_soft, quota_events_hard, quota_messages_soft, quota_messages_hard, quota_period FROM organizations ORDER BY created_at DESC LIMIT 200
+SELECT id, name, slug, created_at
+FROM organizations ORDER BY created_at DESC LIMIT 200
 `
 
-func (q *Queries) ListAllOrganizations(ctx context.Context) ([]Organization, error) {
+type ListAllOrganizationsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	Slug      string             `json:"slug"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Pinned to the four columns the console's org list renders, not `SELECT *`.
+// The quota and plan columns live on this table, so a bare star widens this
+// row — and anything that serializes it — every time a column is added. The
+// same pin was applied to GetOrganizationByID, GetOrganizationBySlug,
+// CreateOrganization and UpdateOrgName on 2026-10-02 after exactly that
+// happened; this query was the one missed. Widening the list is a deliberate
+// API change, so make it one.
+func (q *Queries) ListAllOrganizations(ctx context.Context) ([]ListAllOrganizationsRow, error) {
 	rows, err := q.db.Query(ctx, listAllOrganizations)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Organization{}
+	items := []ListAllOrganizationsRow{}
 	for rows.Next() {
-		var i Organization
+		var i ListAllOrganizationsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
 			&i.Slug,
 			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Plan,
-			&i.QuotaEventsSoft,
-			&i.QuotaEventsHard,
-			&i.QuotaMessagesSoft,
-			&i.QuotaMessagesHard,
-			&i.QuotaPeriod,
 		); err != nil {
 			return nil, err
 		}

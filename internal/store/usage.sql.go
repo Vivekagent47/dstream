@@ -172,6 +172,7 @@ SELECT org_id, period_start, sum(count)::bigint AS count FROM (
            count(*)::bigint AS count
     FROM attempts a JOIN events e ON e.id = a.event_id
     WHERE a.attempted_at >= $2::timestamptz
+      AND e.is_test = FALSE
     GROUP BY 1, 2
     UNION ALL
     SELECT md.org_id AS org_id,
@@ -200,6 +201,11 @@ type RollupAttemptsRow struct {
 // directly (no join to messages needed).
 //
 // NOTE both attempt tables use attempted_at, NOT created_at.
+//
+// The inbound half excludes is_test for the same reason RollupEvents does:
+// replaying a fixture delivers it, and metering those attempts would charge
+// for the dev loop. The outbound half has no equivalent — messages carry no
+// is_test column, so there is nothing to filter there.
 func (q *Queries) RollupAttempts(ctx context.Context, arg RollupAttemptsParams) ([]RollupAttemptsRow, error) {
 	rows, err := q.db.Query(ctx, rollupAttempts, arg.Bucket, arg.After)
 	if err != nil {
@@ -311,6 +317,7 @@ SELECT s.org_id AS org_id, date_trunc($1::text, r.received_at)::timestamptz AS p
 FROM requests r
 JOIN sources s ON s.id = r.source_id
 WHERE r.received_at >= $2::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.request_id = r.id AND e.is_test)
 GROUP BY 1, 2
 `
 
@@ -326,6 +333,18 @@ type RollupRequestsRow struct {
 }
 
 // requests has no org_id and its timestamp is received_at, not created_at.
+//
+// Test traffic is excluded here too, for the reason RollupEvents gives: the
+// replay and test-connection paths (internal/bookmark, internal/api/pipeline)
+// create a real `requests` row before minting their is_test events, so without
+// this a fixture replay would be metered as inbound traffic even though the
+// event it produced was not. `requests` carries no is_test column of its own —
+// the flag is per-request in practice (a request is wholly test or not, see
+// db/queries/events.sql), so the NOT EXISTS reads it off the events the
+// request produced.
+//
+// A request that produced NO events still counts: a webhook that every
+// connection filtered out is real inbound traffic dstream did work for.
 func (q *Queries) RollupRequests(ctx context.Context, arg RollupRequestsParams) ([]RollupRequestsRow, error) {
 	rows, err := q.db.Query(ctx, rollupRequests, arg.Bucket, arg.After)
 	if err != nil {

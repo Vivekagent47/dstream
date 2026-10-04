@@ -203,7 +203,14 @@ type Querier interface {
 	InsertRequestBody(ctx context.Context, arg InsertRequestBodyParams) error
 	InsertScenarioStep(ctx context.Context, arg InsertScenarioStepParams) (ScenarioStep, error)
 	ListAPIKeysByOrg(ctx context.Context, orgID pgtype.UUID) ([]ApiKey, error)
-	ListAllOrganizations(ctx context.Context) ([]Organization, error)
+	// Pinned to the four columns the console's org list renders, not `SELECT *`.
+	// The quota and plan columns live on this table, so a bare star widens this
+	// row — and anything that serializes it — every time a column is added. The
+	// same pin was applied to GetOrganizationByID, GetOrganizationBySlug,
+	// CreateOrganization and UpdateOrgName on 2026-10-02 after exactly that
+	// happened; this query was the one missed. Widening the list is a deliberate
+	// API change, so make it one.
+	ListAllOrganizations(ctx context.Context) ([]ListAllOrganizationsRow, error)
 	ListApplicationsByOrg(ctx context.Context, arg ListApplicationsByOrgParams) ([]Application, error)
 	ListAttemptsByEndpoint(ctx context.Context, arg ListAttemptsByEndpointParams) ([]MessageDeliveryAttempt, error)
 	ListAttemptsByEvent(ctx context.Context, eventID pgtype.UUID) ([]Attempt, error)
@@ -302,6 +309,11 @@ type Querier interface {
 	// directly (no join to messages needed).
 	//
 	// NOTE both attempt tables use attempted_at, NOT created_at.
+	//
+	// The inbound half excludes is_test for the same reason RollupEvents does:
+	// replaying a fixture delivers it, and metering those attempts would charge
+	// for the dev loop. The outbound half has no equivalent — messages carry no
+	// is_test column, so there is nothing to filter there.
 	RollupAttempts(ctx context.Context, arg RollupAttemptsParams) ([]RollupAttemptsRow, error)
 	// is_test events are excluded from the metered count. Fixture replay is the
 	// dev-loop feature dstream sells; throttling or billing someone for exercising
@@ -312,6 +324,18 @@ type Querier interface {
 	RollupEvents(ctx context.Context, arg RollupEventsParams) ([]RollupEventsRow, error)
 	RollupMessages(ctx context.Context, arg RollupMessagesParams) ([]RollupMessagesRow, error)
 	// requests has no org_id and its timestamp is received_at, not created_at.
+	//
+	// Test traffic is excluded here too, for the reason RollupEvents gives: the
+	// replay and test-connection paths (internal/bookmark, internal/api/pipeline)
+	// create a real `requests` row before minting their is_test events, so without
+	// this a fixture replay would be metered as inbound traffic even though the
+	// event it produced was not. `requests` carries no is_test column of its own —
+	// the flag is per-request in practice (a request is wholly test or not, see
+	// db/queries/events.sql), so the NOT EXISTS reads it off the events the
+	// request produced.
+	//
+	// A request that produced NO events still counts: a webhook that every
+	// connection filtered out is real inbound traffic dstream did work for.
 	RollupRequests(ctx context.Context, arg RollupRequestsParams) ([]RollupRequestsRow, error)
 	RotateEndpointSecret(ctx context.Context, arg RotateEndpointSecretParams) (Endpoint, error)
 	SeedEventType(ctx context.Context, arg SeedEventTypeParams) error
