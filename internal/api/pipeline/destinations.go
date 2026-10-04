@@ -174,6 +174,16 @@ func (d Handlers) PatchDestination(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusNotFound, "not found")
 		return
 	}
+	// Repointing a live destination is an admin act; the rest of this PATCH
+	// stays member-level. Compared against the stored value rather than
+	// gating on the field's presence, because the dashboard PATCHes the whole
+	// form — a member saving a name change resends the unchanged URL and must
+	// not be refused for it. See auth.RequireAdminForURLChange.
+	if body.URL != nil && (old.Url == nil || *body.URL != *old.Url) {
+		if !auth.RequireAdminForURLChange(w, r) {
+			return
+		}
+	}
 	// Post-merge type/url consistency. Compute what each field will be
 	// AFTER the COALESCE-style patch and reject combinations that would
 	// permanently break delivery (http destination with NULL url, etc).
