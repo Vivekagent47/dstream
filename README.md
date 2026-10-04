@@ -5,7 +5,7 @@
 
 dstream sits between webhook senders (Stripe, GitHub, Shopify, your own services) and your app. It accepts inbound webhooks, persists every request, applies per-connection delivery + retry policy, and forwards to your endpoints — while you watch every attempt in a dashboard.
 
-**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Phase 5a also shipped: role-based access control across the API, with per-key roles. Phase 5b shipped **instance-level OIDC single sign-on** — one IdP per deployment, not yet exercised against a real IdP ([see below](#single-sign-on-oidc)). Phase 5c shipped **usage metering and quotas** — four metered metrics per org per period, a soft-warn/hard-reject enforcement ladder, and a usage card on the org settings page ([see below](#usage-metering-and-quotas)). Every quota defaults to `0` (unlimited), so an upgraded deployment rejects nothing until an owner opts in, and **no payment provider is included or implied** — this slice ends at the meter. Remaining: self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
+**Status:** Phases 1–4 shipped — core inbound gateway (security-hardened), outbound webhooks (Svix-style publish + signed fan-out + App Portal), transforms + filters (CEL filter + sandboxed `goja` transform on both pipelines), and record/replay (fixtures, import/export, auto-capture rules, ordered scenarios). Phase 5a also shipped: role-based access control across the API, with per-key roles. Phase 5b shipped **instance-level OIDC single sign-on** — one IdP per deployment, not yet exercised against a real IdP ([see below](#single-sign-on-oidc)). Phase 5c shipped **usage metering and quotas** — four metered metrics per org per period, a soft-warn/hard-reject enforcement ladder, and a read-only usage card on the org settings page ([see below](#usage-metering-and-quotas)). Plan names carry real limits: a new org lands on the free tier, and quotas are granted by the platform operator on a super-admin-only surface, never by the org itself. **No payment provider is included or implied** — this slice ends at the meter. Remaining: self-host packaging — see the roadmap below. **Webhook auth (inbound signature verification, outbound delivery auth) is deliberately deferred to post-release.** `PLAN.md` is the live design doc.
 
 ---
 
@@ -381,9 +381,11 @@ request therefore crosses its *real* limit somewhat later than its live
 counter suggests — deliberately lenient, in the accept-a-bit-more direction,
 never reject-early.
 
-**Fixture replay (`is_test` traffic) is excluded from the metered `events`
-count** — exercising your own setup through the replay tooling never burns
-quota or trips an alert.
+**Fixture replay (`is_test` traffic) is excluded from the metered `events`,
+`requests` and `attempts` counts** — exercising your own setup through the
+replay tooling never burns quota or trips an alert. Replay writes a real
+request row and real delivery attempts before minting its test events, so
+all three metrics skip it, not just the one table that carries the flag.
 
 **Rollups start accumulating at deploy — there is no historical backfill.**
 Reconstructing past periods from existing `requests`/`events`/`attempts` rows

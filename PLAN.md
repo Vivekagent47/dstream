@@ -304,9 +304,27 @@ existing rate limiter set.
 **Six columns on `organizations`** (`plan`, `quota_events_soft/hard`,
 `quota_messages_soft/hard`, `quota_period`), every one defaulting so the
 migration backfills existing orgs in one `ALTER` with no data migration.
-**Every default is `0`, and `0` means unlimited at both tiers** — an upgraded
-deployment that configures nothing rejects nothing, exactly as before this
-shipped.
+**`0` means unlimited, per tier independently** — a tier left at `0` never
+fires, which is how `enterprise` is expressed.
+
+**A plan name carries real limits** (added 2026-10-03; the columns originally
+defaulted to `0`, so "free tier" meant unlimited and had no enforced
+meaning). The presets live in `internal/usage/plans.go` and are the source of
+truth; the free row is mirrored as the column defaults so a new org lands on
+it without any Go running, and `internal/usage/plans_test.go` reads those
+defaults back out of `information_schema` to catch the two drifting apart.
+
+| Plan | events soft / hard | messages soft / hard | period |
+| --- | --- | --- | --- |
+| `free` | 8,000 / 10,000 | 8,000 / 10,000 | month |
+| `pro` | 800,000 / 1,000,000 | 800,000 / 1,000,000 | month |
+| `enterprise` | 0 / 0 (unlimited) | 0 / 0 (unlimited) | month |
+| `custom` | whatever the operator types | | |
+
+These numbers are a starting point, not a commitment — one Go map and the
+matching SQL defaults. `enterprise` is uncapped deliberately: those
+agreements are negotiated outside the product, and a ceiling nobody
+remembered to raise is worse than no ceiling for that customer.
 
 **The enforcement ladder never silently drops a webhook.** Under soft:
 accepted. At or over soft, under hard: still **accepted**, and
@@ -323,7 +341,10 @@ while the sweep counts real `events` rows. An org whose sources fan out to
 several connections per request therefore crosses its *real* limit somewhat
 later than its live counter implies — lenient in the accept-more direction,
 never reject-early. `is_test` traffic (fixture replay) is excluded from the
-metered `events` count, so exercising your own setup never burns quota.
+metered `events`, `requests` and `attempts` counts, so exercising your own
+setup never burns quota — the replay paths write a real `requests` row and
+real `attempts` rows before minting their test events, so the exclusion has
+to follow the traffic rather than stop at the one table carrying the flag.
 
 **No historical backfill of `usage_rollups`.** Reconstructing prior periods
 from existing rows would be wrong, not merely incomplete — payload retention
@@ -376,6 +397,10 @@ Spec: `2026-10-02-phase-5c-usage-metering-quotas-design.md`.
 | 2026-10-01 | **`DSTREAM_OIDC_DEFAULT_ORG` is not validated at boot** (amended mid-implementation; an earlier draft promised it would be). The check cannot live in config validation — that runs before the DB pool opens — and placing it after the pool would couple startup to database seeding state, bricking a deployment whose default org is created by a seed job *after* first boot. Cost: a bad slug surfaces at the first SSO login instead, so it must surface legibly — a `500` naming the variable plus a server log line, never the `401` an auth failure returns. |
 | 2026-10-01 | **The SSO callback binds its state to the browser with a cookie**, correcting this spec's own first draft, which claimed single-use state was sufficient for a `GET` callback. It was not: `/sso/start` is unauthenticated, so an attacker mints a valid state for free, logs in as himself, and phishes a victim into a top-level `GET` of the callback — a working session-fixation bug that the slice's first implementation carried, caught in review before it was committed. Accepted residual: `dstream_sso_state` is not `__Host-` prefixed (that needs `Secure`, false in local HTTP dev), so cookie tossing from a compromised sibling subdomain remains in scope, as it does for the CSRF cookie. |
 | 2026-10-02 | **Quota columns pinned out of four `organizations` queries.** `GetOrganizationByID`, `GetOrganizationBySlug`, `CreateOrganization` and `UpdateOrgName` were `SELECT * FROM organizations` / `RETURNING *`, so `plan` and all five quota columns had been serializing straight into `POST /api/orgs` and `PATCH /api/orgs/{org_id}` responses since the 5c migration landed. Not a confidentiality break — `GET /api/usage` already exposes limits at member level — but a contract inconsistency against the owner-only quota write gate. Fixed by pinning explicit column lists and regenerating with `sqlc`, matching `ListOrgsForUser`'s existing pin. |
+| 2026-10-03 | **Quota authority moved from the org owner to the platform operator**, reversing the 5c decision recorded above it. `PATCH /api/orgs/{org_id}/plan` is deleted; `PATCH /admin/orgs/{org_id}/plan` and `GET /admin/plans` replace it behind `auth.SuperAdminOnly`, which is session-only, so no API key reaches them. An owner raising their own ceiling is the thing the ceiling exists to prevent — "a quota change is a spend decision" was right about the *weight* of the decision and wrong about *whose* it is. `organizations` now has exactly four writers (`CreateOrganization`, `UpdateOrgName`, `DeleteOrganization`, `UpdateOrgQuota`), and only the last touches a quota column. |
+| 2026-10-03 | **Plan names carry real limits, and `plan = 'custom'` is the override marker.** Presets live in one Go map (`internal/usage/plans.go`), mirrored as the `organizations` column defaults so a new org lands on the free tier with no Go running; a test reads the defaults back out of `information_schema` to catch drift. A preset plan owns all four limits *and* the period — any `quota_*` field sent with one is a 400, because `pro` at 1M events per **day** is thirty times the tier the operator thinks they granted. Rejected a separate `is_overridden` column: it would carry exactly what `plan='custom'` already carries and could disagree with it. Cost: "pro, but with one number nudged" is inexpressible — raising one tenant is deliberately two acts, which is what keeps a tier change distinguishable from a negotiated exception in the audit log. |
+| 2026-10-03 | **Previously-unlimited orgs were migrated into enforcement.** The backfill capped orgs matching `plan='free'` with all four limits at 0 — the row 5c's defaults produced. Known imprecision, accepted: 5c's own owner-editable card sent all six fields on save, so an org deliberately left free-and-unlimited through that card is indistinguishable and was also capped. Exposure was ~1 day. The remedy is the one the design already asks for: `plan='custom'`. |
+| 2026-10-03 | **Changing a delivery URL requires admin; creating one does not.** Closes the item left open from 5a. `PATCH` on a destination or an endpoint compares the submitted URL against the stored one and demands `RoleAdmin` only when it moves, so a member renaming a destination still works — the dashboard PATCHes whole forms, so presence of the field means nothing. Repointing is privileged because it silently redirects traffic that is *already flowing*, to a host the caller picks, with nobody notified; the SSRF and loop guards stop neither. `POST` stays member-level: adding a sink is a visible act, a new row in a list, and widening the line to cover creation is a product decision rather than a security patch. |
 
 ---
 
@@ -417,7 +442,20 @@ DSTREAM_TEST_DB_URL="postgres://dstream:dstream@127.0.0.1:5433/dstream_test?sslm
 DSTREAM_REDIS_ADDR=127.0.0.1:6379 go test ./... -count=1
 ```
 
-The web app has **no test suite** — `tsc --noEmit` plus `bun run build` are its only gates, so UI regressions surface by hand.
+The web app's gates are `npx tsc --noEmit`, `bun run build`, and `bun run test`
+(vitest, `web/vitest.config.ts` — a standalone config, because the app's own
+Vite config starts nitro and the suite then never exits). Coverage is **logic
+only**: `src/lib/quota.test.ts` pins the 0-means-unlimited rules that both
+usage pages share. There are no component or end-to-end tests, so rendering
+regressions still surface by hand.
+
+`bun run lint` **fails repo-wide** — 28 problems (16 errors, 12 warnings)
+across 15 files, mostly `react-hooks/set-state-in-effect` in components and
+routes that predate the rule. That is the baseline: judge a change by whether
+the count and file list move, not by whether lint exits 0. One consequence
+worth knowing before reaching for a familiar fix — resyncing state in a
+`useEffect` is not available here without adding to that count; reset derived
+state with a React `key` instead, as `/console/usage` does.
 
 **SSO needs a manual first pass.** Phase 5b's protocol layer is tested against
 a locally-signing fake IdP and its callback against a fake `Authenticator`, but
@@ -429,3 +467,13 @@ the exact string at startup), sign in from the login page, confirm the session
 lands and the user holds the expected role in the expected org, then log out
 and confirm the session is dead. If the IdP omits `email_verified`, the
 callback refuses by design — add the claim at the IdP.
+
+**`/console/usage` needs a manual first pass too.** The operator quota editor
+has handler and logic coverage but has never been rendered in a browser. The
+pass to run, as a super-admin (`dstream admin promote <email>`): open
+`/console/usage` and confirm each org shows against its *own* ceiling; switch
+one org to `pro` and confirm it lands on 800,000 / 1,000,000 without typing a
+number; switch it to `custom`, confirm the four inputs appear pre-filled, edit
+one and confirm Save sticks and then disables; open that org's own
+`/settings/usage` and confirm the new limits show with no editor; and check
+its `/settings/audit` for an `org.plan.update` entry per request.
