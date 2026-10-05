@@ -1,4 +1,4 @@
-.PHONY: help dev build test cover lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
+.PHONY: help dev build test cover cover-report lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
 
 BIN := bin/dstream
 PKG := github.com/Vivekagent47/dstream
@@ -76,13 +76,40 @@ test:
 # test still reports as covered-nothing — a passing run with a meaningless
 # number. See PLAN.md section 9 for the command.
 cover:
-	go test $(GO_PKGS) -race -count=1 -covermode=atomic -coverprofile=cover.out
+	@# -coverpkg is not optional here. Without it Go credits a statement only
+	@# to the package whose own test binary ran it, and this suite tests most
+	@# handlers through the router that mounts them: internal/api's tests drive
+	@# internal/api/identity, so identity measured 0.3% while being heavily
+	@# exercised. Attributing honestly moved the total from 42.8% to 55.5%
+	@# without a single new test.
+	go test $(GO_PKGS) -race -count=1 -covermode=atomic \
+		-coverpkg=$$(go list ./... | grep -v /web/node_modules/ | paste -sd, -) \
+		-coverprofile=cover.out
 	@grep -vE '\.sql\.go:|internal/store/(models|db|querier)\.go:' cover.out > cover.real.out
 	@go tool cover -func=cover.real.out | tail -1
 	@total=$$(go tool cover -func=cover.real.out | awk 'END { gsub("%","",$$3); print $$3 }'); \
 	 awk -v t="$$total" -v m="$(COVERAGE_MIN)" 'BEGIN {\
 	   if (t+0 < m+0) { printf "FAIL: backend coverage %.1f%% is below the %s%% minimum\n", t, m; exit 1 }\
 	   printf "ok: backend coverage %.1f%% meets the %s%% minimum\n", t, m }'
+
+# Per-package breakdown of the last `make cover` run. Blocks repeat in a
+# -coverpkg profile (one copy per test binary), so dedupe on block position
+# and keep the highest count before summing, or every number comes out
+# multiplied by the number of packages that ran.
+cover-report:
+	@test -f cover.real.out || (echo "no profile — run: make cover"; exit 1)
+	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
+	      END { \
+	        for (k in n) { \
+	          split(k, a, ":"); f = a[1]; \
+	          sub(/^github\.com\/Vivekagent47\/dstream\//, "", f); \
+	          pkg = f; sub(/\/[^\/]+$$/, "", pkg); \
+	          total[pkg] += n[k]; if (c[k] == 0) uncovered[pkg] += n[k] \
+	        } \
+	        for (p in total) \
+	          printf "%6d uncovered  %6d total  %5.1f%%  %s\n", \
+	            uncovered[p], total[p], 100 * (total[p] - uncovered[p]) / total[p], p \
+	      }' cover.real.out | sort -rn
 
 lint:
 	go vet $(GO_PKGS)
