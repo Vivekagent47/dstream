@@ -174,4 +174,3 @@ func periodsAgo(current time.Time, period string, n int) time.Time {
 	}
 	return current.AddDate(0, -(n - 1), 0)
 }
-
