@@ -1,10 +1,20 @@
-.PHONY: help dev build test lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
+.PHONY: help dev build test cover lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
 
 BIN := bin/dstream
 PKG := github.com/Vivekagent47/dstream
 
 ATLAS     := atlas
 ATLAS_ENV := local
+
+# Minimum backend statement coverage. `make cover` and CI both fail below
+# it; raise it as coverage climbs, never lower it to make a branch pass.
+COVERAGE_MIN ?= 95
+
+# Go packages, minus the one third-party package vendored inside the npm
+# tree (web/node_modules/flatted/golang/...). `go list ./...` picks it up,
+# so without this every test run compiles and "tests" someone else's code
+# and drags the coverage total down with it.
+GO_PKGS = $$(go list ./... | grep -v /web/node_modules/)
 
 help:
 	@echo "make dev            - run server + worker locally (assumes compose-up done)"
@@ -51,10 +61,35 @@ build:
 	go build -o $(BIN) ./cmd/dstream
 
 test:
-	go test ./... -race -count=1
+	go test $(GO_PKGS) -race -count=1
+
+# Coverage gate. CI calls this target (.github/workflows/ci.yml), so the
+# threshold and the exclusions below live in exactly one place.
+#
+# sqlc output is stripped from the profile before the total is computed:
+# it is machine-written, nobody tests it directly, and counting it means
+# adding a query silently lowers coverage. Keep the pattern in sync with
+# sqlc.yaml if the generated file set changes.
+#
+# Needs the same environment as `make test`: a migrated DSTREAM_TEST_DB_URL
+# and DSTREAM_REDIS_ADDR. Without them the DB tests skip, and a skipped
+# test still reports as covered-nothing — a passing run with a meaningless
+# number. See PLAN.md section 9 for the command.
+cover:
+	go test $(GO_PKGS) -race -count=1 -covermode=atomic -coverprofile=cover.out
+	@grep -vE '\.sql\.go:|internal/store/(models|db|querier)\.go:' cover.out > cover.real.out
+	@go tool cover -func=cover.real.out | tail -1
+	@total=$$(go tool cover -func=cover.real.out | awk 'END { gsub("%","",$$3); print $$3 }'); \
+	 awk -v t="$$total" -v m="$(COVERAGE_MIN)" 'BEGIN {\
+	   if (t+0 < m+0) { printf "FAIL: backend coverage %.1f%% is below the %s%% minimum\n", t, m; exit 1 }\
+	   printf "ok: backend coverage %.1f%% meets the %s%% minimum\n", t, m }'
 
 lint:
-	go vet ./...
+	go vet $(GO_PKGS)
+	@# gofmt is a gate, not a suggestion: one unformatted file makes every
+	@# later diff that touches it carry formatting noise alongside the change.
+	@unformatted=$$(gofmt -l cmd db internal tools); \
+	 if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 
 tidy:
 	go mod tidy
