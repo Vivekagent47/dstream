@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1061,5 +1064,41 @@ func TestForward_ClientTimeoutIsReportedToServer(t *testing.T) {
 		}
 	case <-time.After(wsWait):
 		t.Fatal("no response frame")
+	}
+}
+
+// With neither --url nor DSTREAM_API_URL the CLI talks to localhost:8080. This
+// is the one test that needs a fixed port. "localhost" may resolve to either
+// loopback family, so both are bound. No IPv6 on the host (EADDRNOTAVAIL or
+// EAFNOSUPPORT) just
+// means only 127.0.0.1 is bound; a port that is already taken, on either
+// family, could route the request to the wrong server, so that skips.
+func TestListen_DefaultsToLocalhost8080(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		http.Error(w, "short and stout", http.StatusTeapot)
+	})}
+	t.Cleanup(func() { srv.Close() })
+	for _, addr := range []string{"127.0.0.1:8080", "[::1]:8080"} {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			if addr[0] == '[' && (errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.EAFNOSUPPORT)) {
+				continue // no IPv6 here
+			}
+			t.Skipf("%s is busy: %v", addr, err)
+		}
+		go srv.Serve(ln)
+	}
+	t.Setenv("DSTREAM_API_KEY", testKey)
+	t.Setenv("DSTREAM_API_URL", "")
+
+	_, _, err := execCmd(t, listenCmd(), "--source", "by-name")
+
+	if err == nil || !strings.Contains(err.Error(), "list sources: 418 short and stout") {
+		t.Fatalf("err = %v, want the default server's 418 reported", err)
+	}
+	if gotPath != "/api/cli/sources" || gotAuth != "Bearer "+testKey {
+		t.Errorf("default server saw %q with auth %q", gotPath, gotAuth)
 	}
 }

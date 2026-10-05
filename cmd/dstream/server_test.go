@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/config"
@@ -330,4 +333,92 @@ func TestBuildServer_SSODiscovery(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+func TestServerCmd_ReportsBadConfig(t *testing.T) {
+	t.Setenv("DSTREAM_DB_MAX_CONNS", "not-a-number")
+	_, _, err := execCmd(t, serverCmd())
+	if err == nil || !strings.Contains(err.Error(), "unmarshal config") {
+		t.Fatalf("err = %v, want the config unmarshal failure", err)
+	}
+}
+
+// The real command serves until SIGTERM, then shuts down and returns nil.
+func TestServerCmd_RunsUntilSigterm(t *testing.T) {
+	serverEnv(t)
+	t.Setenv("DSTREAM_HTTP_ADDR", "127.0.0.1:0")
+	// Our own handler guarantees an early SIGTERM can never kill the test
+	// binary, whatever the timing against the command's own registration.
+	sigs := make(chan os.Signal, 16)
+	signal.Notify(sigs, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(sigs) })
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := execCmd(t, serverCmd())
+		done <- err
+	}()
+	deadline := time.After(30 * time.Second)
+	for first := true; ; first = false {
+		select {
+		case err := <-done:
+			if first {
+				t.Fatalf("server exited before it was signalled: %v", err)
+			}
+			if err != nil {
+				t.Fatalf("server returned %v on SIGTERM, want a clean nil", err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("server did not exit after SIGTERM")
+		case <-time.After(100 * time.Millisecond):
+			// Re-sent until the command is up and has registered its handler.
+			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		}
+	}
+}
+
+func TestBuildServer_LogsTracingEnabled(t *testing.T) {
+	cfg := serverEnv(t)
+	cfg.Tracing.Enabled = true
+	cfg.Tracing.OTLPEndpoint = "http://127.0.0.1:1"
+	cfg.Tracing.SampleRatio = 1
+	// Init installs a global provider; put the previous one back afterwards.
+	prev := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	logs := &logBuf{}
+	// The exporter connects lazily, so an unreachable collector must not fail the build.
+	_, cleanup, err := buildServer(context.Background(), cfg, logs.logger())
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(cleanup)
+	if out := logs.String(); !strings.Contains(out, "tracing enabled") || !strings.Contains(out, "127.0.0.1:1") {
+		t.Errorf("no tracing-enabled line naming the endpoint:\n%s", out)
+	}
+}
+
+// A quota-load failure must not stop the server from booting: it logs the
+// cause and serves unlimited until a reload lands.
+func TestBuildServer_QuotaLoadFailureOnlyWarns(t *testing.T) {
+	cfg := serverEnv(t)
+	pool, dsn := migratedScratchDB(t)
+	cfg.DB.URL = dsn
+	renameColumn := `ALTER TABLE organizations RENAME COLUMN quota_period TO quota_period_gone`
+	breakDB(t, pool, renameColumn, `ALTER TABLE organizations RENAME COLUMN quota_period_gone TO quota_period`)
+
+	logs := &logBuf{}
+	srv, cleanup, err := buildServer(context.Background(), cfg, logs.logger())
+	if err != nil {
+		t.Fatalf("buildServer: %v, want the boot to survive a failed quota load", err)
+	}
+	t.Cleanup(cleanup)
+	if srv == nil {
+		t.Fatal("no server returned")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "usage: initial quota limits load failed") || !strings.Contains(out, `column \"quota_period\" does not exist`) {
+		t.Errorf("no quota-load warning with its cause:\n%s", out)
+	}
 }

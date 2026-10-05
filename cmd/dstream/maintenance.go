@@ -25,10 +25,11 @@ const (
 // insert-per-invite and were never cleaned up), and rolls per-org usage up into
 // usage_rollups. Runs in the worker; the DELETEs are safe across replicas, and
 // the rollup converges rather than accumulating, so running it on several
-// replicas at once is safe too. Stops when ctx is cancelled.
+// replicas at once is safe too. Sweeps every `every` (maintenanceInterval in
+// production). Stops when ctx is cancelled.
 //
 // rdb may be nil (no Redis configured); the Postgres rollup still runs.
-func runMaintenance(ctx context.Context, q *store.Queries, rdb *redis.Client, log *slog.Logger, retention time.Duration) {
+func runMaintenance(ctx context.Context, q *store.Queries, rdb *redis.Client, log *slog.Logger, retention, every time.Duration) {
 	sweep := func() {
 		cutoff := pgtype.Timestamptz{Time: time.Now().Add(-expiredRetention), Valid: true}
 		if n, err := q.DeleteExpiredMagicLinkTokens(ctx, cutoff); err != nil {
@@ -72,7 +73,7 @@ func runMaintenance(ctx context.Context, q *store.Queries, rdb *redis.Client, lo
 		rollupUsage(ctx, q, rdb, log)
 	}
 	sweep() // once at startup, then on the interval
-	t := time.NewTicker(maintenanceInterval)
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -940,4 +941,255 @@ func TestAdminCmd_ReportsConfigAndConnectionErrors(t *testing.T) {
 			t.Errorf("printed %q", stdout)
 		}
 	})
+}
+
+// --- mid-command database failures ---
+//
+// Each case needs an early statement to succeed and a later one to fail, which
+// no closed pool or bad argument can give. So: a scratch database with the
+// real schema, plus one deliberate break per case, undone afterwards.
+
+// migratedScratchDB applies the real migrations to a fresh scratch database
+// and returns a pool over it and its DSN.
+func migratedScratchDB(t *testing.T) (*pgxpool.Pool, string) {
+	t.Helper()
+	dsn := newScratchDB(t)
+	t.Setenv("DSTREAM_DB_URL", dsn)
+	t.Setenv("DSTREAM_LOG_LEVEL", "error")
+	var err error
+	captureStdout(t, func() { _, _, err = execCmd(t, migrateCmd(), "up") })
+	if err != nil {
+		t.Fatalf("migrate scratch db: %v", err)
+	}
+	pool, err := store.NewPool(context.Background(), dsn, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool, dsn
+}
+
+// breakDB runs ddl now and undo when the (sub)test ends.
+func breakDB(t *testing.T, pool *pgxpool.Pool, ddl, undo string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), ddl); err != nil {
+		t.Fatalf("%s: %v", ddl, err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), undo); err != nil {
+			// Siblings share this schema; record the break so each of them
+			// stops at its first statement instead of failing misleadingly.
+			brokenSchemas.Store(pool, t.Name())
+			t.Fatalf("%s: %v", undo, err)
+		}
+	})
+}
+
+// brokenSchemas maps a scratch pool to the subtest whose undo failed.
+var brokenSchemas sync.Map
+
+// requireIntactSchema fails the subtest at once if an earlier sibling left the
+// shared schema broken, naming that sibling.
+func requireIntactSchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if who, ok := brokenSchemas.Load(pool); ok {
+		t.Fatalf("shared scratch schema was left broken by %v; fix that failure first", who)
+	}
+}
+
+func renameTable(t *testing.T, pool *pgxpool.Pool, table string) {
+	t.Helper()
+	breakDB(t, pool, "ALTER TABLE "+table+" RENAME TO "+table+"_gone", "ALTER TABLE "+table+"_gone RENAME TO "+table)
+}
+
+// refuseInserts leaves reads working and makes every insert into table fail
+// with a check violation (not a unique one, so no idempotency path swallows it).
+func refuseInserts(t *testing.T, pool *pgxpool.Pool, table string) {
+	t.Helper()
+	breakDB(t, pool, "ALTER TABLE "+table+" ADD CONSTRAINT refuse_inserts CHECK (false) NOT VALID",
+		"ALTER TABLE "+table+" DROP CONSTRAINT refuse_inserts")
+}
+
+const refused = `violates check constraint "refuse_inserts"`
+
+func TestAdminCommands_MidCommandDatabaseFailures(t *testing.T) {
+	pool, _ := migratedScratchDB(t)
+	q := store.New(pool)
+	ctx := context.Background()
+
+	// member returns a user who owns one org.
+	member := func(t *testing.T) (email string, user store.User, org store.CreateOrganizationRow) {
+		t.Helper()
+		email = "mid-" + uuid.NewString() + "@example.test"
+		user = mustUser(t, q, email)
+		org, err := q.CreateOrganization(ctx, store.CreateOrganizationParams{Name: "mid", Slug: "mid-" + uuid.NewString()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := q.AddOrgMember(ctx, store.AddOrgMemberParams{OrgID: org.ID, UserID: user.ID, Role: "owner"}); err != nil {
+			t.Fatal(err)
+		}
+		return email, user, org
+	}
+
+	t.Run("magic-link: org lookup fails, nothing is minted", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, _, _ := member(t)
+		renameTable(t, pool, "org_members")
+		var out, errOut strings.Builder
+
+		err := runMagicLink(ctx, q, &out, &errOut, email, "http://app.test", time.Minute)
+
+		wantErr(t, err, "list orgs for "+email+":")
+		wantErr(t, err, `"org_members" does not exist`)
+		if out.String() != "" {
+			t.Errorf("printed %q", out.String())
+		}
+		if n := count(t, pool, `SELECT count(*) FROM magic_link_tokens WHERE email = $1`, email); n != 0 {
+			t.Errorf("tokens = %d, want 0", n)
+		}
+	})
+
+	t.Run("magic-link: minting fails, nothing is printed", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, _, _ := member(t)
+		renameTable(t, pool, "magic_link_tokens")
+		var out, errOut strings.Builder
+
+		err := runMagicLink(ctx, q, &out, &errOut, email, "http://app.test", time.Minute)
+
+		wantErr(t, err, "issue magic link:")
+		wantErr(t, err, `"magic_link_tokens" does not exist`)
+		if out.String() != "" {
+			t.Errorf("printed %q", out.String())
+		}
+	})
+
+	t.Run("magic-link: an unauditable sign-in is never handed out", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, _, _ := member(t)
+		renameTable(t, pool, "audit_logs")
+		var out, errOut strings.Builder
+
+		err := runMagicLink(ctx, q, &out, &errOut, email, "http://app.test", time.Minute)
+
+		wantErr(t, err, "record break-glass audit row:")
+		wantErr(t, err, `"audit_logs" does not exist`)
+		if out.String() != "" {
+			t.Errorf("printed %q: the link must not be shown without an audit row", out.String())
+		}
+	})
+
+	bootstrap := func(t *testing.T, email, slug string) (string, string, error) {
+		t.Helper()
+		var out, errOut strings.Builder
+		err := runBootstrap(ctx, q, &out, &errOut, email, slug, "k")
+		return out.String(), errOut.String(), err
+	}
+
+	t.Run("bootstrap: user insert fails, nothing else is created", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, slug := "mid-"+uuid.NewString()+"@example.test", "mid-"+uuid.NewString()
+		refuseInserts(t, pool, "users")
+
+		out, _, err := bootstrap(t, email, slug)
+
+		wantErr(t, err, "create user:")
+		wantErr(t, err, refused)
+		if n := count(t, pool, `SELECT count(*) FROM organizations WHERE slug = $1`, slug); n != 0 || out != "" {
+			t.Errorf("orgs = %d, printed %q; want nothing", n, out)
+		}
+	})
+
+	t.Run("bootstrap: org insert fails, no membership or key", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, slug := "mid-"+uuid.NewString()+"@example.test", "mid-"+uuid.NewString()
+		refuseInserts(t, pool, "organizations")
+
+		out, _, err := bootstrap(t, email, slug)
+
+		wantErr(t, err, "create org:")
+		wantErr(t, err, refused)
+		if n := count(t, pool, `SELECT count(*) FROM org_members m JOIN users u ON u.id = m.user_id WHERE u.email = $1`, email); n != 0 || out != "" {
+			t.Errorf("memberships = %d, printed %q; want nothing", n, out)
+		}
+	})
+
+	t.Run("bootstrap: a non-duplicate membership failure is fatal", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, slug := "mid-"+uuid.NewString()+"@example.test", "mid-"+uuid.NewString()
+		refuseInserts(t, pool, "org_members")
+
+		out, _, err := bootstrap(t, email, slug)
+
+		wantErr(t, err, "add member:")
+		wantErr(t, err, refused)
+		if n := count(t, pool, `SELECT count(*) FROM api_keys k JOIN organizations o ON o.id = k.org_id WHERE o.slug = $1`, slug); n != 0 || out != "" {
+			t.Errorf("api keys = %d, printed %q; want none", n, out)
+		}
+	})
+
+	t.Run("bootstrap: a failed operational-app seed is a warning, the key is still minted", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, slug := "mid-"+uuid.NewString()+"@example.test", "mid-"+uuid.NewString()
+		refuseInserts(t, pool, "applications")
+
+		out, errOut, err := bootstrap(t, email, slug)
+
+		if err != nil {
+			t.Fatalf("err = %v, want the seed failure tolerated", err)
+		}
+		if !strings.Contains(errOut, "warn: seed operational app:") || !strings.Contains(errOut, refused) {
+			t.Errorf("stderr = %q, want the warning with its cause", errOut)
+		}
+		assertKeyStoredHashed(t, pool, q, printedKey(t, out), orgIDBySlug(t, pool, slug), "k")
+	})
+
+	t.Run("org create: owner insert fails and prints nothing", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, _, _ := member(t)
+		name := "mid-" + uuid.NewString()
+		refuseInserts(t, pool, "org_members")
+		var out, errOut strings.Builder
+
+		err := runOrgCreate(ctx, q, &out, &errOut, name, email)
+
+		wantErr(t, err, "add owner:")
+		wantErr(t, err, refused)
+		if n := count(t, pool, `SELECT count(*) FROM org_members m JOIN organizations o ON o.id = m.org_id WHERE o.name = $1`, name); n != 0 || out.String() != "" {
+			t.Errorf("memberships = %d, printed %q; want nothing", n, out.String())
+		}
+	})
+
+	t.Run("org create: a failed operational-app seed is a warning, the org is still reported", func(t *testing.T) {
+		requireIntactSchema(t, pool)
+		email, user, _ := member(t)
+		name := "mid-" + uuid.NewString()
+		refuseInserts(t, pool, "applications")
+		var out, errOut strings.Builder
+
+		err := runOrgCreate(ctx, q, &out, &errOut, name, email)
+
+		if err != nil {
+			t.Fatalf("err = %v, want the seed failure tolerated", err)
+		}
+		if !strings.Contains(errOut.String(), "warn: seed operational app:") || !strings.Contains(errOut.String(), refused) {
+			t.Errorf("stderr = %q, want the warning with its cause", errOut.String())
+		}
+		if !strings.Contains(out.String(), "org:   "+name) {
+			t.Errorf("stdout = %q, want the created org reported", out.String())
+		}
+		if n := count(t, pool, `SELECT count(*) FROM org_members m JOIN organizations o ON o.id = m.org_id WHERE o.name = $1 AND m.user_id = $2 AND m.role = 'owner'`, name, user.ID); n != 1 {
+			t.Errorf("owner memberships = %d, want 1", n)
+		}
+	})
+}
+
+func orgIDBySlug(t *testing.T, pool *pgxpool.Pool, slug string) uuid.UUID {
+	t.Helper()
+	var id pgtype.UUID
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM organizations WHERE slug = $1`, slug).Scan(&id); err != nil {
+		t.Fatalf("org %q: %v", slug, err)
+	}
+	return store.GoUUID(id)
 }

@@ -333,3 +333,35 @@ func TestSlogMigrateLogger(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateUp_ReportsBadConfig(t *testing.T) {
+	t.Setenv("DSTREAM_LOG_LEVEL", "error")
+	t.Setenv("DSTREAM_DB_MAX_CONNS", "not-a-number")
+	_, _, err := execCmd(t, migrateCmd(), "up")
+	if err == nil || !strings.Contains(err.Error(), "unmarshal config") {
+		t.Fatalf("err = %v, want the config unmarshal failure", err)
+	}
+}
+
+// A type already named like the revisions table makes CREATE TABLE fail even
+// with IF NOT EXISTS (that only checks relations). The operator must see
+// which step failed, and no migration may have run.
+func TestMigrateUp_RevisionsTableCannotBeCreated(t *testing.T) {
+	dsn := newScratchDB(t)
+	t.Setenv("DSTREAM_DB_URL", dsn)
+	t.Setenv("DSTREAM_LOG_LEVEL", "error")
+	d := openSQL(t, dsn)
+	if _, err := d.Exec(`CREATE TYPE public.` + revisionsTable + ` AS ENUM ('x')`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := execCmd(t, migrateCmd(), "up")
+
+	if err == nil || !strings.HasPrefix(err.Error(), "init revisions table:") || !strings.Contains(err.Error(), `"`+revisionsTable+`" already exists`) {
+		t.Fatalf("err = %v, want 'init revisions table: ... already exists'", err)
+	}
+	var applied *string
+	if err := d.QueryRow(`SELECT to_regclass('public.organizations')::text`).Scan(&applied); err != nil || applied != nil {
+		t.Fatalf("organizations = %v (err %v): a migration ran despite the failure", applied, err)
+	}
+}
