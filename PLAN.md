@@ -401,6 +401,7 @@ Spec: `2026-10-02-phase-5c-usage-metering-quotas-design.md`.
 | 2026-10-03 | **Plan names carry real limits, and `plan = 'custom'` is the override marker.** Presets live in one Go map (`internal/usage/plans.go`), mirrored as the `organizations` column defaults so a new org lands on the free tier with no Go running; a test reads the defaults back out of `information_schema` to catch drift. A preset plan owns all four limits *and* the period — any `quota_*` field sent with one is a 400, because `pro` at 1M events per **day** is thirty times the tier the operator thinks they granted. Rejected a separate `is_overridden` column: it would carry exactly what `plan='custom'` already carries and could disagree with it. Cost: "pro, but with one number nudged" is inexpressible — raising one tenant is deliberately two acts, which is what keeps a tier change distinguishable from a negotiated exception in the audit log. |
 | 2026-10-03 | **Previously-unlimited orgs were migrated into enforcement.** The backfill capped orgs matching `plan='free'` with all four limits at 0 — the row 5c's defaults produced. Known imprecision, accepted: 5c's own owner-editable card sent all six fields on save, so an org deliberately left free-and-unlimited through that card is indistinguishable and was also capped. Exposure was ~1 day. The remedy is the one the design already asks for: `plan='custom'`. |
 | 2026-10-03 | **Changing a delivery URL requires admin; creating one does not.** Closes the item left open from 5a. `PATCH` on a destination or an endpoint compares the submitted URL against the stored one and demands `RoleAdmin` only when it moves, so a member renaming a destination still works — the dashboard PATCHes whole forms, so presence of the field means nothing. Repointing is privileged because it silently redirects traffic that is *already flowing*, to a host the caller picks, with nobody notified; the SSRF and loop guards stop neither. `POST` stays member-level: adding a sink is a visible act, a new row in a list, and widening the line to cover creation is a product decision rather than a security patch. |
+| 2026-10-05 | **CI added, with the coverage minimum set at the target rather than the status quo.** `.github/workflows/ci.yml` lints the whole repo and tests the backend against real Postgres and Redis; `make cover` holds the threshold so the gate is reproducible locally and lives in one place. `COVERAGE_MIN = 95` against 42.8% actual, so the test job is red from its first run — chosen knowingly over a ratchet starting at today's floor, which would have been green immediately and would have made 95 an aspiration nothing enforces. Two measurement bugs fell out of setting it up: `go list ./...` was sweeping in a third-party Go package vendored inside `web/node_modules`, and sqlc output was diluting the total by ~3 points, so adding a query lowered coverage. Both are excluded now. gofmt joined `make lint` as a hard gate (two files needed it). |
 
 ---
 
@@ -439,8 +440,41 @@ Go tests need a migrated test database and Redis:
 
 ```
 DSTREAM_TEST_DB_URL="postgres://dstream:dstream@127.0.0.1:5433/dstream_test?sslmode=disable" \
-DSTREAM_REDIS_ADDR=127.0.0.1:6379 go test ./... -count=1
+DSTREAM_REDIS_ADDR=127.0.0.1:6379 make test
 ```
+
+`make test` and `make cover` filter the package list, because a third-party Go
+package is vendored inside the npm tree
+(`web/node_modules/flatted/golang/pkg/flatted`) and `go list ./...` picks it
+up — every bare `go test ./...` has been compiling and testing someone else's
+code, and counting it against our coverage.
+
+**CI** (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull
+request, as two jobs:
+
+- **lint** — `make lint` (`go vet` plus a `gofmt -l` gate) for the backend;
+  `bun run format:check` and `bunx tsc --noEmit` for the web app, both hard
+  gates and both green today. `bun run lint` runs **non-blocking**, its counts
+  written to the job summary, for the baseline reason below.
+- **test** — Postgres 18 and Redis 7 service containers on the same images as
+  the dev compose stack, migrated by `go run ./cmd/dstream migrate up` (the
+  binary embeds the migrations and runs Atlas as a library, so CI needs no
+  `atlas` CLI), then `make cover`. Both `DSTREAM_DB_URL` and
+  `DSTREAM_TEST_DB_URL` point at the same database on purpose: the first is
+  what `migrate` reads, the second is what the suite reads — and without the
+  second every database test would `t.Skip`, which **passes** the job while
+  running almost nothing.
+
+`make cover` enforces `COVERAGE_MIN`, which is **95**. Coverage today is
+**42.8%** (8,625 statements, 4,930 uncovered), so **the test job is red until
+that gap closes** — a deliberate choice: the target is the number worth
+hitting, not the number already hit. The profile excludes sqlc output
+(`internal/store/*.sql.go` plus `models.go`, `db.go`, `querier.go`) so adding
+a query cannot lower coverage, and excludes the vendored npm package above.
+Where the gap is, by uncovered statements: `cmd/dstream` 1,176 of 1,231,
+`internal/api/pipeline` 1,051 of 1,541, `internal/api/identity` 1,033 of
+1,036, `internal/api/outbound` 382 of 886, `internal/api/cli` 246 of 247,
+`tools/loadtest` 166 of 177.
 
 The web app's gates are `npx tsc --noEmit`, `bun run build`, and `bun run test`
 (vitest, `web/vitest.config.ts` — a standalone config, because the app's own
