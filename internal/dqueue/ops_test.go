@@ -3,6 +3,7 @@ package dqueue
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -173,5 +174,18 @@ func TestDrainDead(t *testing.T) {
 	}
 	if ln, _ := c.rdb.LLen(ctx, c.prefix+":dead").Result(); ln != 0 {
 		t.Fatalf("dead not cleared: %d", ln)
+	}
+}
+
+func TestStatsEmptyQueueHasNonNilTopOrgs(t *testing.T) {
+	st, err := testClient(t).Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TopOrgs == nil || len(st.TopOrgs) != 0 {
+		t.Errorf("TopOrgs = %#v, want a non-nil empty slice", st.TopOrgs)
+	}
+	if b, _ := json.Marshal(st); !strings.Contains(string(b), `"top_orgs":[]`) {
+		t.Errorf("json = %s, want top_orgs as []", b)
 	}
 }

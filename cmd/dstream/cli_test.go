@@ -246,6 +246,12 @@ func TestCliGetJSON(t *testing.T) {
 			t.Errorf("err = %v, want io.EOF", err)
 		}
 	})
+	t.Run("unparseable url is an error, not a panic", func(t *testing.T) {
+		var out any
+		if err := cliGetJSON("http://[::1", testKey, &out); err == nil || !strings.Contains(err.Error(), "build request for http://[::1: ") {
+			t.Errorf("err = %v", err)
+		}
+	})
 	t.Run("unreachable", func(t *testing.T) {
 		var out any
 		if err := cliGetJSON(deadURL(t)+"/ok", testKey, &out); err == nil || !strings.Contains(err.Error(), "connection refused") {
@@ -307,6 +313,11 @@ func TestCliPostJSON(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
+	t.Run("unparseable url is an error, not a panic", func(t *testing.T) {
+		if err := cliPostJSON("http://[::1", testKey, 1, nil); err == nil || !strings.Contains(err.Error(), "build request for http://[::1: ") {
+			t.Errorf("err = %v", err)
+		}
+	})
 	t.Run("unreachable", func(t *testing.T) {
 		if err := cliPostJSON(deadURL(t)+"/ok", testKey, 1, nil); err == nil || !strings.Contains(err.Error(), "connection refused") {
 			t.Errorf("err = %v", err)
@@ -347,6 +358,12 @@ func TestResolveSource(t *testing.T) {
 			"GET /api/cli/sources": func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "[") },
 		})
 		if _, err := resolveSource(bad.URL, testKey, "x"); err == nil || !strings.Contains(err.Error(), "unexpected EOF") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("unparseable base url is an error, not a panic", func(t *testing.T) {
+		_, err := resolveSource("http://[::1", testKey, "x")
+		if err == nil || !strings.Contains(err.Error(), "build request for http://[::1: ") {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -568,6 +585,15 @@ func TestRunTunnel_ForwardsEventAndReportsResponse(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "ws read") {
 		t.Errorf("runTunnel after server close: err = %v", err)
+	}
+}
+
+func TestRunTunnel_HelloNamesTheSource(t *testing.T) {
+	stderr := captureStderr(t, func() {
+		_, _ = roundTrip(t, tunnelEvent{Type: "event", EventID: "ev-h", Method: "POST"}, deadURL(t))
+	})
+	if !strings.Contains(stderr, "  hello: source "+uuidSrc+"\n") {
+		t.Errorf("stderr = %q, want the hello line naming source %s", stderr, uuidSrc)
 	}
 }
 

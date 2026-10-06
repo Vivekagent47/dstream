@@ -345,9 +345,14 @@ func TestRunPromote_UnknownEmailPromotesNobody(t *testing.T) {
 	email := newEmail(t, pool)
 	bystander := newEmail(t, pool)
 	mustUser(t, q, bystander)
+	var out strings.Builder
 
-	_ = runPromote(context.Background(), q, &strings.Builder{}, email)
+	err := runPromote(context.Background(), q, &out, email)
 
+	wantErr(t, err, "user "+email+" does not exist; nothing was promoted")
+	if out.Len() != 0 {
+		t.Errorf("printed %q for a promotion that never happened", out.String())
+	}
 	var super bool
 	if err := pool.QueryRow(context.Background(), `SELECT is_super_admin FROM users WHERE email = $1`, bystander).Scan(&super); err != nil {
 		t.Fatal(err)
@@ -357,6 +362,29 @@ func TestRunPromote_UnknownEmailPromotesNobody(t *testing.T) {
 	}
 	if n := count(t, pool, `SELECT count(*) FROM users WHERE email = $1`, email); n != 0 {
 		t.Errorf("promote created %d user rows", n)
+	}
+}
+
+// The lookup succeeds and only the UPDATE fails: runPromote's own wrap.
+func TestRunPromote_UpdateFailureIsReported(t *testing.T) {
+	pool := testPool(t)
+	email := newEmail(t, pool)
+	mustUser(t, store.New(pool), email)
+	var out strings.Builder
+
+	err := runPromote(context.Background(), store.New(failingPool(t, "-- name: PromoteUserToSuperAdmin ")), &out, email)
+
+	wantErr(t, err, "promote: ")
+	wantErr(t, err, "context canceled")
+	if out.Len() != 0 {
+		t.Errorf("printed %q despite failing", out.String())
+	}
+	var super bool
+	if err := pool.QueryRow(context.Background(), `SELECT is_super_admin FROM users WHERE email = $1`, email).Scan(&super); err != nil {
+		t.Fatal(err)
+	}
+	if super {
+		t.Error("user was promoted although the UPDATE failed")
 	}
 }
 
@@ -764,7 +792,7 @@ func TestAdminCommands_ReportDatabaseFailures(t *testing.T) {
 		want string
 	}{
 		"magic-link": {runMagicLink(ctx, q, &out, &out, "a@b.test", "http://x", time.Minute), "lookup user:"},
-		"promote":    {runPromote(ctx, q, &out, "a@b.test"), "promote:"},
+		"promote":    {runPromote(ctx, q, &out, "a@b.test"), "lookup user:"},
 		"bootstrap":  {runBootstrap(ctx, q, &out, &out, "a@b.test", "s", ""), "lookup user:"},
 		"org create": {runOrgCreate(ctx, q, &out, &out, "n", "a@b.test"), "lookup user:"},
 		"member add": {runMemberAdd(ctx, q, &out, id, "a@b.test", "member"), "lookup org:"},

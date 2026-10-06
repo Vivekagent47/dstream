@@ -96,7 +96,10 @@ func resolveSource(base, apiKey, ref string) (string, error) {
 	if isUUID(ref) {
 		return ref, nil
 	}
-	req, _ := http.NewRequest("GET", base+"/api/cli/sources", nil)
+	req, err := http.NewRequest("GET", base+"/api/cli/sources", nil)
+	if err != nil {
+		return "", fmt.Errorf("build request for %s: %w", base, err)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -142,12 +145,16 @@ func buildWSURL(base, sourceID string) (string, error) {
 }
 
 type tunnelEvent struct {
-	Type    string              `json:"type"`
-	EventID string              `json:"event_id,omitempty"`
-	Method  string              `json:"method,omitempty"`
-	Path    string              `json:"path,omitempty"`
-	Headers map[string][]string `json:"headers,omitempty"`
-	Body    []byte              `json:"body,omitempty"`
+	Type string `json:"type"`
+	// SourceID arrives on the "hello" frame only; the server identifies the
+	// attached source there and sends no event_id, so printing EventID on
+	// hello showed an empty string.
+	SourceID string              `json:"source_id,omitempty"`
+	EventID  string              `json:"event_id,omitempty"`
+	Method   string              `json:"method,omitempty"`
+	Path     string              `json:"path,omitempty"`
+	Headers  map[string][]string `json:"headers,omitempty"`
+	Body     []byte              `json:"body,omitempty"`
 }
 
 type tunnelResponse struct {
@@ -181,7 +188,7 @@ func runTunnel(ctx context.Context, wsURL, apiKey, forwardURL string) error {
 		}
 		switch ev.Type {
 		case "hello":
-			fmt.Fprintf(os.Stderr, "  hello: %s\n", ev.EventID)
+			fmt.Fprintf(os.Stderr, "  hello: source %s\n", ev.SourceID)
 			continue
 		case "ping":
 			continue
@@ -239,7 +246,10 @@ func cliAuth(baseFlag string) (apiKey, base string, err error) {
 
 // cliGetJSON does an authed GET and decodes the JSON body into out.
 func cliGetJSON(url, apiKey string, out any) error {
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -261,7 +271,10 @@ func cliPostJSON(url, apiKey string, in any, out any) error {
 	if err != nil {
 		return err
 	}
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)

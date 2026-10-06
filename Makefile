@@ -1,4 +1,4 @@
-.PHONY: help dev build test cover cover-report lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
+.PHONY: help dev build test cover cover-report cover-files lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
 
 BIN := bin/dstream
 PKG := github.com/Vivekagent47/dstream
@@ -82,15 +82,38 @@ cover:
 	@# internal/api/identity, so identity measured 0.3% while being heavily
 	@# exercised. Attributing honestly moved the total from 42.8% to 55.5%
 	@# without a single new test.
-	go test $(GO_PKGS) -race -count=1 -covermode=atomic \
+	@#
+	@# The run is captured rather than streamed, because -coverpkg makes
+	@# `go test` append "coverage: N% of statements in <every package path>" to
+	@# each line — hundreds of columns of noise per package, and the number is
+	@# the whole set as exercised by that one binary, which is not a fact worth
+	@# reading. The real per-package figures come from the profile below.
+	@printf '\n  running tests with coverage (-race)...\n\n'
+	@go test $(GO_PKGS) -race -count=1 -covermode=atomic \
 		-coverpkg=$$(go list ./... | grep -v /web/node_modules/ | paste -sd, -) \
-		-coverprofile=cover.out
+		-coverprofile=cover.out > cover.log 2>&1; \
+	 status=$$?; \
+	 sed -e 's/[[:space:]]*coverage:.*//' -e 's#github.com/Vivekagent47/dstream/##' cover.log \
+	   | sed -e 's/^/  /'; \
+	 if [ $$status -ne 0 ]; then printf '\n  tests failed — coverage not computed\n\n'; exit $$status; fi
 	@grep -vE '\.sql\.go:|internal/store/(models|db|querier)\.go:' cover.out > cover.real.out
-	@go tool cover -func=cover.real.out | tail -1
-	@total=$$(go tool cover -func=cover.real.out | awk 'END { gsub("%","",$$3); print $$3 }'); \
-	 awk -v t="$$total" -v m="$(COVERAGE_MIN)" 'BEGIN {\
-	   if (t+0 < m+0) { printf "FAIL: backend coverage %.1f%% is below the %s%% minimum\n", t, m; exit 1 }\
-	   printf "ok: backend coverage %.1f%% meets the %s%% minimum\n", t, m }'
+	@printf '\n  %s\n' '--------------------------------------------------------------'
+	@$(MAKE) --no-print-directory cover-report | head -12
+	@printf '  %s\n' '--------------------------------------------------------------'
+	@$(MAKE) --no-print-directory cover-files | awk 'NR <= 15 { print } END { if (NR > 15) printf "  ... %d more files with gaps (make cover-files)\n", NR - 15 }'
+	@printf '  %s\n' '--------------------------------------------------------------'
+	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
+	      END { \
+	        for (k in n) { t += n[k]; if (c[k] == 0) u += n[k] } \
+	        pct = 100 * (t - u) / t; min = MIN + 0; \
+	        need = int(min / 100 * t) - (t - u); if (need < 0) need = 0; \
+	        printf "\n  coverage  %.1f%%   (%d of %d statements)   minimum %d%%\n", pct, t - u, t, min; \
+	        if (pct < min) { \
+	          printf "  FAIL      %.1f points short — %d more statements to cover\n\n", min - pct, need; \
+	          exit 1 \
+	        } \
+	        printf "  PASS      %.1f points of headroom\n\n", pct - min \
+	      }' MIN=$(COVERAGE_MIN) cover.real.out
 
 # Per-package breakdown of the last `make cover` run. Blocks repeat in a
 # -coverpkg profile (one copy per test binary), so dedupe on block position
@@ -109,6 +132,24 @@ cover-report:
 	        for (p in total) \
 	          printf "%6d uncovered  %6d total  %5.1f%%  %s\n", \
 	            uncovered[p], total[p], 100 * (total[p] - uncovered[p]) / total[p], p \
+	      }' cover.real.out | sort -rn
+
+# Per-file coverage from the last `make cover` run, worst first. Only files
+# with a gap are listed: a hundred "0 uncovered" lines bury the handful that
+# need work. Same block dedupe as cover-report, for the same reason.
+cover-files:
+	@test -f cover.real.out || (echo "no profile — run: make cover"; exit 1)
+	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
+	      END { \
+	        for (k in n) { \
+	          split(k, a, ":"); f = a[1]; \
+	          sub(/^github\.com\/Vivekagent47\/dstream\//, "", f); \
+	          total[f] += n[k]; if (c[k] == 0) uncovered[f] += n[k] \
+	        } \
+	        for (q in total) \
+	          if (uncovered[q] > 0) \
+	            printf "%6d uncovered  %6d total  %5.1f%%  %s\n", \
+	              uncovered[q], total[q], 100 * (total[q] - uncovered[q]) / total[q], q \
 	      }' cover.real.out | sort -rn
 
 lint:

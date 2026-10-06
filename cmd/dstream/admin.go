@@ -187,6 +187,17 @@ func promoteCmd() *cobra.Command {
 }
 
 func runPromote(ctx context.Context, q *store.Queries, out io.Writer, email string) error {
+	// PromoteUserToSuperAdmin is a plain UPDATE, so an unknown address updates
+	// nothing and used to print "promoted ..." and exit 0 — an operator could
+	// typo an address, see success, and believe someone held super-admin who
+	// did not. Resolve the user first and refuse rather than report a
+	// promotion that never happened.
+	if _, err := q.GetUserByEmail(ctx, email); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("user %s does not exist; nothing was promoted", email)
+		}
+		return fmt.Errorf("lookup user: %w", err)
+	}
 	if err := q.PromoteUserToSuperAdmin(ctx, email); err != nil {
 		return fmt.Errorf("promote: %w", err)
 	}
