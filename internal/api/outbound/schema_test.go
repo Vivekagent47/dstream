@@ -47,3 +47,15 @@ func TestSchemaRejectsExternalRef(t *testing.T) {
 		t.Errorf("self-contained $ref must compile: %v", err)
 	}
 }
+
+// Neither failure is reachable over HTTP: a request body or a stored jsonb is
+// already valid JSON before it gets here, so these are asserted on the helpers.
+func TestSchemaHelpersRefuseMalformedJSON(t *testing.T) {
+	if err := compileSchema([]byte(`{`)); err == nil || !strings.HasPrefix(err.Error(), "schema is not valid json: ") {
+		t.Fatalf("unterminated schema: %v", err)
+	}
+	err := validatePayloadAgainstSchema([]byte(`{"type":"object"}`), []byte(`{`))
+	if err == nil || !strings.HasPrefix(err.Error(), "payload is not valid json: ") {
+		t.Fatalf("unterminated payload: %v", err)
+	}
+}
