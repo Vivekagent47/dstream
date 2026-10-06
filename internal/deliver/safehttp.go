@@ -28,23 +28,7 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
-		Control: func(_, address string, _ syscall.RawConn) error {
-			if allowPrivate {
-				return nil
-			}
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return fmt.Errorf("ssrf-guard: bad dial address %q: %w", address, err)
-			}
-			ip, err := netip.ParseAddr(host)
-			if err != nil {
-				return fmt.Errorf("ssrf-guard: unparseable dial ip %q", host)
-			}
-			if !isPublicIP(ip) {
-				return fmt.Errorf("ssrf-guard: refusing to connect to non-public address %s", ip)
-			}
-			return nil
-		},
+		Control:   dialControl(allowPrivate),
 	}
 	base := &http.Transport{
 		DialContext:           dialer.DialContext,
@@ -71,6 +55,29 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 			}
 			return nil
 		},
+	}
+}
+
+// dialControl is the dialer's Control hook: it runs after DNS resolution with
+// the concrete "ip:port" about to be connected, and refuses non-public IPs
+// unless allowPrivate is set.
+func dialControl(allowPrivate bool) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		if allowPrivate {
+			return nil
+		}
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("ssrf-guard: bad dial address %q: %w", address, err)
+		}
+		ip, err := netip.ParseAddr(host)
+		if err != nil {
+			return fmt.Errorf("ssrf-guard: unparseable dial ip %q", host)
+		}
+		if !isPublicIP(ip) {
+			return fmt.Errorf("ssrf-guard: refusing to connect to non-public address %s", ip)
+		}
+		return nil
 	}
 }
 
