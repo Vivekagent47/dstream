@@ -1,27 +1,34 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/config"
+	"github.com/Vivekagent47/dstream/internal/dqueue"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -963,4 +970,791 @@ func assertNoUser(t *testing.T, q *store.Queries, email string) {
 	if _, err := q.GetUserByEmail(context.Background(), email); err == nil {
 		t.Errorf("refused login provisioned a user for %s", email)
 	}
+}
+
+// =============================================================================
+// Magic link: request, rate limits, client IP keying, verify, logout, /me.
+// Harness (idEnv, failOn, wantErr, ...) lives in orgs_test.go.
+// =============================================================================
+
+// ssoEnv is an idEnv with a live Redis and, optionally, SSO configured.
+func ssoEnv(t *testing.T, tr pgx.QueryTracer, mod func(*Deps)) (*idEnv, *redis.Client) {
+	t.Helper()
+	rdb := ssoRedis(t)
+	return newIDEnv(t, tr, func(d *Deps) {
+		d.Redis = rdb
+		if mod != nil {
+			mod(d)
+		}
+	}), rdb
+}
+
+// delRateKeys removes exactly the limiter keys a test created, so -count=2 and
+// the other packages sharing this Redis never see them.
+func delRateKeys(t *testing.T, rdb *redis.Client, keys ...string) {
+	t.Helper()
+	t.Cleanup(func() { rdb.Del(context.Background(), keys...) })
+}
+
+func (e *idEnv) magic(body string, mod func(*http.Request)) *httptest.ResponseRecorder {
+	e.t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/magic-link/request", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = uniqueClientAddr()
+	if mod != nil {
+		mod(req)
+	}
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func magicBody(email string) string { return `{"email":"` + email + `"}` }
+
+func (e *idEnv) verify(token string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/magic-link/verify", strings.NewReader(`{"token":"`+token+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRequestMagicLink_RejectsBadInputWithoutMinting(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	wantErr(t, e.magic(`{"email":`, nil), 400, "invalid json")
+	for _, in := range []string{"", "   ", "no-at-sign"} {
+		wantErr(t, e.magic(magicBody(in), nil), 400, "invalid email")
+	}
+}
+
+func TestRequestMagicLink_MintsHashedLowercasedTokenAndEnqueuesMail(t *testing.T) {
+	rdb := ssoRedis(t)
+	pfx := "mltest-" + uuid.NewString()
+	t.Cleanup(func() {
+		if keys, _ := rdb.Keys(context.Background(), pfx+":*").Result(); len(keys) > 0 {
+			rdb.Del(context.Background(), keys...)
+		}
+	})
+	e, _ := ssoEnv(t, nil, func(d *Deps) { d.Queue = dqueue.NewClient(rdb).WithPrefix(pfx) })
+	email := uniqEmail("MiXed")
+	lower := strings.ToLower(email)
+	delRateKeys(t, rdb, "rate:magic_link:email:"+lower)
+
+	wantStatus(t, e.magic(magicBody("  "+email+" "), nil), http.StatusAccepted)
+
+	var n int
+	var exp time.Time
+	var used *time.Time
+	var hashLen int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT count(*), max(expires_at), max(used_at), max(length(token_hash)) FROM magic_link_tokens WHERE email=$1`, lower).
+		Scan(&n, &exp, &used, &hashLen); err != nil {
+		t.Fatalf("read token: %v", err)
+	}
+	if n != 1 || used != nil || hashLen != 32 {
+		t.Fatalf("token rows: n=%d used=%v hashLen=%d want 1/nil/32 (sha256, unused)", n, used, hashLen)
+	}
+	if d := time.Until(exp); d < 14*time.Minute || d > 16*time.Minute {
+		t.Fatalf("expires in %v want ~15m", d)
+	}
+	keys, err := rdb.Keys(context.Background(), pfx+":*").Result()
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("no email task enqueued under %s (err=%v)", pfx, err)
+	}
+}
+
+// The response must not depend on what happened to the mail or the token: a
+// 202 either way, or the endpoint becomes an oracle for which addresses work.
+func TestRequestMagicLink_InternalFailuresStill202(t *testing.T) {
+	t.Run("token insert fails", func(t *testing.T) {
+		e, rdb := ssoEnv(t, failOn("insert into magic_link_tokens"), nil)
+		email := uniqEmail("ins")
+		delRateKeys(t, rdb, "rate:magic_link:email:"+email)
+		wantStatus(t, e.magic(magicBody(email), nil), http.StatusAccepted)
+		if n := e.magicLinks(email); n != 0 {
+			t.Fatalf("minted %d tokens despite the failed insert", n)
+		}
+	})
+	t.Run("enqueue fails", func(t *testing.T) {
+		e, rdb := ssoEnv(t, nil, func(d *Deps) { d.Queue = dqueue.NewClient(deadRedis(t)) })
+		email := uniqEmail("enq")
+		delRateKeys(t, rdb, "rate:magic_link:email:"+email)
+		wantStatus(t, e.magic(magicBody(email), nil), http.StatusAccepted)
+		if n := e.magicLinks(email); n != 1 {
+			t.Fatalf("token rows: %d want 1 (minted before the enqueue failed)", n)
+		}
+	})
+}
+
+func TestRequestMagicLink_LimiterDownFailsClosed(t *testing.T) {
+	e := newIDEnv(t, nil, func(d *Deps) { d.Redis = deadRedis(t) })
+	email := uniqEmail("down")
+	wantErr(t, e.magic(magicBody(email), nil), 503, "rate limiter unavailable")
+	if n := e.magicLinks(email); n != 0 {
+		t.Fatalf("minted %d tokens with the limiter down", n)
+	}
+}
+
+func TestRequestMagicLink_PerEmailBudget(t *testing.T) {
+	e, rdb := ssoEnv(t, nil, nil)
+	email := uniqEmail("bomb")
+	delRateKeys(t, rdb, "rate:magic_link:email:"+email)
+	var last *httptest.ResponseRecorder
+	for i := 0; i < 6; i++ {
+		last = e.magic(magicBody(email), nil) // a fresh client address each time
+		if i < 5 {
+			wantStatus(t, last, http.StatusAccepted)
+		}
+	}
+	wantErr(t, last, 429, "too many requests")
+	ra, err := strconv.Atoi(last.Header().Get("Retry-After"))
+	if err != nil || ra < 1 || ra > 3601 {
+		t.Fatalf("Retry-After %q: want 1..3601 seconds", last.Header().Get("Retry-After"))
+	}
+	if n := e.magicLinks(email); n != 5 {
+		t.Fatalf("tokens: got %d want the 5 inside the budget", n)
+	}
+	// Case and padding do not buy a fresh budget.
+	wantErr(t, e.magic(magicBody("  "+strings.ToUpper(email)+" "), nil), 429, "too many requests")
+}
+
+// Documents CURRENT behaviour, not contract: the per-IP budget keys on the TCP
+// peer (RemoteAddr) and clientIP never reads forwarding headers. This test
+// router has no TrustedRealIP; in production, when DSTREAM_TRUSTED_PROXIES is
+// set, internal/middleware/realip.go (wired at cmd/dstream/server.go:192)
+// rewrites RemoteAddr from X-Forwarded-For before the handler runs. This pins
+// the handler layer only; do not teach clientIP to read XFF itself, that is
+// the vulnerability.
+func TestRequestMagicLink_PerIPBudgetIgnoresForwardingHeaders(t *testing.T) {
+	e, rdb := ssoEnv(t, nil, nil)
+	b := uuid.New()
+	peer := "10." + strconv.Itoa(int(b[0])) + "." + strconv.Itoa(int(b[1])) + "." + strconv.Itoa(int(b[2]))
+	delRateKeys(t, rdb, "rate:magic_link:ip:"+peer)
+	var last *httptest.ResponseRecorder
+	for i := 0; i < 31; i++ {
+		i := i
+		email := uniqEmail("ip")
+		delRateKeys(t, rdb, "rate:magic_link:email:"+email)
+		last = e.magic(magicBody(email), func(r *http.Request) {
+			r.RemoteAddr = peer + ":4000"
+			r.Header.Set("X-Forwarded-For", "203.0.113."+strconv.Itoa(i)+", 198.51.100.9")
+		})
+		if i < 30 {
+			wantStatus(t, last, http.StatusAccepted)
+		}
+	}
+	wantErr(t, last, 429, "too many requests")
+	if last.Header().Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+}
+
+// Documents CURRENT behaviour, not contract: clientIP uses RemoteAddr as-is
+// (host part, or the whole string when it has no port) and ignores forwarding
+// headers. Proxy handling lives in TrustedRealIP (server.go:192), not here.
+func TestClientIP_KeyedOnPeerNeverOnHeaders(t *testing.T) {
+	e, rdb := ssoEnv(t, nil, nil)
+	rnd := func() string { b := uuid.New(); return hex.EncodeToString(b[:3]) }
+	v4 := func() string {
+		b := uuid.New()
+		return "10." + strconv.Itoa(int(b[0])) + "." + strconv.Itoa(int(b[1])) + "." + strconv.Itoa(int(b[2]))
+	}
+	// documentation-range (2001:db8::/32) addresses unique to this run, so "the spoofed key does not
+	// exist" cannot be tripped by a concurrent run.
+	spoof := func() string {
+		b := uuid.New()
+		return "2001:db8::" + hex.EncodeToString(b[:2]) + ":" + hex.EncodeToString(b[2:4])
+	}
+	s1, s2, s3, s4 := spoof(), spoof(), spoof(), spoof()
+	cases := []struct {
+		name   string
+		remote func(host string) string
+		host   func() string
+		hdr    map[string]string
+	}{
+		{"ipv4 with port", func(h string) string { return h + ":5555" }, v4, nil},
+		{"ipv6 with port", func(h string) string { return "[" + h + "]:5555" }, func() string { return "fd00::" + rnd() }, nil},
+		{"no port is used whole", func(h string) string { return h }, v4, nil},
+		{"spoofed X-Forwarded-For", func(h string) string { return h + ":1" }, v4,
+			map[string]string{"X-Forwarded-For": s1}},
+		{"multi-hop X-Forwarded-For", func(h string) string { return h + ":1" }, v4,
+			map[string]string{"X-Forwarded-For": s2 + ", " + s3 + ", " + s4}},
+		{"X-Real-IP and Forwarded", func(h string) string { return h + ":1" }, v4,
+			map[string]string{"X-Real-IP": s1, "Forwarded": "for=" + s4}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			host := c.host()
+			email := uniqEmail("cip")
+			keys := []string{"rate:magic_link:ip:" + host, "rate:magic_link:email:" + email}
+			spoofed := map[string]string{}
+			for _, h := range c.hdr {
+				for _, part := range strings.Split(h, ",") {
+					if v := strings.TrimSpace(strings.TrimPrefix(part, "for=")); v != "" {
+						k := "rate:magic_link:ip:" + v
+						spoofed[v] = k
+						keys = append(keys, k)
+					}
+				}
+			}
+			delRateKeys(t, rdb, keys...)
+			wantStatus(t, e.magic(magicBody(email), func(r *http.Request) {
+				r.RemoteAddr = c.remote(host)
+				for k, v := range c.hdr {
+					r.Header.Set(k, v)
+				}
+			}), http.StatusAccepted)
+			ctx := context.Background()
+			if n, _ := rdb.Exists(ctx, "rate:magic_link:ip:"+host).Result(); n != 1 {
+				t.Fatalf("no limiter key for the peer host %q", host)
+			}
+			for v, k := range spoofed {
+				if n, _ := rdb.Exists(ctx, k).Result(); n != 0 {
+					t.Fatalf("a client-supplied address %q was used as the limiter key", v)
+				}
+			}
+		})
+	}
+}
+
+func TestVerifyMagicLink_RejectsBadRequests(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	post := func(ct, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/magic-link/verify", strings.NewReader(body))
+		if ct != "" {
+			req.Header.Set("Content-Type", ct)
+		}
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, ct := range []string{"", "text/plain", "application/x-www-form-urlencoded"} {
+		rec := post(ct, `{"token":"x"}`)
+		wantErr(t, rec, 415, "content-type must be application/json")
+		if sessionCookie(rec) != nil {
+			t.Fatalf("%q: session cookie issued on a refused request", ct)
+		}
+	}
+	wantErr(t, post("application/json", `{"token":`), 400, "invalid json")
+	wantErr(t, post("application/json", `{}`), 400, "missing token")
+	wantErr(t, post("application/json", `{"token":"   "}`), 400, "missing token")
+	wantErr(t, post("application/json; charset=utf-8", `{"token":"x"}`), 401, "invalid or expired link")
+}
+
+func TestVerifyMagicLink_UnusableTokensAreRefusedWithoutProvisioning(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	ctx := context.Background()
+
+	expired := uniqEmail("expired")
+	expTok, err := auth.IssueMagicLink(ctx, e.q, expired, -time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	live := uniqEmail("tamper")
+	liveTok, err := auth.IssueMagicLink(ctx, e.q, live, time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	flipped := liveTok[:len(liveTok)-1] + map[bool]string{true: "B", false: "A"}[liveTok[len(liveTok)-1] == 'A']
+
+	for name, tok := range map[string]string{
+		"expired":   expTok,
+		"malformed": "!!! not a token !!!",
+		"unknown":   strings.Repeat("A", 43),
+		"tampered":  flipped,
+		"truncated": liveTok[:10],
+	} {
+		rec := e.verify(tok)
+		if rec.Code != 401 {
+			t.Fatalf("%s: got %d want 401", name, rec.Code)
+		}
+		wantErr(t, rec, 401, "invalid or expired link")
+		if sessionCookie(rec) != nil {
+			t.Fatalf("%s: session cookie issued", name)
+		}
+	}
+	if e.userExists(expired) || e.userExists(live) {
+		t.Fatal("a refused redemption provisioned a user")
+	}
+	// The refused attempts did not burn the genuine token.
+	wantStatus(t, e.verify(liveTok), http.StatusNoContent)
+}
+
+func TestVerifyMagicLink_SingleUseAndSessionMatchesStoredUser(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	email := uniqEmail("once")
+	tok, err := auth.IssueMagicLink(context.Background(), e.q, email, time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	rec := e.verify(" " + tok + " ")
+	wantStatus(t, rec, http.StatusNoContent)
+	uid, org := e.cookieOrg(rec)
+	u, err := e.q.GetUserByEmail(context.Background(), email)
+	if err != nil || store.GoUUID(u.ID) != uid {
+		t.Fatalf("cookie user %s does not match stored user (%v)", uid, err)
+	}
+	if e.members(org)[uid] != "owner" {
+		t.Fatalf("new user is not owner of the active org %s: %v", org, e.members(org))
+	}
+	var used *time.Time
+	if err := e.pool.QueryRow(context.Background(), `SELECT used_at FROM magic_link_tokens WHERE email=$1`, email).Scan(&used); err != nil || used == nil {
+		t.Fatalf("token not stamped used: %v %v", used, err)
+	}
+
+	// Replay: refused, no session, and still exactly one user and one workspace.
+	again := e.verify(tok)
+	wantErr(t, again, 401, "invalid or expired link")
+	if sessionCookie(again) != nil {
+		t.Fatal("replay issued a session")
+	}
+	if n := len(e.members(org)); n != 1 {
+		t.Fatalf("members after replay: %d", n)
+	}
+}
+
+// Documents CURRENT behaviour, not contract: a token minted for a user who is
+// then deleted still redeems. It provisions a NEW user (fresh id), and the
+// deleted user's old session does not come back to life.
+func TestVerifyMagicLink_TokenForDeletedUser(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	ctx := context.Background()
+	email := uniqEmail("gone")
+	first := e.verify(mustIssue(t, e, email))
+	wantStatus(t, first, http.StatusNoContent)
+	oldUser, _ := e.cookieOrg(first)
+	oldCookie := sessionCookie(first)
+
+	tok := mustIssue(t, e, email)
+	if _, err := e.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, oldUser); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	if e.userExists(email) {
+		t.Fatal("user not deleted")
+	}
+
+	rec := e.verify(tok)
+	wantStatus(t, rec, http.StatusNoContent)
+	newUser, _ := e.cookieOrg(rec)
+	if newUser == oldUser {
+		t.Fatal("deleted user's id was resurrected")
+	}
+	if !e.userExists(email) {
+		t.Fatal("redeeming did not provision the account")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.AddCookie(oldCookie)
+	me := httptest.NewRecorder()
+	e.h.ServeHTTP(me, req)
+	if me.Code != http.StatusUnauthorized {
+		t.Fatalf("deleted user's old session: got %d want 401", me.Code)
+	}
+}
+
+func mustIssue(t *testing.T, e *idEnv, email string) string {
+	t.Helper()
+	tok, err := auth.IssueMagicLink(context.Background(), e.q, email, time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	return tok
+}
+
+func TestRequestMagicLink_EnforcedRefusesBeforeReadingTheRequest(t *testing.T) {
+	e, rdb := ssoEnv(t, nil, func(d *Deps) { d.OIDC = config.OIDCConfig{Enforce: true} })
+	// Garbage body: if the guard ran after the decode this would be a 400.
+	wantErr(t, e.magic(`{"email":`, nil), 403, "magic-link sign-in is disabled; use single sign-on")
+	email := uniqEmail("enf")
+	wantErr(t, e.magic(magicBody(email), nil), 403, "magic-link sign-in is disabled; use single sign-on")
+	if n, _ := rdb.Exists(context.Background(), "rate:magic_link:email:"+email).Result(); n != 0 {
+		t.Fatal("an enforced refusal still spent rate-limit budget")
+	}
+	if n := e.magicLinks(email); n != 0 {
+		t.Fatalf("minted %d tokens under enforcement", n)
+	}
+}
+
+func TestLogout_BumpsEpochClearsCookieAndKillsEverySession(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	uid, org := e.seedOrg()
+	bystander, bystanderOrg := e.seedOrg()
+	epoch := func(u uuid.UUID) int {
+		var n int
+		if err := e.pool.QueryRow(context.Background(), `SELECT session_epoch FROM users WHERE id=$1`, u).Scan(&n); err != nil {
+			t.Fatalf("epoch: %v", err)
+		}
+		return n
+	}
+	// Two live sessions for one user (two devices).
+	req1 := requestWithSession(t, e.signer, http.MethodGet, "/api/me", uid, org)
+	req2 := requestWithSession(t, e.signer, http.MethodGet, "/api/me", uid, org)
+	for _, r := range []*http.Request{req1, req2} {
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, r)
+		wantStatus(t, rec, http.StatusOK)
+	}
+
+	out := requestWithSession(t, e.signer, http.MethodPost, "/api/auth/logout", uid, org)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, out)
+	wantStatus(t, rec, http.StatusNoContent)
+	var cleared bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.SessionCookieName && c.Value == "" && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatalf("session cookie not cleared: %v", rec.Result().Cookies())
+	}
+	if epoch(uid) != 1 || epoch(bystander) != 0 {
+		t.Fatalf("epochs: user=%d bystander=%d want 1/0", epoch(uid), epoch(bystander))
+	}
+	// Both outstanding sessions are dead, not just the one that logged out.
+	for i, r := range []*http.Request{req1, req2} {
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("session %d after logout-all: got %d want 401", i, rec.Code)
+		}
+	}
+	// A bystander's session is untouched.
+	rec = httptest.NewRecorder()
+	e.h.ServeHTTP(rec, requestWithSession(t, e.signer, http.MethodGet, "/api/me", bystander, bystanderOrg))
+	wantStatus(t, rec, http.StatusOK)
+}
+
+func TestLogout_WithoutValidCookieIsHarmless(t *testing.T) {
+	e, _ := ssoEnv(t, nil, nil)
+	uid, _ := e.seedOrg()
+	forged := &auth.SessionSigner{Secret: []byte("some-other-secret")}
+	bad := requestWithSession(t, forged, http.MethodPost, "/api/auth/logout", uid, uuid.New())
+	for name, req := range map[string]*http.Request{
+		"no cookie":        httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil),
+		"forged signature": bad,
+	} {
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		wantStatus(t, rec, http.StatusNoContent)
+		var epoch int
+		if err := e.pool.QueryRow(context.Background(), `SELECT session_epoch FROM users WHERE id=$1`, uid).Scan(&epoch); err != nil || epoch != 0 {
+			t.Fatalf("%s: forged logout moved the victim's epoch to %d (%v)", name, epoch, err)
+		}
+	}
+}
+
+func TestLogout_EpochWriteFailureStill204(t *testing.T) {
+	e := newIDEnv(t, failOn("update users set session_epoch"), nil)
+	uid, org := e.seedOrg()
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, requestWithSession(t, e.signer, http.MethodPost, "/api/auth/logout", uid, org))
+	wantStatus(t, rec, http.StatusNoContent)
+	var epoch int
+	if err := e.pool.QueryRow(context.Background(), `SELECT session_epoch FROM users WHERE id=$1`, uid).Scan(&epoch); err != nil || epoch != 0 {
+		t.Fatalf("epoch %d (%v) want 0 after the failed write", epoch, err)
+	}
+}
+
+func TestMe_ShapesAndFailureModes(t *testing.T) {
+	get := func(e *idEnv, uid, org uuid.UUID) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, requestWithSession(t, e.signer, http.MethodGet, "/api/me", uid, org))
+		return rec
+	}
+	t.Run("super admin flag only when true", func(t *testing.T) {
+		e := newIDEnv(t, nil, nil)
+		uid, org := e.seedOrg()
+		plain, plainOrg := e.seedOrg()
+		if _, err := e.pool.Exec(context.Background(), `UPDATE users SET is_super_admin=true WHERE id=$1`, uid); err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		var r struct {
+			User map[string]any `json:"user"`
+		}
+		rec := get(e, uid, org)
+		wantStatus(t, rec, http.StatusOK)
+		_ = json.Unmarshal(rec.Body.Bytes(), &r)
+		if r.User["is_super_admin"] != true {
+			t.Fatalf("super admin not flagged: %v", r.User)
+		}
+		rec = get(e, plain, plainOrg)
+		r.User = nil
+		_ = json.Unmarshal(rec.Body.Bytes(), &r)
+		if _, ok := r.User["is_super_admin"]; ok {
+			t.Fatalf("non-admin carries an escalation hint: %v", r.User)
+		}
+	})
+	t.Run("no active org", func(t *testing.T) {
+		e := newIDEnv(t, nil, nil)
+		uid, _ := e.seedOrg()
+		rec := get(e, uid, uuid.Nil)
+		wantStatus(t, rec, http.StatusOK)
+		if strings.Contains(rec.Body.String(), "active_org_id") {
+			t.Fatalf("active_org_id emitted without an active org: %s", rec.Body.String())
+		}
+	})
+	t.Run("deleted user's cookie is refused", func(t *testing.T) {
+		e := newIDEnv(t, nil, nil)
+		uid, org := e.seedOrg()
+		if _, err := e.pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, uid); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		wantStatus(t, get(e, uid, org), http.StatusUnauthorized)
+	})
+	t.Run("user vanishes between middleware and handler", func(t *testing.T) {
+		// Authenticate loads the user first; the handler's own load is the
+		// second matching statement.
+		tr := &stmtTracer{match: has("from users where id"), nth: 2}
+		e := newIDEnv(t, tr, nil)
+		uid, org := e.seedOrg()
+		wantErr(t, get(e, uid, org), 401, "session user not found")
+	})
+	t.Run("org list failure degrades, keeps the user", func(t *testing.T) {
+		e := newIDEnv(t, failOn("from organizations o join org_members m"), nil)
+		uid, org := e.seedOrg()
+		rec := get(e, uid, org)
+		wantStatus(t, rec, http.StatusOK)
+		var r map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &r)
+		if r["user"] == nil || r["active_org_id"] != org.String() {
+			t.Fatalf("body: %s", rec.Body.String())
+		}
+	})
+}
+
+func TestPatchMe_StoresTrimmedNameAndClearsOnBlank(t *testing.T) {
+	e := newIDEnv(t, nil, nil)
+	uid, org := e.seedOrg()
+	other, _ := e.seedOrg()
+	nameOf := func(u uuid.UUID) *string {
+		var n *string
+		if err := e.pool.QueryRow(context.Background(), `SELECT name FROM users WHERE id=$1`, u).Scan(&n); err != nil {
+			t.Fatalf("name: %v", err)
+		}
+		return n
+	}
+
+	rec := e.do(http.MethodPatch, "/api/me", uid, org, map[string]any{"name": "  Ada Lovelace  "})
+	wantStatus(t, rec, http.StatusOK)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["name"] != "Ada Lovelace" || out["id"] != uid.String() || out["is_super_admin"] != false {
+		t.Fatalf("response: %v", out)
+	}
+	if n := nameOf(uid); n == nil || *n != "Ada Lovelace" {
+		t.Fatalf("stored name: %v", n)
+	}
+	if nameOf(other) != nil {
+		t.Fatal("PATCH /me touched another user")
+	}
+	for _, blank := range []string{"", "   "} {
+		wantStatus(t, e.do(http.MethodPatch, "/api/me", uid, org, map[string]any{"name": blank}), http.StatusOK)
+		if n := nameOf(uid); n != nil {
+			t.Fatalf("blank %q stored %q, want NULL", blank, *n)
+		}
+	}
+}
+
+func TestPatchMe_Refusals(t *testing.T) {
+	e := newIDEnv(t, nil, nil)
+	uid, org := e.seedOrg()
+	name := "Keep Me"
+	if _, err := e.q.UpdateUserName(context.Background(), store.UpdateUserNameParams{ID: store.UUID(uid), Name: &name}); err != nil {
+		t.Fatalf("seed name: %v", err)
+	}
+	key := newKeyAt(t, e.q, org, "admin")
+	wantErr(t, e.withKey(key, http.MethodPatch, "/api/me", map[string]any{"name": "x"}), 401, "session required")
+	wantErr(t, e.do(http.MethodPatch, "/api/me", uid, org, map[string]any{}), 400, "name required")
+	wantErr(t, e.do(http.MethodPatch, "/api/me", uid, org, map[string]any{"name": nil}), 400, "name required")
+	req := requestWithSessionBody(t, e.signer, http.MethodPatch, "/api/me", uid, org, nil)
+	req.Body = io.NopCloser(strings.NewReader(`{"name":`))
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	wantErr(t, rec, 400, "invalid json")
+
+	var got *string
+	if err := e.pool.QueryRow(context.Background(), `SELECT name FROM users WHERE id=$1`, uid).Scan(&got); err != nil || got == nil || *got != name {
+		t.Fatalf("a refused PATCH changed the name: %v (%v)", got, err)
+	}
+}
+
+func TestPatchMe_StoreFailure500LeavesNameAlone(t *testing.T) {
+	e := newIDEnv(t, failOn("update users set name"), nil)
+	uid, org := e.seedOrg()
+	wantErr(t, e.do(http.MethodPatch, "/api/me", uid, org, map[string]any{"name": "New"}), 500, "update profile")
+	var got *string
+	if err := e.pool.QueryRow(context.Background(), `SELECT name FROM users WHERE id=$1`, uid).Scan(&got); err != nil || got != nil {
+		t.Fatalf("name %v (%v) want NULL", got, err)
+	}
+}
+
+// =============================================================================
+// SSO branches the suite above leaves.
+// =============================================================================
+
+// ssoStack is an idEnv with SSO wired to a fake authenticator and a live Redis.
+func ssoStack(t *testing.T, tr pgx.QueryTracer, fa *fakeAuthenticator, mod func(*Deps)) (*idEnv, *redis.Client) {
+	t.Helper()
+	return ssoEnv(t, tr, func(d *Deps) {
+		d.Authenticator = fa
+		d.OIDC = config.OIDCConfig{Issuer: "https://idp.test"}
+		d.PublicBaseURL = "http://api.test"
+		if mod != nil {
+			mod(d)
+		}
+	})
+}
+
+func TestStartSSO_RedisFailuresRefuseAndSetNoCookie(t *testing.T) {
+	t.Run("limiter down", func(t *testing.T) {
+		e := newIDEnv(t, nil, func(d *Deps) {
+			d.Authenticator = &fakeAuthenticator{}
+			d.Redis = deadRedis(t)
+		})
+		rec := e.anon(http.MethodGet, "/api/auth/sso/start")
+		wantErr(t, rec, 503, "sso unavailable")
+		if len(rec.Result().Cookies()) != 0 || rec.Header().Get("Location") != "" {
+			t.Fatalf("a failed start set a cookie or redirected: %v %q", rec.Result().Cookies(), rec.Header().Get("Location"))
+		}
+	})
+	t.Run("state store fails", func(t *testing.T) {
+		rdb := ssoRedis(t)
+		rdb.AddHook(failCmdHook{name: "set"})
+		e := newIDEnv(t, nil, func(d *Deps) { d.Authenticator = &fakeAuthenticator{}; d.Redis = rdb })
+		rec := e.anon(http.MethodGet, "/api/auth/sso/start")
+		wantErr(t, rec, 503, "sso unavailable")
+		if len(rec.Result().Cookies()) != 0 || rec.Header().Get("Location") != "" {
+			t.Fatalf("a failed start set a cookie or redirected")
+		}
+	})
+}
+
+// failCmdHook fails one named Redis command on an otherwise real connection.
+type failCmdHook struct{ name string }
+
+func (failCmdHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h failCmdHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == h.name {
+			return errors.New("injected redis failure")
+		}
+		return next(ctx, cmd)
+	}
+}
+func (failCmdHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// syncBuf is a goroutine-safe log sink.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+func TestCallbackSSO_IdPErrorIsTruncatedBeforeLogging(t *testing.T) {
+	buf := &syncBuf{}
+	e, _ := ssoStack(t, nil, &fakeAuthenticator{}, func(d *Deps) { d.Log = slog.New(slog.NewTextHandler(buf, nil)) })
+	rec := e.anon(http.MethodGet, "/api/auth/sso/callback?error="+strings.Repeat("z", 400))
+	wantErr(t, rec, 401, "sso sign-in was declined")
+	logged := buf.String()
+	if !strings.Contains(logged, strings.Repeat("z", 128)) || strings.Contains(logged, strings.Repeat("z", 129)) {
+		t.Fatalf("attacker-controlled error not capped at 128 bytes: %d z's logged", strings.Count(logged, "z"))
+	}
+}
+
+func TestCallbackSSO_CorruptStateIsRefusedAndConsumed(t *testing.T) {
+	e, rdb := ssoStack(t, nil, &fakeAuthenticator{}, nil)
+	state := "corrupt-" + uuid.NewString()
+	if err := rdb.Set(context.Background(), "sso:state:"+state, "{not json", time.Minute).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Cleanup(func() { rdb.Del(context.Background(), "sso:state:"+state) })
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=c&state="+state, nil)
+	req.AddCookie(&http.Cookie{Name: ssoStateCookieName, Value: state})
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	wantErr(t, rec, 400, "unknown or expired sso state")
+	if sessionCookie(rec) != nil {
+		t.Fatal("session issued from a corrupt state")
+	}
+	if n, _ := rdb.Exists(context.Background(), "sso:state:"+state).Result(); n != 0 {
+		t.Fatal("the corrupt state row is still presentable")
+	}
+}
+
+func TestCallbackSSO_ExchangeFailureIsRefusedWithoutProvisioning(t *testing.T) {
+	fa := &fakeAuthenticator{err: errors.New("idp said no")}
+	e, _ := ssoStack(t, nil, fa, nil)
+	state, _, bind := ssoStart(t, e)
+	rec := ssoCallback(e, "?code=bad&state="+state, bind)
+	wantErr(t, rec, 401, "sso sign-in failed")
+	if fa.lastCode != "bad" || sessionCookie(rec) != nil {
+		t.Fatalf("lastCode=%q session=%v", fa.lastCode, sessionCookie(rec))
+	}
+}
+
+func ssoStart(t *testing.T, e *idEnv) (state, nonce string, bind *http.Cookie) {
+	t.Helper()
+	return startSSO(t, e.h, "")
+}
+
+func ssoCallback(e *idEnv, query string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	e.t.Helper()
+	return callbackSSO(e.t, e.h, query, cookies...)
+}
+
+// Every failure past the identity checks must roll the login back whole: no
+// user, no workspace, no session.
+func TestCallbackSSO_ProvisioningFailuresRollBackAndRefuse(t *testing.T) {
+	run := func(t *testing.T, tr pgx.QueryTracer, mod func(*Deps), req func(*http.Request) *http.Request, wantMsg string) {
+		t.Helper()
+		email := ssoEmail()
+		fa := &fakeAuthenticator{}
+		e, _ := ssoStack(t, tr, fa, mod)
+		state, nonce, bind := ssoStart(t, e)
+		fa.identity = verifiedIdentity(email, nonce)
+		r := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=c&state="+state, nil)
+		r.AddCookie(bind)
+		if req != nil {
+			r = req(r)
+		}
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, r)
+		wantErr(t, rec, 500, wantMsg)
+		if sessionCookie(rec) != nil {
+			t.Fatal("session issued for a failed login")
+		}
+		assertNoUser(t, e.q, email)
+		var orgs int
+		if err := e.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM organizations WHERE name LIKE $1`, email+"%").Scan(&orgs); err != nil || orgs != 0 {
+			t.Fatalf("a failed login left %d workspaces (%v)", orgs, err)
+		}
+	}
+	t.Run("transaction cannot begin", func(t *testing.T) {
+		run(t, nil, func(d *Deps) {
+			closed := testPool(t)
+			closed.Close()
+			d.Pool = closed
+		}, nil, "sso unavailable")
+	})
+	t.Run("bootstrap statement fails", func(t *testing.T) {
+		run(t, failOn("select count(*) from org_members where user_id"), nil, nil, "sso sign-in failed")
+	})
+	t.Run("active org lookup fails", func(t *testing.T) {
+		run(t, failOn("order by m.created_at asc, m.org_id asc"), nil, nil, "sso sign-in failed")
+	})
+	t.Run("commit fails", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		// Let the org lookup finish, then drop the request context: COMMIT
+		// is the next statement and cannot be sent.
+		tr := &stmtTracer{match: has("order by m.created_at asc, m.org_id asc"), after: cancel}
+		run(t, tr, nil, func(r *http.Request) *http.Request { return r.WithContext(ctx) }, "sso sign-in failed")
+	})
 }
