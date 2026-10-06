@@ -129,3 +129,5 @@ func TestEmailHandlerNilSenderLogsAndAcks(t *testing.T) {
 		t.Fatalf("want acked, got %d", n)
 	}
 }
+
+func slogTo(w io.Writer) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }

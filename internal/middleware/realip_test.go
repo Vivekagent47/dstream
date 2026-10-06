@@ -75,3 +75,44 @@ func TestTrustedRealIP_BadCIDR(t *testing.T) {
 		t.Fatal("expected error on bad CIDR")
 	}
 }
+
+// TestTrustedRealIP_PeerAndHeaderShapes pins the rewrite for the awkward inputs
+// the happy-path tests skip: a trusted peer with no port, a peer that is not an
+// IP at all, a malformed or empty X-Forwarded-For, a single-IP trust entry, and
+// a chain of only trusted hops.
+func TestTrustedRealIP_PeerAndHeaderShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		trusted []string
+		peer    string
+		xff     string
+		want    string
+	}{
+		{"bare trusted peer (no port) is honoured", []string{"10.0.0.0/8"}, "10.0.0.5", "203.0.113.7, 10.0.0.5", "203.0.113.7"},
+		{"single-IP trust entry is honoured", []string{"10.0.0.5"}, "10.0.0.5:80", "203.0.113.7", "203.0.113.7"},
+		{"non-IP peer is untrusted, header ignored", []string{"10.0.0.0/8"}, "not-an-ip", "203.0.113.7", "not-an-ip"},
+		{"malformed XFF from trusted peer keeps the peer", []string{"10.0.0.0/8"}, "10.0.0.5:80", "garbage", "10.0.0.5:80"},
+		{"missing XFF from trusted peer keeps the peer", []string{"10.0.0.0/8"}, "10.0.0.5:80", "", "10.0.0.5:80"},
+		{"all-trusted chain yields no client, peer kept", []string{"10.0.0.0/8"}, "10.0.0.5:80", "10.0.0.9, 10.0.0.5", "10.0.0.5:80"},
+		{"spoofed leftmost entry is not the client", []string{"10.0.0.0/8"}, "10.0.0.5:80", "6.6.6.6, 203.0.113.7, 10.0.0.5", "203.0.113.7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mw, err := TrustedRealIP(tc.trusted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var seen string
+			h := mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = r.RemoteAddr }))
+			req := httptest.NewRequest("GET", "/", nil)
+			req.RemoteAddr = tc.peer
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			h.ServeHTTP(httptest.NewRecorder(), req)
+			if seen != tc.want {
+				t.Fatalf("RemoteAddr = %q, want %q", seen, tc.want)
+			}
+		})
+	}
+}

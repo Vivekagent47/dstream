@@ -46,6 +46,8 @@ func seedOrg(t *testing.T, q *store.Queries) uuid.UUID {
 	if err != nil {
 		t.Fatalf("org: %v", err)
 	}
+	// Cascades the org's op app, event types, messages and deliveries away.
+	t.Cleanup(func() { _ = q.DeleteOrganization(context.Background(), o.ID) })
 	return store.GoUUID(o.ID)
 }
 
