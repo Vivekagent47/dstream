@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -84,12 +85,13 @@ func TestHandleIngestChildSpans(t *testing.T) {
 	}
 
 	// Record spans. ingestTracer is a package var bound to the global provider's
-	// delegate, so setting the provider here routes its spans to the recorder.
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	prev := otel.GetTracerProvider()
-	otel.SetTracerProvider(tp)
-	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	// delegate, and OTel binds that delegate only once per process, so the
+	// provider is installed once and each run reads only the spans added since
+	// it started (a second -count iteration would otherwise record nothing).
+	spanOnce.Do(func() {
+		otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRec)))
+	})
+	baseline := len(spanRec.Ended())
 
 	h := &Handler{
 		Log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
@@ -110,20 +112,26 @@ func TestHandleIngestChildSpans(t *testing.T) {
 		t.Fatalf("ingest status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
 
+	ended := spanRec.Ended()[baseline:]
 	got := map[string]bool{}
-	for _, s := range sr.Ended() {
+	for _, s := range ended {
 		got[s.Name()] = true
 	}
 	for _, want := range []string{"ingest.resolve_source", "ingest.read_body", "ingest.dedup", "ingest.persist", "ingest.fanout"} {
 		if !got[want] {
-			t.Errorf("missing span %q; recorded=%v", want, spanNames(sr))
+			t.Errorf("missing span %q; recorded=%v", want, spanNames(ended))
 		}
 	}
 }
 
-func spanNames(sr *tracetest.SpanRecorder) []string {
+var (
+	spanRec  = tracetest.NewSpanRecorder()
+	spanOnce sync.Once
+)
+
+func spanNames(ended []sdktrace.ReadOnlySpan) []string {
 	var out []string
-	for _, s := range sr.Ended() {
+	for _, s := range ended {
 		out = append(out, s.Name())
 	}
 	return out
