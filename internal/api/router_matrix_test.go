@@ -7,12 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -92,15 +90,11 @@ func setupMatrixEnv(t *testing.T, q *store.Queries, role string, needsRedis bool
 		PublicBaseURL: "http://test.local",
 	}
 	if needsRedis {
-		addr := os.Getenv("DSTREAM_TEST_REDIS_ADDR")
-		if addr == "" {
-			t.Skip("DSTREAM_TEST_REDIS_ADDR not set; case needs redis")
-		}
-		rdb := redis.NewClient(&redis.Options{Addr: addr})
-		t.Cleanup(func() { _ = rdb.Close() })
-		// Flush any stale rate-limit counters so back-to-back runs don't
-		// trip 429 from a previous test's identity.
-		_ = rdb.FlushDB(ctx).Err()
+		// ssoRedis accepts DSTREAM_TEST_REDIS_ADDR or DSTREAM_REDIS_ADDR; gating on
+		// the first alone meant this case never ran. No FlushDB: every case seeds
+		// its own user, so counters are already unique, and flushing would wipe
+		// state other packages keep in the shared Redis.
+		rdb := ssoRedis(t)
 		deps.Redis = rdb
 	}
 

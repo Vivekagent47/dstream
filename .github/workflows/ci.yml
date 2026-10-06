@@ -1,0 +1,175 @@
+name: CI
+
+# Lint covers the whole repo — Go and web. Tests and the coverage gate are
+# backend-only by design: the web suite is eight logic tests in
+# web/src/lib/quota.test.ts and runs locally (PLAN.md section 9).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per ref. A force-push supersedes the run it replaces instead of
+# queueing behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (Go + web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # go vet + gofmt, via the same target developers run.
+      - name: Go
+        run: make lint
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Prettier
+        working-directory: web
+        run: bun run format:check
+
+      - name: TypeScript
+        working-directory: web
+        run: bunx tsc --noEmit
+
+      # ESLint fails repo-wide on a documented baseline: 28 problems (16
+      # errors, 12 warnings) across 15 files, mostly
+      # react-hooks/set-state-in-effect in components that predate the rule
+      # — see PLAN.md section 9. Reported rather than enforced so the count
+      # stays visible without failing every PR on inherited debt. Drop the
+      # continue-on-error once the baseline is cleared.
+      - name: ESLint (reported, not enforced)
+        working-directory: web
+        continue-on-error: true
+        run: |
+          bun run lint 2>&1 | tee eslint.log || true
+          {
+            echo '### ESLint — reported, not enforced'
+            echo
+            echo 'Baseline is 28 problems across 15 files (PLAN.md section 9).'
+            echo 'Judge a change by whether the count moves, not by exit status.'
+            echo
+            echo '```'
+            tail -n 20 eslint.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: Go tests + coverage
+    runs-on: ubuntu-latest
+
+    # Same images as the dev stack (deploy/docker/docker-compose.yml), so a
+    # version-specific failure shows up in both places or neither.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: dstream
+          POSTGRES_PASSWORD: dstream
+          POSTGRES_DB: dstream_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dstream -d dstream_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The same database under two names, on purpose: `migrate up` reads
+      # DSTREAM_DB_URL through config.Load, while the suite reads
+      # DSTREAM_TEST_DB_URL and t.Skip()s every database test when it is
+      # unset. A missing DSTREAM_TEST_DB_URL would not fail the job — it
+      # would pass it, having run almost nothing, and report a coverage
+      # number that means nothing.
+      DSTREAM_DB_URL: postgres://dstream:dstream@127.0.0.1:5432/dstream_test?sslmode=disable
+      DSTREAM_TEST_DB_URL: postgres://dstream:dstream@127.0.0.1:5432/dstream_test?sslmode=disable
+      DSTREAM_REDIS_ADDR: 127.0.0.1:6379
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The binary applies the migrations itself — cmd/dstream/migrate.go
+      # embeds db/migrations and runs Atlas as a library — so CI needs no
+      # atlas CLI and migrates by the same path production does.
+      - name: Migrate test database
+        run: go run ./cmd/dstream migrate up
+
+      - name: Test with coverage gate
+        run: make cover
+
+      # Runs even when the gate fails: a red job is exactly when the numbers
+      # are worth reading.
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ ! -f cover.real.out ]; then
+            echo '### Backend coverage' >> "$GITHUB_STEP_SUMMARY"
+            echo 'No profile produced — the suite failed before coverage was written.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo '### Backend coverage'
+            echo
+            echo '```'
+            go tool cover -func=cover.real.out | tail -n 1
+            echo '```'
+            echo
+            echo 'Minimum enforced by `make cover` (COVERAGE_MIN in the Makefile).'
+            echo 'The profile excludes sqlc-generated code and the third-party Go'
+            echo 'package vendored inside web/node_modules.'
+            echo
+            echo '| uncovered | statements | package |'
+            echo '|---:|---:|---|'
+            awk 'NR > 1 {
+                   split($1, a, ":"); f = a[1];
+                   sub(/^github\.com\/Vivekagent47\/dstream\//, "", f);
+                   pkg = f; sub(/\/[^\/]+$/, "", pkg);
+                   n = $(NF-1); total[pkg] += n;
+                   if ($NF == 0) uncovered[pkg] += n
+                 }
+                 END { for (p in total) printf "%d\t%d\t%s\n", uncovered[p], total[p], p }' cover.real.out \
+              | sort -rn \
+              | awk -F'\t' '{ printf "| %s | %s | `%s` |\n", $1, $2, $3 }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            cover.out
+            cover.real.out
+          if-no-files-found: ignore

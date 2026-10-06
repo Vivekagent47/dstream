@@ -387,7 +387,13 @@ func headerJSON(h http.Header) []byte {
 // RunReaper re-enqueues message_deliveries stuck 'queued' with no queue entry
 // (an Enqueue that failed after the row was written). Runs until ctx is done.
 func (h Handler) RunReaper(ctx context.Context, q *dqueue.Client) {
-	t := time.NewTicker(30 * time.Second)
+	h.runReaper(ctx, q, 30*time.Second)
+}
+
+// runReaper is RunReaper with the sweep interval injectable, so tests don't
+// have to wait out the 30s production tick.
+func (h Handler) runReaper(ctx context.Context, q *dqueue.Client, every time.Duration) {
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -43,200 +44,249 @@ func workerCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			tshutdown, err := tracing.Init(ctx, tracing.Config{
-				Enabled:      cfg.Tracing.Enabled,
-				OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
-				ServiceName:  cfg.Tracing.ServiceName,
-				SampleRatio:  cfg.Tracing.SampleRatio,
-			})
+			w, cleanup, err := buildWorker(ctx, cfg, log)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = tshutdown(context.Background()) }()
-			if cfg.Tracing.Enabled {
-				log.Info("tracing enabled", "otlp_endpoint", cfg.Tracing.OTLPEndpoint, "sample_ratio", cfg.Tracing.SampleRatio)
-			}
-
-			pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
-			if err != nil {
-				return err
-			}
-			defer pool.Close()
-			q := store.New(pool)
-
-			rdb := redis.NewClient(&redis.Options{
-				Addr:     cfg.Redis.Addr,
-				Password: cfg.Redis.Password,
-				DB:       cfg.Redis.DB,
-			})
-			defer rdb.Close()
-
-			bs := ingest.NewPostgresBodyStore(q)
-			dq := dqueue.NewClient(rdb)
-			h := deliver.New(log, q, rdb, bs, dq, cfg.AllowPrivateDestinations)
-			h.PerOrgMaxInflight = cfg.Worker.PerOrgMaxInflight
-			h.TransformTimeout = cfg.TransformTimeout
-			h.TransformMaxOutput = cfg.TransformMaxOutput
-
-			sender, err := mailer.NewSender(cfg.SMTP)
-			if err != nil {
-				return fmt.Errorf("init mailer: %w", err)
-			}
-			emailHandler := mailer.EmailHandler{Sender: sender, Log: log, DevMode: cfg.DevMode}
-			outboundHandler := webhook.Handler{
-				Log:                    log,
-				Queries:                q,
-				HTTP:                   deliver.NewSafeHTTPClient(30*time.Second, cfg.AllowPrivateDestinations),
-				Redis:                  rdb,
-				MaxConsecutiveFailures: cfg.EndpointMaxConsecutiveFailures,
-				PerOrgMaxInflight:      cfg.Worker.PerOrgMaxInflight,
-				Limiter:                redis_rate.NewLimiter(rdb),
-				TransformTimeout:       cfg.TransformTimeout,
-				TransformMaxOutput:     cfg.TransformMaxOutput,
-			}
-
-			// 5× the delivery timeout, matching the in-flight lease: long enough
-			// that a live delivery never has its lease reclaimed mid-flight, short
-			// enough that a crashed worker's events are recovered promptly.
-			const leaseMs = int64(150000)
-
-			// workerDrainWindow bounds how long a SIGTERM waits for in-flight
-			// deliveries to finish before their context is cancelled. ~the delivery
-			// HTTP timeout, so a POST in progress at shutdown gets to complete.
-			const workerDrainWindow = 30 * time.Second
-
-			var wg sync.WaitGroup
-
-			// Deliveries run on procCtx, not the signal ctx: on SIGTERM the pool
-			// stops picking NEW work (loop + FairPick key off ctx) but an in-flight
-			// delivery HTTP call keeps its context for a bounded drain window rather
-			// than being cancelled mid-request — a cancelled POST the endpoint may
-			// already have processed becomes a duplicate on retry. procCancel fires
-			// after workerDrainWindow so a hung delivery can't block shutdown.
-			procCtx, procCancel := context.WithCancel(context.Background())
-			defer procCancel()
-
-			// Worker pool: each goroutine fair-picks one event round-robin across
-			// orgs and processes it. On an empty ring it blocks on WaitNotify so it
-			// wakes the moment an event is enqueued/promoted rather than busy-polling.
-			for i := 0; i < cfg.Worker.Concurrency; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for ctx.Err() == nil {
-						raw, p, ok, err := dq.FairPick(ctx, leaseMs)
-						if err != nil {
-							if ctx.Err() != nil {
-								return
-							}
-							log.Error("fairpick", "err", err)
-							time.Sleep(200 * time.Millisecond)
-							continue
-						}
-						if !ok {
-							_ = dq.WaitNotify(ctx, 2*time.Second)
-							continue
-						}
-						// Process one event in its own func so span.End runs on every
-						// path and a panic in delivery is contained to this event
-						// instead of killing the whole worker process.
-						func() {
-							if p.Kind == "email" {
-								defer func() {
-									if rec := recover(); rec != nil {
-										log.Error("email process panic", "panic", rec)
-										// No events row for email; just terminate the task.
-										_ = dq.DeadLetter(context.Background(), raw)
-									}
-								}()
-								if err := emailHandler.Process(procCtx, p, raw, dq); err != nil {
-									log.Error("email process", "err", err)
-								}
-								return
-							}
-							if p.Kind == "message" {
-								defer func() {
-									if rec := recover(); rec != nil {
-										log.Error("outbound process panic", "panic", rec)
-										bg := context.Background()
-										_ = dq.DeadLetter(bg, raw)
-										if did, e := messageDeliveryID(p); e == nil {
-											_ = q.MarkDeliveryDead(bg, store.UUID(did))
-										}
-									}
-								}()
-								dctx := otel.GetTextMapPropagator().Extract(procCtx, propagation.MapCarrier(p.Trace))
-								dctx, span := otel.Tracer("dstream/webhook").Start(dctx, "webhook.deliver")
-								defer span.End()
-								if err := outboundHandler.Process(dctx, p, raw, dq); err != nil {
-									log.Error("outbound process", "err", err)
-								}
-								return
-							}
-							dctx := otel.GetTextMapPropagator().Extract(procCtx, propagation.MapCarrier(p.Trace))
-							dctx, span := otel.Tracer("dstream/deliver").Start(dctx, "deliver")
-							defer span.End()
-							defer func() {
-								if rec := recover(); rec != nil {
-									log.Error("process panic", "event_id", p.EventID, "panic", rec)
-									// Terminate the poisoned event so neither the queue
-									// recoverer nor the DB reaper re-injects it into an
-									// endless panic loop (audit #5). Background ctx: the
-									// delivery ctx may already be cancelled.
-									bg := context.Background()
-									_ = dq.DeadLetter(bg, raw)
-									_ = q.MarkEventFailed(bg, store.UUID(p.EventID))
-								}
-							}()
-							if perr := h.Process(dctx, p, raw); perr != nil {
-								log.Error("process", "event_id", p.EventID, "err", perr)
-							}
-						}()
-					}
-				}()
-			}
-
-			// Scheduler mover: promote due scheduled retries/deferrals into the
-			// pending ring. Recoverer: reinject events whose lease expired (crashed
-			// worker) so at-least-once holds.
-			wg.Add(2)
-			go func() {
-				defer wg.Done()
-				tick(ctx, time.Second, func() { _, _ = dq.PromoteDue(ctx, time.Now().UnixMilli(), 500) })
-			}()
-			go func() {
-				defer wg.Done()
-				tick(ctx, 30*time.Second, func() { _, _ = dq.Recover(ctx, time.Now().UnixMilli()) })
-			}()
-
-			// DB-level safety net: re-queue events stuck with NO queue entry — an
-			// ingest enqueue that failed after the row was written, or a CLI tunnel
-			// that died mid-handoff. The queue recoverer only sees events already in
-			// dq:processing, so it cannot cover these; the reaper claims them from
-			// Postgres and re-enqueues.
-			wg.Add(1)
-			go func() { defer wg.Done(); h.RunReaper(ctx) }()
-
-			wg.Add(1)
-			go func() { defer wg.Done(); outboundHandler.RunReaper(ctx, dq) }()
-
-			// Background maintenance: purge expired magic-link tokens + invites,
-			// and roll per-org usage up into usage_rollups. Same rdb the hot path
-			// increments, so the sweep reconciles the counters it reads.
-			wg.Add(1)
-			go func() { defer wg.Done(); runMaintenance(ctx, q, rdb, log, cfg.PayloadRetention) }()
-
-			<-ctx.Done()
-			log.Info("shutting down worker; draining in-flight deliveries", "drain", workerDrainWindow)
-			// Pull loops already stopped (they key off ctx). Give in-flight
-			// deliveries a bounded window to finish on procCtx, then force-cancel so
-			// a hung one can't block shutdown forever.
-			go func() { time.Sleep(workerDrainWindow); procCancel() }()
-			wg.Wait()
-			procCancel()
+			defer cleanup()
+			runWorker(ctx, cfg, w, workerDrainWindow, workerRecoverInterval)
 			return nil
 		},
 	}
+}
+
+// workerDrainWindow bounds how long a SIGTERM waits for in-flight deliveries
+// to finish before their context is cancelled. ~the delivery HTTP timeout, so
+// a POST in progress at shutdown gets to complete.
+const workerDrainWindow = 30 * time.Second
+
+// workerRecoverInterval is how often the worker reinjects events whose lease
+// expired. Production value; tests pass a short one.
+const workerRecoverInterval = 30 * time.Second
+
+// workerDeps is everything the worker loops run against.
+type workerDeps struct {
+	log      *slog.Logger
+	q        *store.Queries
+	rdb      *redis.Client
+	dq       *dqueue.Client
+	h        *deliver.Handler
+	email    mailer.EmailHandler
+	outbound webhook.Handler
+}
+
+// buildWorker wires every dependency (tracing, pool, redis, queue, handlers)
+// and returns them plus a cleanup that releases them. A failed build unwinds
+// whatever it already opened. cleanup must run after runWorker has returned.
+func buildWorker(ctx context.Context, cfg config.Config, log *slog.Logger) (*workerDeps, func(), error) {
+	var cleanups []func()
+	cleanup := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			cleanup()
+		}
+	}()
+
+	tshutdown, err := tracing.Init(ctx, tracing.Config{
+		Enabled:      cfg.Tracing.Enabled,
+		OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
+		ServiceName:  cfg.Tracing.ServiceName,
+		SampleRatio:  cfg.Tracing.SampleRatio,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanups = append(cleanups, func() { _ = tshutdown(context.Background()) })
+	if cfg.Tracing.Enabled {
+		log.Info("tracing enabled", "otlp_endpoint", cfg.Tracing.OTLPEndpoint, "sample_ratio", cfg.Tracing.SampleRatio)
+	}
+
+	pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanups = append(cleanups, pool.Close)
+	q := store.New(pool)
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	})
+	cleanups = append(cleanups, func() { _ = rdb.Close() })
+
+	bs := ingest.NewPostgresBodyStore(q)
+	dq := dqueue.NewClient(rdb)
+	h := deliver.New(log, q, rdb, bs, dq, cfg.AllowPrivateDestinations)
+	h.PerOrgMaxInflight = cfg.Worker.PerOrgMaxInflight
+	h.TransformTimeout = cfg.TransformTimeout
+	h.TransformMaxOutput = cfg.TransformMaxOutput
+
+	sender, err := mailer.NewSender(cfg.SMTP)
+	if err != nil {
+		return nil, nil, fmt.Errorf("init mailer: %w", err)
+	}
+	emailHandler := mailer.EmailHandler{Sender: sender, Log: log, DevMode: cfg.DevMode}
+	outboundHandler := webhook.Handler{
+		Log:                    log,
+		Queries:                q,
+		HTTP:                   deliver.NewSafeHTTPClient(30*time.Second, cfg.AllowPrivateDestinations),
+		Redis:                  rdb,
+		MaxConsecutiveFailures: cfg.EndpointMaxConsecutiveFailures,
+		PerOrgMaxInflight:      cfg.Worker.PerOrgMaxInflight,
+		Limiter:                redis_rate.NewLimiter(rdb),
+		TransformTimeout:       cfg.TransformTimeout,
+		TransformMaxOutput:     cfg.TransformMaxOutput,
+	}
+
+	ok = true
+	return &workerDeps{log: log, q: q, rdb: rdb, dq: dq, h: h, email: emailHandler, outbound: outboundHandler}, cleanup, nil
+}
+
+// runWorker runs the consumer pool and periodic sweeps until ctx is cancelled,
+// then drains in-flight deliveries for up to drain before returning.
+func runWorker(ctx context.Context, cfg config.Config, w *workerDeps, drain, recoverEvery time.Duration) {
+	log, q, rdb, dq, h, emailHandler, outboundHandler := w.log, w.q, w.rdb, w.dq, w.h, w.email, w.outbound
+
+	// 5× the delivery timeout, matching the in-flight lease: long enough
+	// that a live delivery never has its lease reclaimed mid-flight, short
+	// enough that a crashed worker's events are recovered promptly.
+	const leaseMs = int64(150000)
+
+	var wg sync.WaitGroup
+
+	// Deliveries run on procCtx, not the signal ctx: on SIGTERM the pool
+	// stops picking NEW work (loop + FairPick key off ctx) but an in-flight
+	// delivery HTTP call keeps its context for a bounded drain window rather
+	// than being cancelled mid-request — a cancelled POST the endpoint may
+	// already have processed becomes a duplicate on retry. procCancel fires
+	// after drain so a hung delivery can't block shutdown.
+	procCtx, procCancel := context.WithCancel(context.Background())
+	defer procCancel()
+
+	// Worker pool: each goroutine fair-picks one event round-robin across
+	// orgs and processes it. On an empty ring it blocks on WaitNotify so it
+	// wakes the moment an event is enqueued/promoted rather than busy-polling.
+	for i := 0; i < cfg.Worker.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				raw, p, ok, err := dq.FairPick(ctx, leaseMs)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Error("fairpick", "err", err)
+					time.Sleep(200 * time.Millisecond)
+					continue
+				}
+				if !ok {
+					_ = dq.WaitNotify(ctx, 2*time.Second)
+					continue
+				}
+				// Process one event in its own func so span.End runs on every
+				// path and a panic in delivery is contained to this event
+				// instead of killing the whole worker process.
+				func() {
+					if p.Kind == "email" {
+						defer func() {
+							if rec := recover(); rec != nil {
+								log.Error("email process panic", "panic", rec)
+								// No events row for email; just terminate the task.
+								_ = dq.DeadLetter(context.Background(), raw)
+							}
+						}()
+						if err := emailHandler.Process(procCtx, p, raw, dq); err != nil {
+							log.Error("email process", "err", err)
+						}
+						return
+					}
+					if p.Kind == "message" {
+						defer func() {
+							if rec := recover(); rec != nil {
+								log.Error("outbound process panic", "panic", rec)
+								bg := context.Background()
+								_ = dq.DeadLetter(bg, raw)
+								if did, e := messageDeliveryID(p); e == nil {
+									_ = q.MarkDeliveryDead(bg, store.UUID(did))
+								}
+							}
+						}()
+						dctx := otel.GetTextMapPropagator().Extract(procCtx, propagation.MapCarrier(p.Trace))
+						dctx, span := otel.Tracer("dstream/webhook").Start(dctx, "webhook.deliver")
+						defer span.End()
+						if err := outboundHandler.Process(dctx, p, raw, dq); err != nil {
+							log.Error("outbound process", "err", err)
+						}
+						return
+					}
+					dctx := otel.GetTextMapPropagator().Extract(procCtx, propagation.MapCarrier(p.Trace))
+					dctx, span := otel.Tracer("dstream/deliver").Start(dctx, "deliver")
+					defer span.End()
+					defer func() {
+						if rec := recover(); rec != nil {
+							log.Error("process panic", "event_id", p.EventID, "panic", rec)
+							// Terminate the poisoned event so neither the queue
+							// recoverer nor the DB reaper re-injects it into an
+							// endless panic loop (audit #5). Background ctx: the
+							// delivery ctx may already be cancelled.
+							bg := context.Background()
+							_ = dq.DeadLetter(bg, raw)
+							_ = q.MarkEventFailed(bg, store.UUID(p.EventID))
+						}
+					}()
+					if perr := h.Process(dctx, p, raw); perr != nil {
+						log.Error("process", "event_id", p.EventID, "err", perr)
+					}
+				}()
+			}
+		}()
+	}
+
+	// Scheduler mover: promote due scheduled retries/deferrals into the
+	// pending ring. Recoverer: reinject events whose lease expired (crashed
+	// worker) so at-least-once holds.
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		tick(ctx, time.Second, func() { _, _ = dq.PromoteDue(ctx, time.Now().UnixMilli(), 500) })
+	}()
+	go func() {
+		defer wg.Done()
+		tick(ctx, recoverEvery, func() { _, _ = dq.Recover(ctx, time.Now().UnixMilli()) })
+	}()
+
+	// DB-level safety net: re-queue events stuck with NO queue entry — an
+	// ingest enqueue that failed after the row was written, or a CLI tunnel
+	// that died mid-handoff. The queue recoverer only sees events already in
+	// dq:processing, so it cannot cover these; the reaper claims them from
+	// Postgres and re-enqueues.
+	wg.Add(1)
+	go func() { defer wg.Done(); h.RunReaper(ctx) }()
+
+	wg.Add(1)
+	go func() { defer wg.Done(); outboundHandler.RunReaper(ctx, dq) }()
+
+	// Background maintenance: purge expired magic-link tokens + invites,
+	// and roll per-org usage up into usage_rollups. Same rdb the hot path
+	// increments, so the sweep reconciles the counters it reads.
+	wg.Add(1)
+	go func() { defer wg.Done(); runMaintenance(ctx, q, rdb, log, cfg.PayloadRetention, maintenanceInterval) }()
+
+	<-ctx.Done()
+	log.Info("shutting down worker; draining in-flight deliveries", "drain", drain)
+	// Pull loops already stopped (they key off ctx). Give in-flight
+	// deliveries a bounded window to finish on procCtx, then force-cancel so
+	// a hung one can't block shutdown forever.
+	go func() { time.Sleep(drain); procCancel() }()
+	wg.Wait()
+	procCancel()
 }
 
 // messageDeliveryID decodes the delivery id embedded in a Kind:"message" task's

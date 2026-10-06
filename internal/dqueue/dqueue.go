@@ -260,7 +260,10 @@ type OrgPending struct {
 // Stats reports queue depth for the admin console. It scans <p>:pending:* with
 // KEYS — this is admin-only and infrequent, so the O(n) scan is acceptable.
 func (c *Client) Stats(ctx context.Context) (Stats, error) {
-	var s Stats
+	// Non-nil so the admin API serializes an empty queue as [] rather than
+	// null: every client would otherwise have to special-case null where the
+	// field is documented as an array.
+	s := Stats{TopOrgs: []OrgPending{}}
 
 	pendingPrefix := c.prefix + ":pending:"
 	keys, err := c.rdb.Keys(ctx, pendingPrefix+"*").Result()

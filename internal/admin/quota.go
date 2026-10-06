@@ -39,7 +39,7 @@ func (d Deps) handleListPlans(w http.ResponseWriter, r *http.Request) {
 	for _, name := range planOrder {
 		l := usage.Presets[name]
 		out = append(out, planView{
-			Plan: name,
+			Plan:       name,
 			EventsSoft: l.EventsSoft, EventsHard: l.EventsHard,
 			MessagesSoft: l.MessagesSoft, MessagesHard: l.MessagesHard,
 			Period: l.Period,

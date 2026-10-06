@@ -123,3 +123,70 @@ func TestCSRF_GarbageHeader_Forbidden(t *testing.T) {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 }
+
+// Every state-changing verb needs the bound token; only the safe verbs are
+// exempt. Without the header a session-authed request is refused (403); with a
+// token minted for that session it passes.
+func TestCSRF_MethodMatrix(t *testing.T) {
+	tok, err := newBoundCSRFToken("session", csrfTestSecret)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	cases := []struct {
+		method     string
+		wantNoHdr  int
+		wantWithOK int
+	}{
+		{"GET", 200, 200}, {"HEAD", 200, 200}, {"OPTIONS", 200, 200},
+		{"POST", 403, 200}, {"PUT", 403, 200}, {"PATCH", 403, 200}, {"DELETE", 403, 200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			mk := func(withHeader bool) int {
+				req := httptest.NewRequest(tc.method, "/", nil)
+				req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
+				req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: tok})
+				if withHeader {
+					req.Header.Set(CSRFHeaderName, tok)
+				}
+				rec := httptest.NewRecorder()
+				csrfChain().ServeHTTP(rec, req)
+				return rec.Code
+			}
+			if got := mk(false); got != tc.wantNoHdr {
+				t.Fatalf("%s without header = %d, want %d", tc.method, got, tc.wantNoHdr)
+			}
+			if got := mk(true); got != tc.wantWithOK {
+				t.Fatalf("%s with bound token = %d, want %d", tc.method, got, tc.wantWithOK)
+			}
+		})
+	}
+}
+
+// A csrf cookie that is not bound to the current session (planted, or left over
+// from a previous login) is replaced on the very next request, and the
+// replacement validates against the session the request carries.
+func TestCSRF_UnboundCookieIsRebound(t *testing.T) {
+	planted := "planted-nonce.planted-mac"
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
+	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: planted})
+	rec := httptest.NewRecorder()
+	csrfChain().ServeHTTP(rec, req)
+
+	var got string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == CSRFCookieName {
+			got = c.Value
+		}
+	}
+	if got == "" || got == planted {
+		t.Fatalf("csrf cookie = %q, want a fresh token replacing %q", got, planted)
+	}
+	if !validCSRFToken(got, "session", csrfTestSecret) {
+		t.Fatalf("replacement token %q does not validate against the session", got)
+	}
+	if validCSRFToken(got, "other-session", csrfTestSecret) {
+		t.Fatal("replacement token must not validate against a different session")
+	}
+}

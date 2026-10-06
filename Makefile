@@ -1,10 +1,20 @@
-.PHONY: help dev build test lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
+.PHONY: help dev build test cover cover-report cover-files lint tidy sqlc compose-up compose-down clean schema-diff schema-lint migrate-up migrate-status migrate-hash db-reset load
 
 BIN := bin/dstream
 PKG := github.com/Vivekagent47/dstream
 
 ATLAS     := atlas
 ATLAS_ENV := local
+
+# Minimum backend statement coverage. `make cover` and CI both fail below
+# it; raise it as coverage climbs, never lower it to make a branch pass.
+COVERAGE_MIN ?= 95
+
+# Go packages, minus the one third-party package vendored inside the npm
+# tree (web/node_modules/flatted/golang/...). `go list ./...` picks it up,
+# so without this every test run compiles and "tests" someone else's code
+# and drags the coverage total down with it.
+GO_PKGS = $$(go list ./... | grep -v /web/node_modules/)
 
 help:
 	@echo "make dev            - run server + worker locally (assumes compose-up done)"
@@ -51,10 +61,105 @@ build:
 	go build -o $(BIN) ./cmd/dstream
 
 test:
-	go test ./... -race -count=1
+	go test $(GO_PKGS) -race -count=1
+
+# Coverage gate. CI calls this target (.github/workflows/ci.yml), so the
+# threshold and the exclusions below live in exactly one place.
+#
+# sqlc output is stripped from the profile before the total is computed:
+# it is machine-written, nobody tests it directly, and counting it means
+# adding a query silently lowers coverage. Keep the pattern in sync with
+# sqlc.yaml if the generated file set changes.
+#
+# Needs the same environment as `make test`: a migrated DSTREAM_TEST_DB_URL
+# and DSTREAM_REDIS_ADDR. Without them the DB tests skip, and a skipped
+# test still reports as covered-nothing — a passing run with a meaningless
+# number. See PLAN.md section 9 for the command.
+cover:
+	@# -coverpkg is not optional here. Without it Go credits a statement only
+	@# to the package whose own test binary ran it, and this suite tests most
+	@# handlers through the router that mounts them: internal/api's tests drive
+	@# internal/api/identity, so identity measured 0.3% while being heavily
+	@# exercised. Attributing honestly moved the total from 42.8% to 55.5%
+	@# without a single new test.
+	@#
+	@# The run is captured rather than streamed, because -coverpkg makes
+	@# `go test` append "coverage: N% of statements in <every package path>" to
+	@# each line — hundreds of columns of noise per package, and the number is
+	@# the whole set as exercised by that one binary, which is not a fact worth
+	@# reading. The real per-package figures come from the profile below.
+	@printf '\n  running tests with coverage (-race)...\n\n'
+	@go test $(GO_PKGS) -race -count=1 -covermode=atomic \
+		-coverpkg=$$(go list ./... | grep -v /web/node_modules/ | paste -sd, -) \
+		-coverprofile=cover.out > cover.log 2>&1; \
+	 status=$$?; \
+	 sed -e 's/[[:space:]]*coverage:.*//' -e 's#github.com/Vivekagent47/dstream/##' cover.log \
+	   | sed -e 's/^/  /'; \
+	 if [ $$status -ne 0 ]; then printf '\n  tests failed — coverage not computed\n\n'; exit $$status; fi
+	@grep -vE '\.sql\.go:|internal/store/(models|db|querier)\.go:' cover.out > cover.real.out
+	@printf '\n  BY PACKAGE (lowest first; full list: make cover-report)\n\n'
+	@$(MAKE) --no-print-directory cover-report | awk 'NR <= 12 { print "  " $$0 } END { if (NR > 12) printf "  ... %d more packages, all above these (make cover-report)\n", NR - 12 }'
+	@printf '\n  BY FILE (lowest first; every file: make cover-files)\n\n'
+	@$(MAKE) --no-print-directory cover-files | awk 'NR <= 15 { print "  " $$0 } END { if (NR > 15) printf "  ... %d more files, all above these (make cover-files)\n", NR - 15 }'
+	@printf '  %s\n' '--------------------------------------------------------------'
+	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
+	      END { \
+	        for (k in n) { t += n[k]; if (c[k] == 0) u += n[k] } \
+	        pct = 100 * (t - u) / t; min = MIN + 0; \
+	        need = int(min / 100 * t) - (t - u); if (need < 0) need = 0; \
+	        printf "\n  coverage  %.1f%%   (%d of %d statements)   minimum %d%%\n", pct, t - u, t, min; \
+	        if (pct < min) { \
+	          printf "  FAIL      %.1f points short — %d more statements to cover\n\n", min - pct, need; \
+	          exit 1 \
+	        } \
+	        printf "  PASS      %.1f points of headroom\n\n", pct - min \
+	      }' MIN=$(COVERAGE_MIN) cover.real.out
+
+# Per-package breakdown of the last `make cover` run. Blocks repeat in a
+# -coverpkg profile (one copy per test binary), so dedupe on block position
+# and keep the highest count before summing, or every number comes out
+# multiplied by the number of packages that ran.
+cover-report:
+	@test -f cover.real.out || (echo "no profile — run: make cover"; exit 1)
+	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
+	      END { \
+	        for (k in n) { \
+	          split(k, a, ":"); f = a[1]; \
+	          sub(/^github\.com\/Vivekagent47\/dstream\//, "", f); \
+	          pkg = f; sub(/\/[^\/]+$$/, "", pkg); \
+	          total[pkg] += n[k]; if (c[k] == 0) uncovered[pkg] += n[k] \
+	        } \
+	        for (p in total) \
+	          printf "%6.1f%%  %6d of %-6d covered  %6d uncovered  %s\n", \
+	            100 * (total[p] - uncovered[p]) / total[p], \
+	            total[p] - uncovered[p], total[p], uncovered[p], p \
+	      }' cover.real.out | sort -k1,1n -k4,4rn
+
+# Per-file coverage from the last `make cover` run: EVERY file, worst first,
+# fully-covered ones last. Same block dedupe as cover-report, for the same
+# reason. `make cover` prints only the worst few of these inline; this target
+# is the full list.
+cover-files:
+	@test -f cover.real.out || (echo "no profile — run: make cover"; exit 1)
+	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
+	      END { \
+	        for (k in n) { \
+	          split(k, a, ":"); f = a[1]; \
+	          sub(/^github\.com\/Vivekagent47\/dstream\//, "", f); \
+	          total[f] += n[k]; if (c[k] == 0) uncovered[f] += n[k] \
+	        } \
+	        for (q in total) \
+	          printf "%6.1f%%  %6d of %-6d covered  %6d uncovered  %s\n", \
+	            100 * (total[q] - uncovered[q]) / total[q], \
+	            total[q] - uncovered[q], total[q], uncovered[q], q \
+	      }' cover.real.out | sort -k1,1n -k4,4rn
 
 lint:
-	go vet ./...
+	go vet $(GO_PKGS)
+	@# gofmt is a gate, not a suggestion: one unformatted file makes every
+	@# later diff that touches it carry formatting noise alongside the change.
+	@unformatted=$$(gofmt -l cmd db internal tools); \
+	 if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 
 tidy:
 	go mod tidy

@@ -277,10 +277,17 @@ func slugifyEmail(email string) string {
 		// crypto/rand.Read failing is catastrophic — fall back to a
 		// hash of the email + time hash so we at least don't return an
 		// all-zero suffix that collides for every user.
-		h := sha256.Sum256([]byte(email + time.Now().String()))
-		copy(suffix[:], h[:6])
+		suffix = fallbackSuffix(email, time.Now())
 	}
 	return string(b) + "-" + hex.EncodeToString(suffix[:])
+}
+
+// fallbackSuffix derives slugifyEmail's suffix from the email and the clock
+// when the system RNG is unavailable.
+func fallbackSuffix(email string, now time.Time) (suffix [6]byte) {
+	h := sha256.Sum256([]byte(email + now.String()))
+	copy(suffix[:], h[:6])
+	return suffix
 }
 
 // inSavepoint runs fn inside a nested transaction (a SAVEPOINT). A failed

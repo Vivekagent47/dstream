@@ -39,7 +39,7 @@ func listenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "listen",
 		Short: "Forward events from a source to a local URL via WebSocket tunnel",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			apiKey := os.Getenv("DSTREAM_API_KEY")
 			if apiKey == "" {
 				return errors.New("DSTREAM_API_KEY env var required")
@@ -58,7 +58,7 @@ func listenCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "→ tunneling source %s to %s\n", sourceID, forwardFlag)
+			fmt.Fprintf(cmd.ErrOrStderr(), "→ tunneling source %s to %s\n", sourceID, forwardFlag)
 
 			wsURL, err := buildWSURL(base, sourceID)
 			if err != nil {
@@ -96,7 +96,10 @@ func resolveSource(base, apiKey, ref string) (string, error) {
 	if isUUID(ref) {
 		return ref, nil
 	}
-	req, _ := http.NewRequest("GET", base+"/api/cli/sources", nil)
+	req, err := http.NewRequest("GET", base+"/api/cli/sources", nil)
+	if err != nil {
+		return "", fmt.Errorf("build request for %s: %w", base, err)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -142,12 +145,16 @@ func buildWSURL(base, sourceID string) (string, error) {
 }
 
 type tunnelEvent struct {
-	Type    string              `json:"type"`
-	EventID string              `json:"event_id,omitempty"`
-	Method  string              `json:"method,omitempty"`
-	Path    string              `json:"path,omitempty"`
-	Headers map[string][]string `json:"headers,omitempty"`
-	Body    []byte              `json:"body,omitempty"`
+	Type string `json:"type"`
+	// SourceID arrives on the "hello" frame only; the server identifies the
+	// attached source there and sends no event_id, so printing EventID on
+	// hello showed an empty string.
+	SourceID string              `json:"source_id,omitempty"`
+	EventID  string              `json:"event_id,omitempty"`
+	Method   string              `json:"method,omitempty"`
+	Path     string              `json:"path,omitempty"`
+	Headers  map[string][]string `json:"headers,omitempty"`
+	Body     []byte              `json:"body,omitempty"`
 }
 
 type tunnelResponse struct {
@@ -181,7 +188,7 @@ func runTunnel(ctx context.Context, wsURL, apiKey, forwardURL string) error {
 		}
 		switch ev.Type {
 		case "hello":
-			fmt.Fprintf(os.Stderr, "  hello: %s\n", ev.EventID)
+			fmt.Fprintf(os.Stderr, "  hello: source %s\n", ev.SourceID)
 			continue
 		case "ping":
 			continue
@@ -239,7 +246,10 @@ func cliAuth(baseFlag string) (apiKey, base string, err error) {
 
 // cliGetJSON does an authed GET and decodes the JSON body into out.
 func cliGetJSON(url, apiKey string, out any) error {
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -261,7 +271,10 @@ func cliPostJSON(url, apiKey string, in any, out any) error {
 	if err != nil {
 		return err
 	}
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -343,7 +356,7 @@ func fixturesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fixtures",
 		Short: "List saved webhook fixtures (bookmarks)",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			apiKey, base, err := cliAuth(baseURLFlag)
 			if err != nil {
 				return err
@@ -353,12 +366,12 @@ func fixturesCmd() *cobra.Command {
 				return err
 			}
 			if len(fixtures) == 0 {
-				fmt.Println("no fixtures")
+				fmt.Fprintln(cmd.OutOrStdout(), "no fixtures")
 				return nil
 			}
-			fmt.Printf("%-28s %-8s %-38s %s\n", "NAME", "METHOD", "SOURCE", "TAGS")
+			fmt.Fprintf(cmd.OutOrStdout(), "%-28s %-8s %-38s %s\n", "NAME", "METHOD", "SOURCE", "TAGS")
 			for _, f := range fixtures {
-				fmt.Printf("%-28s %-8s %-38s %s\n", truncateStr(f.Name, 28), f.HTTPMethod, f.SourceID, strings.Join(f.Tags, ","))
+				fmt.Fprintf(cmd.OutOrStdout(), "%-28s %-8s %-38s %s\n", truncateStr(f.Name, 28), f.HTTPMethod, f.SourceID, strings.Join(f.Tags, ","))
 			}
 			return nil
 		},
@@ -410,7 +423,7 @@ func replayCmd() *cobra.Command {
 		Use:   "replay <fixture-name-or-id>",
 		Short: "Replay a saved fixture to a local URL",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			apiKey, base, err := cliAuth(baseURLFlag)
 			if err != nil {
 				return err
@@ -426,10 +439,10 @@ func replayCmd() *cobra.Command {
 			for i := 0; i < count; i++ {
 				status, dur, body, err := forwardExport(exp, forwardFlag)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "replay %d/%d: %v\n", i+1, count, err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "replay %d/%d: %v\n", i+1, count, err)
 					continue
 				}
-				fmt.Printf("%d/%d  %d  %dms  %s\n", i+1, count, status, dur.Milliseconds(), truncateStr(body, 200))
+				fmt.Fprintf(cmd.OutOrStdout(), "%d/%d  %d  %dms  %s\n", i+1, count, status, dur.Milliseconds(), truncateStr(body, 200))
 			}
 			return nil
 		},
@@ -447,7 +460,7 @@ func importCmd() *cobra.Command {
 		Use:   "import <file.json>",
 		Short: "Import an exported fixture JSON as a bookmark",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			apiKey, base, err := cliAuth(baseURLFlag)
 			if err != nil {
 				return err
@@ -496,7 +509,7 @@ func importCmd() *cobra.Command {
 			if err := cliPostJSON(base+"/api/bookmarks/import", apiKey, reqBody, &created); err != nil {
 				return err
 			}
-			fmt.Printf("imported fixture %q (id %s)\n", created.Name, created.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "imported fixture %q (id %s)\n", created.Name, created.ID)
 			return nil
 		},
 	}
@@ -557,7 +570,7 @@ func scenarioRunCmd() *cobra.Command {
 		Use:   "run <scenario-name-or-id>",
 		Short: "Run a saved scenario, forwarding each step's fixture in order",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			apiKey, base, err := cliAuth(baseURLFlag)
 			if err != nil {
 				return err
@@ -576,15 +589,15 @@ func scenarioRunCmd() *cobra.Command {
 				}
 				var exp cliExport
 				if err := cliGetJSON(base+"/api/bookmarks/"+step.BookmarkID+"/export", apiKey, &exp); err != nil {
-					fmt.Fprintf(os.Stderr, "step %d %s: %v\n", step.Position, step.BookmarkName, err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "step %d %s: %v\n", step.Position, step.BookmarkName, err)
 					return err
 				}
 				status, dur, _, err := forwardExport(exp, forwardFlag)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "step %d %s: %v\n", step.Position, step.BookmarkName, err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "step %d %s: %v\n", step.Position, step.BookmarkName, err)
 					return err
 				}
-				fmt.Printf("step %d %s: %d %dms\n", step.Position, step.BookmarkName, status, dur.Milliseconds())
+				fmt.Fprintf(cmd.OutOrStdout(), "step %d %s: %d %dms\n", step.Position, step.BookmarkName, status, dur.Milliseconds())
 			}
 			return nil
 		},

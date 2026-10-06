@@ -514,8 +514,11 @@ func (h *Handler) dispatchToCLI(ctx context.Context, row store.GetEventForDelive
 
 // RunReaper periodically re-queues stuck events until ctx is cancelled. Run one
 // per worker process; ClaimStuckEvents is safe across replicas.
-func (h *Handler) RunReaper(ctx context.Context) {
-	t := time.NewTicker(reapInterval)
+func (h *Handler) RunReaper(ctx context.Context) { h.runReaper(ctx, reapInterval) }
+
+// runReaper is RunReaper with an injectable sweep interval (tests shorten it).
+func (h *Handler) runReaper(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {

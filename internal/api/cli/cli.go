@@ -25,6 +25,8 @@ import (
 const (
 	cliSessionTTL = 30 * time.Second
 	cliPingEvery  = 10 * time.Second
+	// cliResponseTimeout is how long an event waits for the CLI's response frame.
+	cliResponseTimeout = 35 * time.Second
 	// cliReadLimit caps a single inbound WS frame (CLI response). Matches the
 	// 1 MiB attempt-body cap; without it the library's 32 KiB default tears the
 	// whole tunnel down on a larger local response.
@@ -185,7 +187,7 @@ func (d Handlers) Connect(w http.ResponseWriter, r *http.Request) {
 				d.Log.Error("cli goroutine panic", "goroutine", "ping", "panic", rec)
 			}
 		}()
-		t := time.NewTicker(cliPingEvery)
+		t := time.NewTicker(d.pingInterval())
 		defer t.Stop()
 		for {
 			select {
@@ -328,7 +330,7 @@ func (d Handlers) dispatchEventToCLI(
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(35 * time.Second):
+	case <-time.After(d.responseTimeout()):
 		d.recordCLIFailure(ctx, destID, connID, row.ID, row.AttemptCount+1, fmt.Errorf("cli response timeout"))
 		return
 	case resp := <-ch:

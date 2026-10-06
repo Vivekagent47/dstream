@@ -5,6 +5,7 @@ package cli
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -20,4 +21,23 @@ type Handlers struct {
 	// PublicBaseURL is the externally-visible scheme://host[:port] for the
 	// service, echoed to the CLI for constructing ingest URLs.
 	PublicBaseURL string
+
+	// Test seams; zero means the production default (cliPingEvery,
+	// cliResponseTimeout).
+	pingEvery   time.Duration
+	respTimeout time.Duration
+}
+
+func (d Handlers) pingInterval() time.Duration {
+	if d.pingEvery > 0 {
+		return d.pingEvery
+	}
+	return cliPingEvery
+}
+
+func (d Handlers) responseTimeout() time.Duration {
+	if d.respTimeout > 0 {
+		return d.respTimeout
+	}
+	return cliResponseTimeout
 }

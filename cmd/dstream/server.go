@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -76,202 +78,239 @@ func serverCmd() *cobra.Command {
 				return err
 			}
 			log := logging.New(cfg.LogLevel, cfg.LogFormat)
-			log.Info("starting server", "addr", cfg.HTTPAddr, "version", version)
-			// The redirect URI must match what is registered at the IdP, and a
-			// mismatch is the most common OIDC setup failure — this log line is
-			// the only way an operator discovers the exact value to register.
-			if cfg.OIDC.Enabled() {
-				log.Info("sso enabled",
-					"issuer", cfg.OIDC.Issuer,
-					"redirect_uri", strings.TrimRight(cfg.PublicBaseURL, "/")+"/api/auth/sso/callback",
-					"enforce", cfg.OIDC.Enforce)
-			}
-
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			tshutdown, err := tracing.Init(ctx, tracing.Config{
-				Enabled:      cfg.Tracing.Enabled,
-				OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
-				ServiceName:  cfg.Tracing.ServiceName,
-				SampleRatio:  cfg.Tracing.SampleRatio,
-			})
+			srv, cleanup, err := buildServer(ctx, cfg, log)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = tshutdown(context.Background()) }()
-			if cfg.Tracing.Enabled {
-				log.Info("tracing enabled", "otlp_endpoint", cfg.Tracing.OTLPEndpoint, "sample_ratio", cfg.Tracing.SampleRatio)
-			}
+			defer cleanup()
 
-			pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
+			ln, err := net.Listen("tcp", srv.Addr)
 			if err != nil {
 				return err
 			}
-			defer pool.Close()
-			q := store.New(pool)
-			metrics.Reg.MustRegister(metrics.NewCollector(q, log))
-
-			rdb := redis.NewClient(&redis.Options{
-				Addr:     cfg.Redis.Addr,
-				Password: cfg.Redis.Password,
-				DB:       cfg.Redis.DB,
-			})
-			defer rdb.Close()
-
-			dq := dqueue.NewClient(rdb)
-
-			signer := &auth.SessionSigner{
-				Secret: []byte(cfg.SessionSecret),
-				Secure: cfg.CookieSecure,
-			}
-			portalSigner := &auth.PortalSigner{
-				Secret: []byte(cfg.SessionSecret),
-				TTL:    cfg.PortalTokenTTL,
-			}
-			bodyStore := ingest.NewPostgresBodyStore(q)
-
-			realIP, err := mw.TrustedRealIP(cfg.TrustedProxies)
-			if err != nil {
-				return err
-			}
-
-			r := chi.NewRouter()
-			r.Use(middleware.RequestID)
-			r.Use(realIP)
-			r.Use(metrics.HTTPMiddleware)
-			r.Use(middleware.Recoverer)
-			// 30s deadline applies to every request EXCEPT long-lived
-			// websockets — those handlers detach from r.Context() onto a
-			// fresh background context (see internal/api/cli.go).
-			r.Use(middleware.Timeout(30 * time.Second))
-
-			r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("ok"))
-			})
-			r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("ready"))
-			})
-			r.With(auth.SuperAdminOnly(q, signer)).Handle("/metrics", metrics.Handler())
-
-			// One gate for both enforcement points, so ingest and publish read
-			// a single cached copy of every org's limits. Loaded once here so
-			// the first requests after a restart are not treated as unlimited;
-			// a failure only logs, because the gate serves "unlimited" until a
-			// reload lands and quota enforcement is not worth failing a boot
-			// over.
-			quota := &usage.Gate{Log: log, Queries: q, Redis: rdb, Queue: dq}
-			if err := quota.Reload(ctx); err != nil {
-				log.Warn("usage: initial quota limits load failed", "err", err)
-			}
-
-			ih := &ingest.Handler{
-				Log:            log,
-				Queries:        q,
-				Redis:          rdb,
-				Queue:          dq,
-				BodyStore:      bodyStore,
-				Limiter:        redis_rate.NewLimiter(rdb),
-				RateLimitRPS:   cfg.IngestRateLimitRPS,
-				RateLimitBurst: cfg.IngestRateLimitBurst,
-				MaxWebhookHops: cfg.MaxWebhookHops,
-				Quota:          quota,
-			}
-			ih.Mount(r)
-
-			// Discovery runs once, here: a wrong issuer or an unreachable IdP
-			// fails the boot instead of every login. The redirect URL is the
-			// same expression the "sso enabled" log line above prints, because
-			// that printed value is what the operator registers at the IdP.
-			var ssoAuth auth.Authenticator
-			if cfg.OIDC.Enabled() {
-				// Bounded, because this call sits before ListenAndServe: an IdP
-				// that accepts the TCP connection and never answers (a WAF, an
-				// overloaded proxy) would otherwise hang the boot forever with
-				// nothing bound — no /healthz, no ingest, no dashboard — so an
-				// IdP incident would read as "dstream is down" rather than
-				// "SSO is broken".
-				dctx, dcancel := context.WithTimeout(ctx, 10*time.Second)
-				defer dcancel()
-				a, err := auth.NewOIDCAuthenticator(dctx, cfg.OIDC.Issuer,
-					cfg.OIDC.ClientID, cfg.OIDC.ClientSecret,
-					strings.TrimRight(cfg.PublicBaseURL, "/")+"/api/auth/sso/callback",
-					cfg.OIDC.Scopes)
-				if err != nil {
-					// The wrapped error already names the issuer; this adds the
-					// two things an operator has to check.
-					return fmt.Errorf("sso discovery failed; check DSTREAM_OIDC_ISSUER and IdP reachability: %w", err)
-				}
-				ssoAuth = a
-			}
-
-			api.Mount(r, api.Deps{
-				Log:                      log,
-				Queries:                  q,
-				Pool:                     pool,
-				Redis:                    rdb,
-				Queue:                    dq,
-				BodyStore:                bodyStore,
-				Signer:                   signer,
-				PublicBaseURL:            cfg.PublicBaseURL,
-				AppBaseURL:               cfg.AppBaseURL,
-				EvictSourceCache:         ih.InvalidateSource,
-				SelfHosts:                cfg.SelfHosts,
-				SecretGrace:              cfg.WebhookSecretGrace,
-				Portal:                   portalSigner,
-				AllowPrivateDestinations: cfg.AllowPrivateDestinations,
-				Authenticator:            ssoAuth,
-				OIDC:                     cfg.OIDC,
-				Quota:                    quota,
-			}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
-
-			admin.Mount(r, admin.Deps{
-				Log:     log,
-				Queries: q,
-				Redis:   rdb,
-				Signer:  signer,
-				Queue:   dq,
-				Pool:    pool,
-				Version: version,
-			})
-
-			srv := &http.Server{
-				Addr:    cfg.HTTPAddr,
-				Handler: otelhttp.NewHandler(r, "http.server"),
-				// ReadHeaderTimeout guards the header phase; ReadTimeout caps the
-				// whole request read (headers + body) so a slow-loris trickling a
-				// sub-5MiB body 1 B/s can't tie up a goroutine/FD indefinitely —
-				// middleware.Timeout(30s) only cancels ctx, it can't interrupt the
-				// socket read. 60s comfortably covers a legit 5 MiB body upload.
-				// No WriteTimeout: the CLI tunnel is a long-lived WebSocket served
-				// through this same server (otelhttp-wrapped chi router), and a
-				// WriteTimeout would abort its writes and kill the tunnel; ReadTimeout
-				// does not affect an already-upgraded connection's writes.
-				ReadHeaderTimeout: 10 * time.Second,
-				ReadTimeout:       60 * time.Second,
-			}
-
-			errCh := make(chan error, 1)
-			go func() {
-				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					errCh <- err
-				}
-			}()
-
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-			select {
-			case err := <-errCh:
-				return err
-			case <-sigCh:
-				log.Info("shutting down server")
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer shutdownCancel()
-				return srv.Shutdown(shutdownCtx)
-			}
+			return serveUntil(srv, ln, log, sigCh)
 		},
 	}
+}
+
+// serveUntil serves srv on ln until Serve fails or a value arrives on stop,
+// then shuts the server down gracefully.
+func serveUntil(srv *http.Server, ln net.Listener, log *slog.Logger, stop <-chan os.Signal) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-stop:
+		log.Info("shutting down server")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer shutdownCancel()
+		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// buildServer wires every dependency (tracing, pool, redis, router) and returns
+// the configured http.Server plus a cleanup that releases them. ctx scopes the
+// long-lived dependencies; cleanup must run after the server has stopped.
+func buildServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*http.Server, func(), error) {
+	var cleanups []func()
+	cleanup := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			cleanup()
+		}
+	}()
+	log.Info("starting server", "addr", cfg.HTTPAddr, "version", version)
+	// The redirect URI must match what is registered at the IdP, and a
+	// mismatch is the most common OIDC setup failure — this log line is
+	// the only way an operator discovers the exact value to register.
+	if cfg.OIDC.Enabled() {
+		log.Info("sso enabled",
+			"issuer", cfg.OIDC.Issuer,
+			"redirect_uri", strings.TrimRight(cfg.PublicBaseURL, "/")+"/api/auth/sso/callback",
+			"enforce", cfg.OIDC.Enforce)
+	}
+
+	tshutdown, err := tracing.Init(ctx, tracing.Config{
+		Enabled:      cfg.Tracing.Enabled,
+		OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
+		ServiceName:  cfg.Tracing.ServiceName,
+		SampleRatio:  cfg.Tracing.SampleRatio,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanups = append(cleanups, func() { _ = tshutdown(context.Background()) })
+	if cfg.Tracing.Enabled {
+		log.Info("tracing enabled", "otlp_endpoint", cfg.Tracing.OTLPEndpoint, "sample_ratio", cfg.Tracing.SampleRatio)
+	}
+
+	pool, err := store.NewPool(ctx, cfg.DB.URL, cfg.DB.MaxConns)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanups = append(cleanups, pool.Close)
+	q := store.New(pool)
+	collector := metrics.NewCollector(q, log)
+	metrics.Reg.MustRegister(collector)
+	cleanups = append(cleanups, func() { metrics.Reg.Unregister(collector) })
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	})
+	cleanups = append(cleanups, func() { _ = rdb.Close() })
+
+	dq := dqueue.NewClient(rdb)
+
+	signer := &auth.SessionSigner{
+		Secret: []byte(cfg.SessionSecret),
+		Secure: cfg.CookieSecure,
+	}
+	portalSigner := &auth.PortalSigner{
+		Secret: []byte(cfg.SessionSecret),
+		TTL:    cfg.PortalTokenTTL,
+	}
+	bodyStore := ingest.NewPostgresBodyStore(q)
+
+	realIP, err := mw.TrustedRealIP(cfg.TrustedProxies)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(realIP)
+	r.Use(metrics.HTTPMiddleware)
+	r.Use(middleware.Recoverer)
+	// 30s deadline applies to every request EXCEPT long-lived
+	// websockets — those handlers detach from r.Context() onto a
+	// fresh background context (see internal/api/cli.go).
+	r.Use(middleware.Timeout(30 * time.Second))
+
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+	r.With(auth.SuperAdminOnly(q, signer)).Handle("/metrics", metrics.Handler())
+
+	// One gate for both enforcement points, so ingest and publish read
+	// a single cached copy of every org's limits. Loaded once here so
+	// the first requests after a restart are not treated as unlimited;
+	// a failure only logs, because the gate serves "unlimited" until a
+	// reload lands and quota enforcement is not worth failing a boot
+	// over.
+	quota := &usage.Gate{Log: log, Queries: q, Redis: rdb, Queue: dq}
+	if err := quota.Reload(ctx); err != nil {
+		log.Warn("usage: initial quota limits load failed", "err", err)
+	}
+
+	ih := &ingest.Handler{
+		Log:            log,
+		Queries:        q,
+		Redis:          rdb,
+		Queue:          dq,
+		BodyStore:      bodyStore,
+		Limiter:        redis_rate.NewLimiter(rdb),
+		RateLimitRPS:   cfg.IngestRateLimitRPS,
+		RateLimitBurst: cfg.IngestRateLimitBurst,
+		MaxWebhookHops: cfg.MaxWebhookHops,
+		Quota:          quota,
+	}
+	ih.Mount(r)
+
+	// Discovery runs once, here: a wrong issuer or an unreachable IdP
+	// fails the boot instead of every login. The redirect URL is the
+	// same expression the "sso enabled" log line above prints, because
+	// that printed value is what the operator registers at the IdP.
+	var ssoAuth auth.Authenticator
+	if cfg.OIDC.Enabled() {
+		// Bounded, because this call sits before net.Listen/Serve: an IdP
+		// that accepts the TCP connection and never answers (a WAF, an
+		// overloaded proxy) would otherwise hang the boot forever with
+		// nothing bound — no /healthz, no ingest, no dashboard — so an
+		// IdP incident would read as "dstream is down" rather than
+		// "SSO is broken".
+		dctx, dcancel := context.WithTimeout(ctx, 10*time.Second)
+		cleanups = append(cleanups, dcancel)
+		a, err := auth.NewOIDCAuthenticator(dctx, cfg.OIDC.Issuer,
+			cfg.OIDC.ClientID, cfg.OIDC.ClientSecret,
+			strings.TrimRight(cfg.PublicBaseURL, "/")+"/api/auth/sso/callback",
+			cfg.OIDC.Scopes)
+		if err != nil {
+			// The wrapped error already names the issuer; this adds the
+			// two things an operator has to check.
+			return nil, nil, fmt.Errorf("sso discovery failed; check DSTREAM_OIDC_ISSUER and IdP reachability: %w", err)
+		}
+		ssoAuth = a
+	}
+
+	api.Mount(r, api.Deps{
+		Log:                      log,
+		Queries:                  q,
+		Pool:                     pool,
+		Redis:                    rdb,
+		Queue:                    dq,
+		BodyStore:                bodyStore,
+		Signer:                   signer,
+		PublicBaseURL:            cfg.PublicBaseURL,
+		AppBaseURL:               cfg.AppBaseURL,
+		EvictSourceCache:         ih.InvalidateSource,
+		SelfHosts:                cfg.SelfHosts,
+		SecretGrace:              cfg.WebhookSecretGrace,
+		Portal:                   portalSigner,
+		AllowPrivateDestinations: cfg.AllowPrivateDestinations,
+		Authenticator:            ssoAuth,
+		OIDC:                     cfg.OIDC,
+		Quota:                    quota,
+	}, mw.CSRF(cfg.CookieSecure, []byte(cfg.SessionSecret)))
+
+	admin.Mount(r, admin.Deps{
+		Log:     log,
+		Queries: q,
+		Redis:   rdb,
+		Signer:  signer,
+		Queue:   dq,
+		Pool:    pool,
+		Version: version,
+	})
+
+	srv := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: otelhttp.NewHandler(r, "http.server"),
+		// ReadHeaderTimeout guards the header phase; ReadTimeout caps the
+		// whole request read (headers + body) so a slow-loris trickling a
+		// sub-5MiB body 1 B/s can't tie up a goroutine/FD indefinitely —
+		// middleware.Timeout(30s) only cancels ctx, it can't interrupt the
+		// socket read. 60s comfortably covers a legit 5 MiB body upload.
+		// No WriteTimeout: the CLI tunnel is a long-lived WebSocket served
+		// through this same server (otelhttp-wrapped chi router), and a
+		// WriteTimeout would abort its writes and kill the tunnel; ReadTimeout
+		// does not affect an already-upgraded connection's writes.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+	}
+
+	ok = true
+	return srv, cleanup, nil
 }

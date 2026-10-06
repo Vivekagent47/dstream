@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Vivekagent47/dstream/internal/store"
@@ -78,22 +80,20 @@ func TestCaptureHeadersRedactsCredentials(t *testing.T) {
 	}
 }
 
-// noRowsDBTX is a store.DBTX whose QueryRow always scans to pgx.ErrNoRows
-// (unknown token), counting how many times the DB was actually hit.
-type noRowsDBTX struct{ queryRows int }
-
-func (d *noRowsDBTX) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	panic("unused")
-}
-func (d *noRowsDBTX) Query(context.Context, string, ...any) (pgx.Rows, error) { panic("unused") }
-func (d *noRowsDBTX) QueryRow(context.Context, string, ...any) pgx.Row {
-	d.queryRows++
-	return noRow{}
+// countTracer counts statements whose SQL contains marker, on a REAL pool, so
+// the negative-cache test can assert how often Postgres was actually asked.
+type countTracer struct {
+	marker string
+	n      *atomic.Int64
 }
 
-type noRow struct{}
-
-func (noRow) Scan(...any) error { return pgx.ErrNoRows }
+func (c countTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(strings.ToLower(d.SQL), c.marker) {
+		c.n.Add(1)
+	}
+	return ctx
+}
+func (countTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // TestResolveSourceNegativeCache covers audit #12: an unknown ingest token must
 // be negative-cached so a flood of the same bad token collapses to one DB hit
@@ -101,9 +101,27 @@ func (noRow) Scan(...any) error { return pgx.ErrNoRows }
 // Once the negative entry expires, the token is re-queried (so a source created
 // after a bad-token probe becomes reachable again).
 func TestResolveSourceNegativeCache(t *testing.T) {
-	db := &noRowsDBTX{}
-	h := &Handler{Queries: store.New(db)}
-	const tok = "bad-token"
+	dsn := os.Getenv("DSTREAM_TEST_DB_URL")
+	if dsn == "" {
+		t.Skip("DSTREAM_TEST_DB_URL not set")
+	}
+	var hits atomic.Int64
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.MaxConns = 2
+	// The ingest-token lookup is the only statement mentioning ingest_token in
+	// its WHERE clause; count exactly that one.
+	cfg.ConnConfig.Tracer = countTracer{marker: "ingest_token = $1", n: &hits}
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	h := &Handler{Queries: store.New(pool)}
+	// Unique, so no source can possibly own it: a real Postgres no-rows.
+	tok := "bad-token-" + uuid.NewString()
 
 	// A flood of the same unknown token: every call returns ErrSourceNotFound,
 	// but only the first touches Postgres — the rest are negative-cache hits.
@@ -112,8 +130,8 @@ func TestResolveSourceNegativeCache(t *testing.T) {
 			t.Fatalf("resolveSource #%d: err=%v, want ErrSourceNotFound", i, err)
 		}
 	}
-	if db.queryRows != 1 {
-		t.Fatalf("bad-token flood hit DB %d times, want 1 (negative cache)", db.queryRows)
+	if hits.Load() != 1 {
+		t.Fatalf("bad-token flood hit DB %d times, want 1 (negative cache)", hits.Load())
 	}
 
 	// Force-expire the negative entry: the next lookup must re-hit the DB, so a
@@ -126,8 +144,8 @@ func TestResolveSourceNegativeCache(t *testing.T) {
 	if _, _, err := h.resolveSource(context.Background(), tok); !errors.Is(err, ErrSourceNotFound) {
 		t.Fatalf("post-expiry resolveSource: err=%v, want ErrSourceNotFound", err)
 	}
-	if db.queryRows != 2 {
-		t.Fatalf("post-expiry DB hits = %d, want 2 (expired negative entry re-queries)", db.queryRows)
+	if hits.Load() != 2 {
+		t.Fatalf("post-expiry DB hits = %d, want 2 (expired negative entry re-queries)", hits.Load())
 	}
 }
 
