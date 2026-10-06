@@ -97,10 +97,10 @@ cover:
 	   | sed -e 's/^/  /'; \
 	 if [ $$status -ne 0 ]; then printf '\n  tests failed — coverage not computed\n\n'; exit $$status; fi
 	@grep -vE '\.sql\.go:|internal/store/(models|db|querier)\.go:' cover.out > cover.real.out
-	@printf '\n  %s\n' '--------------------------------------------------------------'
-	@$(MAKE) --no-print-directory cover-report | head -12
-	@printf '  %s\n' '--------------------------------------------------------------'
-	@$(MAKE) --no-print-directory cover-files | awk 'NR <= 15 { print } END { if (NR > 15) printf "  ... %d more files with gaps (make cover-files)\n", NR - 15 }'
+	@printf '\n  BY PACKAGE (lowest first; full list: make cover-report)\n\n'
+	@$(MAKE) --no-print-directory cover-report | awk 'NR <= 12 { print "  " $$0 } END { if (NR > 12) printf "  ... %d more packages, all above these (make cover-report)\n", NR - 12 }'
+	@printf '\n  BY FILE (lowest first; every file: make cover-files)\n\n'
+	@$(MAKE) --no-print-directory cover-files | awk 'NR <= 15 { print "  " $$0 } END { if (NR > 15) printf "  ... %d more files, all above these (make cover-files)\n", NR - 15 }'
 	@printf '  %s\n' '--------------------------------------------------------------'
 	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
 	      END { \
@@ -130,13 +130,15 @@ cover-report:
 	          total[pkg] += n[k]; if (c[k] == 0) uncovered[pkg] += n[k] \
 	        } \
 	        for (p in total) \
-	          printf "%6d uncovered  %6d total  %5.1f%%  %s\n", \
-	            uncovered[p], total[p], 100 * (total[p] - uncovered[p]) / total[p], p \
-	      }' cover.real.out | sort -rn
+	          printf "%6.1f%%  %6d of %-6d covered  %6d uncovered  %s\n", \
+	            100 * (total[p] - uncovered[p]) / total[p], \
+	            total[p] - uncovered[p], total[p], uncovered[p], p \
+	      }' cover.real.out | sort -k1,1n -k4,4rn
 
-# Per-file coverage from the last `make cover` run, worst first. Only files
-# with a gap are listed: a hundred "0 uncovered" lines bury the handful that
-# need work. Same block dedupe as cover-report, for the same reason.
+# Per-file coverage from the last `make cover` run: EVERY file, worst first,
+# fully-covered ones last. Same block dedupe as cover-report, for the same
+# reason. `make cover` prints only the worst few of these inline; this target
+# is the full list.
 cover-files:
 	@test -f cover.real.out || (echo "no profile — run: make cover"; exit 1)
 	@awk 'NR > 1 { n[$$1] = $$2; if ($$3 + 0 > c[$$1] + 0) c[$$1] = $$3 + 0 } \
@@ -147,10 +149,10 @@ cover-files:
 	          total[f] += n[k]; if (c[k] == 0) uncovered[f] += n[k] \
 	        } \
 	        for (q in total) \
-	          if (uncovered[q] > 0) \
-	            printf "%6d uncovered  %6d total  %5.1f%%  %s\n", \
-	              uncovered[q], total[q], 100 * (total[q] - uncovered[q]) / total[q], q \
-	      }' cover.real.out | sort -rn
+	          printf "%6.1f%%  %6d of %-6d covered  %6d uncovered  %s\n", \
+	            100 * (total[q] - uncovered[q]) / total[q], \
+	            total[q] - uncovered[q], total[q], uncovered[q], q \
+	      }' cover.real.out | sort -k1,1n -k4,4rn
 
 lint:
 	go vet $(GO_PKGS)
