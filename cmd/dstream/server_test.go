@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -12,15 +14,19 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 
 	"github.com/Vivekagent47/dstream/internal/auth"
 	"github.com/Vivekagent47/dstream/internal/config"
+	mw "github.com/Vivekagent47/dstream/internal/middleware"
 	"github.com/Vivekagent47/dstream/internal/store"
 )
 
@@ -420,5 +426,307 @@ func TestBuildServer_QuotaLoadFailureOnlyWarns(t *testing.T) {
 	out := logs.String()
 	if !strings.Contains(out, "usage: initial quota limits load failed") || !strings.Contains(out, `column \"quota_period\" does not exist`) {
 		t.Errorf("no quota-load warning with its cause:\n%s", out)
+	}
+}
+
+// --- security controls are installed by the production bootstrap ---
+//
+// Each control below is unit-tested where it lives. These tests prove the
+// composition root actually installs it: drop the wiring line in buildServer
+// or api.Mount and the matching test fails.
+
+// wired is a real buildServer behind httptest, plus an org with an owner
+// session and one ingest source.
+type wired struct {
+	t       *testing.T
+	url     string
+	pool    *pgxpool.Pool
+	orgID   uuid.UUID
+	srcID   uuid.UUID
+	token   string // ingest token
+	session *http.Cookie
+	csrf    string
+}
+
+// newWired seeds the org (with the given hard quotas, 0 = unlimited) BEFORE
+// building the server, because the quota gate loads its limits at boot.
+func newWired(t *testing.T, cfg config.Config, eventsHard, messagesHard int64) *wired {
+	t.Helper()
+	pool := testPool(t)
+	q := store.New(pool)
+	rdb := testRedis(t)
+	cfg.Redis.Addr = rdb.Options().Addr
+	ctx := context.Background()
+
+	user := mustUser(t, q, newEmail(t, pool)) // its cleanup also deletes the org
+	org, err := q.CreateOrganization(ctx, store.CreateOrganizationParams{Name: "wired", Slug: "wired-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("org: %v", err)
+	}
+	if err := q.AddOrgMember(ctx, store.AddOrgMemberParams{OrgID: org.ID, UserID: user.ID, Role: "owner"}); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE organizations SET quota_events_hard = $2, quota_messages_hard = $3 WHERE id = $1`,
+		org.ID, eventsHard, messagesHard); err != nil {
+		t.Fatalf("quotas: %v", err)
+	}
+	src, err := q.CreateSource(ctx, store.CreateSourceParams{
+		OrgID: org.ID, Name: "s-" + uuid.NewString(), Type: "generic",
+		IngestToken: uuid.NewString(), SigningConfig: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("source: %v", err)
+	}
+	w := &wired{t: t, pool: pool, orgID: store.GoUUID(org.ID), srcID: store.GoUUID(src.ID), token: src.IngestToken}
+
+	srv, cleanup, err := buildServer(ctx, cfg, quietLog())
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(cleanup)
+	ts := httptest.NewServer(srv.Handler)
+	t.Cleanup(ts.Close)
+	w.url = ts.URL
+
+	// Registered last, so it runs first: the gate publishes its quota alert off
+	// the request path, and it must land (or time out) before the org is
+	// deleted and the keys swept, or it would recreate them afterwards.
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if count(t, pool, `SELECT count(*) FROM messages WHERE org_id = $1 AND event_type LIKE 'usage.quota_%'`, org.ID) > 0 ||
+				(eventsHard == 0 && messagesHard == 0) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for _, id := range []uuid.UUID{w.orgID, w.srcID} {
+			if keys, _ := rdb.Keys(ctx, "*"+id.String()+"*").Result(); len(keys) > 0 {
+				rdb.Del(ctx, keys...)
+			}
+		}
+	})
+
+	rec := httptest.NewRecorder()
+	(&auth.SessionSigner{Secret: []byte(testSessionSecret)}).Issue(rec, uuid.UUID(user.ID.Bytes), w.orgID, int64(user.SessionEpoch))
+	w.session = rec.Result().Cookies()[0]
+	return w
+}
+
+// send issues a request with the owner session; withCSRF adds the token the
+// SPA would echo, fetched the way the SPA gets it (a GET refreshes the cookie).
+func (w *wired) send(method, path string, body any, withCSRF bool) (int, string) {
+	w.t.Helper()
+	if withCSRF && w.csrf == "" {
+		req, _ := http.NewRequest(http.MethodGet, w.url+"/api/me", nil)
+		req.AddCookie(w.session)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			w.t.Fatal(err)
+		}
+		resp.Body.Close()
+		for _, c := range resp.Cookies() {
+			if c.Name == mw.CSRFCookieName {
+				w.csrf = c.Value
+			}
+		}
+		if w.csrf == "" {
+			w.t.Fatal("GET did not mint a csrf cookie")
+		}
+	}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(method, w.url+path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(w.session)
+	if withCSRF {
+		req.Header.Set(mw.CSRFHeaderName, w.csrf)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		w.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(out)
+}
+
+// ingest POSTs a distinct body (so dedup never short-circuits) to the source.
+func (w *wired) ingest(hdr map[string]string) (int, string) {
+	w.t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, w.url+"/e/"+w.token, strings.NewReader(`{"n":"`+uuid.NewString()+`"}`))
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(out)
+}
+
+func TestBuildServer_CSRFIsInstalled(t *testing.T) {
+	w := newWired(t, serverEnv(t), 0, 0)
+	code, body := w.send(http.MethodPost, "/api/event-types", map[string]any{"name": "e.a"}, false)
+	if code != http.StatusForbidden || strings.TrimSpace(body) != "csrf token mismatch" {
+		t.Fatalf("session POST without a token = %d %q, want 403 \"csrf token mismatch\"", code, body)
+	}
+	if code, body := w.send(http.MethodPost, "/api/event-types", map[string]any{"name": "e.a"}, true); code >= 300 {
+		t.Fatalf("session POST with a valid token = %d %q, want success", code, body)
+	}
+}
+
+// The limiter keys on the address the trusted-proxy middleware resolved from
+// X-Forwarded-For, not on the loopback peer.
+func TestBuildServer_TrustedProxyRewriteReachesTheLimiter(t *testing.T) {
+	cfg := serverEnv(t)
+	cfg.TrustedProxies = []string{"127.0.0.1"}
+	rdb := testRedis(t)
+	cfg.Redis.Addr = rdb.Options().Addr
+	pool := testPool(t)
+	email := newEmail(t, pool) // cleanup also drops any token a failed run minted
+
+	srv, cleanup, err := buildServer(context.Background(), cfg, quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+
+	id := uuid.New()
+	xff := fmt.Sprintf("10.%d.%d.%d", id[0], id[1], id[2])
+	ctx := context.Background()
+	t.Cleanup(func() {
+		for _, pat := range []string{"*" + xff + "*", "*" + email + "*"} {
+			if keys, _ := rdb.Keys(ctx, pat).Result(); len(keys) > 0 {
+				rdb.Del(ctx, keys...)
+			}
+		}
+	})
+	// Spend the forwarded address's whole hourly allowance (30), so the one
+	// real request is refused if, and only if, it is counted against that key.
+	lim := redis_rate.NewLimiter(rdb)
+	for i := 0; i < 30; i++ {
+		if _, err := lim.Allow(ctx, "magic_link:ip:"+xff, redis_rate.PerHour(30)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/auth/magic-link/request", strings.NewReader(`{"email":"`+email+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", xff)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: the limiter did not see the forwarded address %s", resp.StatusCode, xff)
+	}
+}
+
+func TestBuildServer_IngestControlsAreInstalled(t *testing.T) {
+	t.Run("hop limit", func(t *testing.T) {
+		cfg := serverEnv(t)
+		cfg.MaxWebhookHops = 2
+		cfg.IngestRateLimitRPS = 0
+		w := newWired(t, cfg, 0, 0)
+		if code, body := w.ingest(map[string]string{"Dstream-Webhook-Hops": "1"}); code >= 300 {
+			t.Fatalf("below the limit = %d %q, want success", code, body)
+		}
+		if code, body := w.ingest(map[string]string{"Dstream-Webhook-Hops": "2"}); code != http.StatusForbidden || !strings.Contains(body, "loop detected") {
+			t.Fatalf("at the limit = %d %q, want 403 loop detected", code, body)
+		}
+	})
+	t.Run("rate limit", func(t *testing.T) {
+		cfg := serverEnv(t)
+		cfg.IngestRateLimitRPS = 1
+		cfg.IngestRateLimitBurst = 1
+		w := newWired(t, cfg, 0, 0)
+		// Burst 1 at 1/s: three back-to-back requests cannot all pass unless
+		// the limiter is missing (each would have to take over a second).
+		limited := false
+		for i := 0; i < 3 && !limited; i++ {
+			code, body := w.ingest(nil)
+			limited = code == http.StatusTooManyRequests && strings.Contains(body, "rate limited")
+		}
+		if !limited {
+			t.Fatal("three back-to-back requests at 1 rps burst 1 were never rate limited")
+		}
+	})
+	t.Run("quota", func(t *testing.T) {
+		cfg := serverEnv(t)
+		cfg.IngestRateLimitRPS = 0
+		w := newWired(t, cfg, 2, 0) // the gate refuses the request that reaches the ceiling
+		if code, body := w.ingest(nil); code >= 300 {
+			t.Fatalf("first = %d %q, want success", code, body)
+		}
+		if code, body := w.ingest(nil); code != http.StatusTooManyRequests || !strings.Contains(body, "quota exceeded") {
+			t.Fatalf("second = %d %q, want 429 quota exceeded", code, body)
+		}
+	})
+}
+
+// The publish gate is wired inside api.Mount, so this reaches it through the
+// real server and the real session + CSRF chain.
+func TestBuildServer_PublishQuotaIsInstalled(t *testing.T) {
+	w := newWired(t, serverEnv(t), 0, 2)
+	if code, body := w.send(http.MethodPost, "/api/event-types", map[string]any{"name": "invoice.paid"}, true); code >= 300 {
+		t.Fatalf("event type = %d %q", code, body)
+	}
+	code, body := w.send(http.MethodPost, "/api/applications", map[string]any{"name": "A"}, true)
+	var app struct {
+		ID string `json:"id"`
+	}
+	if code >= 300 || json.Unmarshal([]byte(body), &app) != nil || app.ID == "" {
+		t.Fatalf("application = %d %q", code, body)
+	}
+	publish := func() (int, string) {
+		return w.send(http.MethodPost, "/api/applications/"+app.ID+"/messages",
+			map[string]any{"event_type": "invoice.paid", "payload": map[string]any{"n": 1}}, true)
+	}
+	if code, body := publish(); code != http.StatusAccepted {
+		t.Fatalf("first publish = %d %q, want 202", code, body)
+	}
+	if code, body := publish(); code != http.StatusTooManyRequests || !strings.Contains(body, "quota exceeded") {
+		t.Fatalf("second publish = %d %q, want 429 quota exceeded", code, body)
+	}
+}
+
+// Deps.AllowPrivateDestinations reaches the bookmark replay-to client: with
+// the opt-in the loopback target is hit, without it the guard refuses.
+func TestBuildServer_PrivateDestinationOptInReachesReplayClient(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allow=%v", allow), func(t *testing.T) {
+			var hits atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				rw.WriteHeader(http.StatusNoContent)
+			}))
+			defer target.Close()
+
+			cfg := serverEnv(t)
+			cfg.IngestRateLimitRPS = 0
+			cfg.AllowPrivateDestinations = allow
+			w := newWired(t, cfg, 0, 0)
+			if code, body := w.ingest(nil); code >= 300 {
+				t.Fatalf("capture = %d %q", code, body)
+			}
+			var bookmarkID uuid.UUID
+			if err := w.pool.QueryRow(context.Background(), `
+WITH r AS (SELECT id FROM requests WHERE source_id = $1 LIMIT 1)
+INSERT INTO bookmarks (org_id, request_id, name) SELECT $2, r.id, 'bm' FROM r RETURNING id`,
+				w.srcID, w.orgID).Scan(&bookmarkID); err != nil {
+				t.Fatalf("bookmark: %v", err)
+			}
+			code, body := w.send(http.MethodPost, "/api/bookmarks/"+bookmarkID.String()+"/replay-to", map[string]any{"url": target.URL}, true)
+			if allow && (code != http.StatusOK || hits.Load() != 1) {
+				t.Fatalf("opt-in: %d %q hits=%d, want 200 and one hit", code, body, hits.Load())
+			}
+			if !allow && (code != http.StatusBadGateway || !strings.Contains(body, "ssrf-guard") || hits.Load() != 0) {
+				t.Fatalf("guarded: %d %q hits=%d, want 502 ssrf-guard and no hit", code, body, hits.Load())
+			}
+		})
 	}
 }

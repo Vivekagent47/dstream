@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/signal"
 	"strings"
@@ -721,5 +724,39 @@ func TestTickFiresAndStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("tick did not return after its context was cancelled")
+	}
+}
+
+// Both outbound HTTP clients the worker builds carry the SSRF guard unless the
+// operator opted out; a loopback target stands in for internal infrastructure.
+func TestBuildWorkerWiresSSRFGuard(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allow=%v", allow), func(t *testing.T) {
+			var hits atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+			}))
+			defer target.Close()
+			cfg := workerCfg(t)
+			cfg.AllowPrivateDestinations = allow
+			w := testWorker(t, cfg)
+			for name, c := range map[string]*http.Client{"inbound deliver": w.h.HTTP, "outbound webhook": w.outbound.HTTP} {
+				before := hits.Load()
+				resp, err := c.Get(target.URL)
+				if resp != nil {
+					resp.Body.Close()
+				}
+				switch {
+				case allow && err != nil:
+					t.Errorf("%s client with the opt-in: %v", name, err)
+				case allow && hits.Load() != before+1:
+					t.Errorf("%s client with the opt-in did not reach the target", name)
+				case !allow && (err == nil || !strings.Contains(err.Error(), "ssrf-guard")):
+					t.Errorf("%s client reached loopback without the opt-in: err=%v", name, err)
+				case !allow && hits.Load() != before:
+					t.Errorf("%s client hit the target through the guard", name)
+				}
+			}
+		})
 	}
 }
