@@ -1,0 +1,16 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dstream.fullname" . }}-postgres
+  labels:
+    {{- include "dstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "dstream.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+  ports:
+  - { name: postgres, port: 5432, targetPort: postgres }
+{{- end }}

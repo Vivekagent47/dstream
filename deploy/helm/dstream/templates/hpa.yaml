@@ -1,0 +1,25 @@
+{{- if .Values.autoscaling.enabled }}
+{{- range $c := list "server" "worker" }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "dstream.fullname" $ }}-{{ $c }}
+  labels:
+    {{- include "dstream.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "dstream.fullname" $ }}-{{ $c }}
+  minReplicas: {{ $.Values.autoscaling.minReplicas }}
+  maxReplicas: {{ $.Values.autoscaling.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ $.Values.autoscaling.targetCPUUtilizationPercentage }}
+---
+{{- end }}
+{{- end }}

@@ -1,0 +1,26 @@
+dstream {{ .Chart.AppVersion }} installed as "{{ .Release.Name }}".
+
+URL:        {{ include "dstream.publicBaseURL" . }}
+Ingest:     {{ include "dstream.publicBaseURL" . }}/e/<source-token>
+
+{{ if .Values.postgresql.enabled -}}
+Postgres:   BUNDLED, single-node, NO HA / NO BACKUPS. Fine for trials;
+            for production set postgresql.enabled=false and point
+            postgresql.url at a managed database.
+{{ else -}}
+Postgres:   external (configured via the DB URL you provided).
+{{ end }}
+{{- if not .Values.secrets.existingSecret }}
+WARNING — generated secrets:
+  session_secret and the bundled Postgres password are generated and
+  reused across upgrades via Helm `lookup`. Under GitOps (ArgoCD) or any
+  client-side render (`helm template`, `--dry-run`), `lookup` returns
+  empty and these REGENERATE — logging every session out and breaking
+  Postgres auth. For GitOps, create a Secret yourself and set
+  `secrets.existingSecret`.
+{{- end }}
+
+Migrations run as a Job. To block the release until it completes (and fail the
+release if it fails), install/upgrade with:  helm upgrade --install --wait --wait-for-jobs
+
+Check status:  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}

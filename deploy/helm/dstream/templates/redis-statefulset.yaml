@@ -1,0 +1,49 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "dstream.fullname" . }}-redis
+  labels:
+    {{- include "dstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ include "dstream.fullname" . }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "dstream.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "dstream.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+      - name: redis
+        image: {{ .Values.redis.image }}
+        args: ["redis-server", "--appendonly", "yes"]
+        ports:
+        - { name: redis, containerPort: 6379 }
+        volumeMounts:
+        - { name: data, mountPath: /data }
+        readinessProbe:
+          exec: { command: ["redis-cli", "ping"] }
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          exec: { command: ["redis-cli", "ping"] }
+          initialDelaySeconds: 10
+          periodSeconds: 15
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      {{- if .Values.redis.storageClass }}
+      storageClassName: {{ .Values.redis.storageClass | quote }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.redis.storage }}
+{{- end }}

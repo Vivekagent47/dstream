@@ -1,0 +1,28 @@
+# Production profile: managed datastores, BYO Secret, generous scale.
+#
+# With secrets.existingSecret set, the chart does NOT render its own Secret,
+# so the SECRET env lives entirely in the Secret you create out of band —
+# postgresql.url below would be ignored. Put the external DSN there as
+# DSTREAM_DB_URL. The Secret must carry:
+#   DSTREAM_SESSION_SECRET, DSTREAM_DB_URL, DSTREAM_REDIS_PASSWORD,
+#   DSTREAM_SMTP_PASS, DSTREAM_OIDC_CLIENT_SECRET
+# redis.addr is non-secret and IS read from here (it flows via the ConfigMap).
+postgresql:
+  enabled: false        # external managed Postgres; DSN goes in the Secret
+redis:
+  enabled: false
+  addr: "your-elasticache-host:6379"   # non-secret, read from here
+
+secrets:
+  existingSecret: "dstream-secret"      # you create this; see header
+
+server:
+  replicas: 3
+worker:
+  replicas: 3
+  perOrgMaxInflight: 20
+
+ingress:
+  host: dstream.yourcompany.com
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod

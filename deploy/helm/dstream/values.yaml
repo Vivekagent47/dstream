@@ -1,0 +1,126 @@
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/vivekagent47/dstream
+  tag: ""                 # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+
+server:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+worker:
+  replicas: 2
+  healthPort: 8081
+  stallTimeout: "60s"
+  concurrency: 50
+  perOrgMaxInflight: 0
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+web:
+  replicas: 2
+  image:
+    repository: ghcr.io/vivekagent47/dstream-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+
+ingress:
+  enabled: true
+  className: nginx
+  host: ""                # REQUIRED when enabled
+  annotations: {}         # e.g. cert-manager.io/cluster-issuer: letsencrypt
+  tls:
+    enabled: true
+    secretName: dstream-tls
+
+# Non-secret DSTREAM_* config. public/app base URLs are derived from
+# ingress.host at render time; override here only to split origins.
+config:
+  logLevel: info
+  logFormat: json
+  publicBaseURL: ""       # defaults to https://{ingress.host}
+  appBaseURL: ""          # defaults to publicBaseURL
+  cookieSecure: ""        # "" = follow ingress.tls.enabled; set false for plain-HTTP
+  ingestRateLimitRPS: 100
+  ingestRateLimitBurst: 200
+  maxWebhookHops: 3
+  webhookSecretGrace: "24h"
+  endpointMaxConsecutiveFailures: 5
+  payloadRetention: "0s"
+  selfHosts: ""
+  # Comma list of proxy IPs/CIDRs to trust for X-Forwarded-For. The web nginx
+  # (and any ingress) sit in front, so without this every client collapses to
+  # the proxy's pod IP and per-IP limits (e.g. magic-link) throttle everyone
+  # together. Defaults to the private ranges; safe because the server is
+  # ClusterIP (only the in-cluster proxy can reach it).
+  trustedProxies: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+  devMode: false
+  allowPrivateDestinations: false
+  oidc:
+    issuer: ""
+    clientId: ""
+    scopes: "openid,email,profile"
+    defaultOrg: ""
+    defaultRole: "member"
+    enforce: false
+  smtp:
+    host: ""
+    port: 587
+    user: ""
+    from: "noreply@localhost"
+  tracing:
+    enabled: false
+    otlpEndpoint: ""
+    sampleRatio: 1.0
+
+secrets:
+  existingSecret: ""      # set to BYO the whole Secret; disables generation
+  sessionSecret: ""       # explicit override; else lookup-generated
+  smtpPass: ""
+  oidcClientSecret: ""
+
+postgresql:
+  enabled: true
+  image: postgres:18-alpine
+  storage: 10Gi
+  storageClass: ""
+  database: dstream
+  username: dstream
+  password: ""            # lookup-generated when empty
+  url: ""                 # used ONLY when enabled=false (external DSN)
+  maxConns: 20
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  storage: 2Gi
+  storageClass: ""
+  addr: ""                # used ONLY when enabled=false
+  password: ""
+  db: 0
+
+migrate:
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+networkPolicy:
+  enabled: false

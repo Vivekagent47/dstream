@@ -1,0 +1,37 @@
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.host }}{{ fail "ingress.host is required when ingress.enabled" }}{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dstream.fullname" . }}
+  labels:
+    {{- include "dstream.labels" . | nindent 4 }}
+  {{- /* ingress-nginx defaults proxy-body-size to 1m, which 413s webhook
+       bodies before they reach the server (5 MiB cap). Default it to match the
+       web nginx; user annotations override. */ -}}
+  {{- $ann := .Values.ingress.annotations | default dict }}
+  {{- if eq .Values.ingress.className "nginx" }}
+  {{- $ann = mergeOverwrite (dict "nginx.ingress.kubernetes.io/proxy-body-size" "25m") $ann }}
+  {{- end }}
+  {{- with $ann }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts: [{{ .Values.ingress.host | quote }}]
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.ingress.host | quote }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "dstream.fullname" . }}-web
+            port: { number: 80 }
+{{- end }}

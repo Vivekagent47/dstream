@@ -1,0 +1,18 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dstream.fullname" . }}
+  labels:
+    {{- include "dstream.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "dstream.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          {{- include "dstream.selectorLabels" . | nindent 10 }}
+{{- end }}

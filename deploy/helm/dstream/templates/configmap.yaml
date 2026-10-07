@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dstream.fullname" . }}-config
+  labels:
+    {{- include "dstream.labels" . | nindent 4 }}
+data:
+  DSTREAM_HTTP_ADDR: ":8080"
+  DSTREAM_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  DSTREAM_LOG_FORMAT: {{ .Values.config.logFormat | quote }}
+  DSTREAM_PUBLIC_BASE_URL: {{ include "dstream.publicBaseURL" . | quote }}
+  DSTREAM_APP_BASE_URL: {{ include "dstream.appBaseURL" . | quote }}
+  DSTREAM_COOKIE_SECURE: {{ include "dstream.cookieSecure" . | quote }}
+  DSTREAM_DB_MAX_CONNS: {{ .Values.postgresql.maxConns | quote }}
+  DSTREAM_REDIS_ADDR: {{ include "dstream.redisAddr" . | quote }}
+  DSTREAM_REDIS_DB: {{ .Values.redis.db | quote }}
+  DSTREAM_INGEST_RATE_LIMIT_RPS: {{ .Values.config.ingestRateLimitRPS | quote }}
+  DSTREAM_INGEST_RATE_LIMIT_BURST: {{ .Values.config.ingestRateLimitBurst | quote }}
+  DSTREAM_MAX_WEBHOOK_HOPS: {{ .Values.config.maxWebhookHops | quote }}
+  DSTREAM_WEBHOOK_SECRET_GRACE: {{ .Values.config.webhookSecretGrace | quote }}
+  DSTREAM_ENDPOINT_MAX_CONSECUTIVE_FAILURES: {{ .Values.config.endpointMaxConsecutiveFailures | quote }}
+  DSTREAM_PAYLOAD_RETENTION: {{ .Values.config.payloadRetention | quote }}
+  DSTREAM_SELF_HOSTS: {{ .Values.config.selfHosts | quote }}
+  DSTREAM_TRUSTED_PROXIES: {{ .Values.config.trustedProxies | quote }}
+  DSTREAM_DEV_MODE: {{ .Values.config.devMode | quote }}
+  DSTREAM_ALLOW_PRIVATE_DESTINATIONS: {{ .Values.config.allowPrivateDestinations | quote }}
+  DSTREAM_WORKER_CONCURRENCY: {{ .Values.worker.concurrency | quote }}
+  DSTREAM_WORKER_PER_ORG_MAX_INFLIGHT: {{ .Values.worker.perOrgMaxInflight | quote }}
+  DSTREAM_WORKER_HEALTH_ADDR: ":{{ .Values.worker.healthPort }}"
+  DSTREAM_WORKER_STALL_TIMEOUT: {{ .Values.worker.stallTimeout | quote }}
+  DSTREAM_OIDC_ISSUER: {{ .Values.config.oidc.issuer | quote }}
+  DSTREAM_OIDC_CLIENT_ID: {{ .Values.config.oidc.clientId | quote }}
+  DSTREAM_OIDC_SCOPES: {{ .Values.config.oidc.scopes | quote }}
+  DSTREAM_OIDC_DEFAULT_ORG: {{ .Values.config.oidc.defaultOrg | quote }}
+  DSTREAM_OIDC_DEFAULT_ROLE: {{ .Values.config.oidc.defaultRole | quote }}
+  DSTREAM_OIDC_ENFORCE: {{ .Values.config.oidc.enforce | quote }}
+  DSTREAM_SMTP_HOST: {{ .Values.config.smtp.host | quote }}
+  DSTREAM_SMTP_PORT: {{ .Values.config.smtp.port | quote }}
+  DSTREAM_SMTP_USER: {{ .Values.config.smtp.user | quote }}
+  DSTREAM_SMTP_FROM: {{ .Values.config.smtp.from | quote }}
+  DSTREAM_TRACING_ENABLED: {{ .Values.config.tracing.enabled | quote }}
+  DSTREAM_TRACING_OTLP_ENDPOINT: {{ .Values.config.tracing.otlpEndpoint | quote }}
+  DSTREAM_TRACING_SAMPLE_RATIO: {{ .Values.config.tracing.sampleRatio | quote }}
