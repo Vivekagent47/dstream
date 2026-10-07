@@ -1,0 +1,33 @@
+# GENERATED from the Helm chart (deploy/helm/dstream) via `helm template`.
+# Do not edit by hand — change the chart and re-run ./deploy/k8s/regen.sh.
+# Placeholders to replace before applying: REPLACE_ME_* and dstream.example.com.
+
+---
+# Source: dstream/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dstream
+  labels:
+    app.kubernetes.io/name: dstream
+    app.kubernetes.io/instance: dstream
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: dstream-0.1.0
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 25m
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts: ["dstream.example.com"]
+    secretName: dstream-tls
+  rules:
+  - host: "dstream.example.com"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: dstream-web
+            port: { number: 80 }
+

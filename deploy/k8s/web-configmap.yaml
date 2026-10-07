@@ -1,0 +1,60 @@
+# GENERATED from the Helm chart (deploy/helm/dstream) via `helm template`.
+# Do not edit by hand — change the chart and re-run ./deploy/k8s/regen.sh.
+# Placeholders to replace before applying: REPLACE_ME_* and dstream.example.com.
+
+---
+# Source: dstream/templates/web-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dstream-web
+  labels:
+    app.kubernetes.io/name: dstream
+    app.kubernetes.io/instance: dstream
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: dstream-0.1.0
+data:
+  default.conf: |
+    # WebSocket upgrade map (http context — conf.d is included inside http{}).
+    # /api/cli/connect is a long-lived WS tunnel (coder/websocket); without
+    # these headers nginx strips Upgrade and the handshake fails.
+    map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+
+    upstream dstream_server { server dstream-server:8080; }
+    server {
+      listen 80;
+      server_name _;
+      # Webhook ingest bodies travel through here; the default 1m would 413
+      # legitimate payloads before they reach the server (server caps at 5 MiB).
+      client_max_body_size 25m;
+      root /usr/share/nginx/html;
+      # TanStack Start SPA mode emits the shell as _shell.html (not index.html).
+      index _shell.html;
+
+      # Default proxy timeouts (server scope); /api/cli/ overrides read below.
+      proxy_read_timeout 60s;
+      proxy_send_timeout 60s;
+
+      # CLI tunnel WebSocket: long read timeout so an idle tunnel is not dropped.
+      location /api/cli/ {
+        proxy_pass http://dstream_server;
+        include /etc/nginx/proxy_common.conf;
+        proxy_read_timeout 3600s;
+      }
+      location /api/   { proxy_pass http://dstream_server; include /etc/nginx/proxy_common.conf; }
+      location /admin/ { proxy_pass http://dstream_server; include /etc/nginx/proxy_common.conf; }
+      location /e/     { proxy_pass http://dstream_server; include /etc/nginx/proxy_common.conf; }
+      location /healthz { proxy_pass http://dstream_server; }
+      location /readyz  { proxy_pass http://dstream_server; }
+
+      location / { try_files $uri $uri/ /_shell.html; }
+    }
+  proxy_common.conf: |
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+

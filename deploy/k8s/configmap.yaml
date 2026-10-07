@@ -1,0 +1,53 @@
+# GENERATED from the Helm chart (deploy/helm/dstream) via `helm template`.
+# Do not edit by hand — change the chart and re-run ./deploy/k8s/regen.sh.
+# Placeholders to replace before applying: REPLACE_ME_* and dstream.example.com.
+
+---
+# Source: dstream/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dstream-config
+  labels:
+    app.kubernetes.io/name: dstream
+    app.kubernetes.io/instance: dstream
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: dstream-0.1.0
+data:
+  DSTREAM_HTTP_ADDR: ":8080"
+  DSTREAM_LOG_LEVEL: "info"
+  DSTREAM_LOG_FORMAT: "json"
+  DSTREAM_PUBLIC_BASE_URL: "https://dstream.example.com"
+  DSTREAM_APP_BASE_URL: "https://dstream.example.com"
+  DSTREAM_COOKIE_SECURE: "true"
+  DSTREAM_DB_MAX_CONNS: "20"
+  DSTREAM_REDIS_ADDR: "dstream-redis:6379"
+  DSTREAM_REDIS_DB: "0"
+  DSTREAM_INGEST_RATE_LIMIT_RPS: "100"
+  DSTREAM_INGEST_RATE_LIMIT_BURST: "200"
+  DSTREAM_MAX_WEBHOOK_HOPS: "3"
+  DSTREAM_WEBHOOK_SECRET_GRACE: "24h"
+  DSTREAM_ENDPOINT_MAX_CONSECUTIVE_FAILURES: "5"
+  DSTREAM_PAYLOAD_RETENTION: "0s"
+  DSTREAM_SELF_HOSTS: ""
+  DSTREAM_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+  DSTREAM_DEV_MODE: "false"
+  DSTREAM_ALLOW_PRIVATE_DESTINATIONS: "false"
+  DSTREAM_WORKER_CONCURRENCY: "50"
+  DSTREAM_WORKER_PER_ORG_MAX_INFLIGHT: "0"
+  DSTREAM_WORKER_HEALTH_ADDR: ":8081"
+  DSTREAM_WORKER_STALL_TIMEOUT: "60s"
+  DSTREAM_OIDC_ISSUER: ""
+  DSTREAM_OIDC_CLIENT_ID: ""
+  DSTREAM_OIDC_SCOPES: "openid,email,profile"
+  DSTREAM_OIDC_DEFAULT_ORG: ""
+  DSTREAM_OIDC_DEFAULT_ROLE: "member"
+  DSTREAM_OIDC_ENFORCE: "false"
+  DSTREAM_SMTP_HOST: ""
+  DSTREAM_SMTP_PORT: "587"
+  DSTREAM_SMTP_USER: ""
+  DSTREAM_SMTP_FROM: "noreply@localhost"
+  DSTREAM_TRACING_ENABLED: "false"
+  DSTREAM_TRACING_OTLP_ENDPOINT: ""
+  DSTREAM_TRACING_SAMPLE_RATIO: "1"
+

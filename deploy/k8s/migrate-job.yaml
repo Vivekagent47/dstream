@@ -1,0 +1,68 @@
+# GENERATED from the Helm chart (deploy/helm/dstream) via `helm template`.
+# Do not edit by hand — change the chart and re-run ./deploy/k8s/regen.sh.
+# Placeholders to replace before applying: REPLACE_ME_* and dstream.example.com.
+
+---
+# Source: dstream/templates/migrate-job.yaml
+# Migrations run as a normal per-revision Job, NOT a Helm pre-install hook: a
+# pre-install hook runs before the bundled Postgres StatefulSet exists (the
+# default datastore shape), so a fresh install would always fail with no DB to
+# reach. As a normal resource the Job is created alongside Postgres and retries
+# (backoffLimit) until the DB accepts connections. A single Job means no
+# concurrent-apply race (dstream migrate up takes no lock). `helm install/upgrade
+# --wait` blocks on this Job completing, so the rollout is still gated on a
+# migrated schema. The per-revision name + ttl avoid the Job-immutability error
+# on upgrade and clean finished Jobs up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dstream-migrate-r1
+  labels:
+    app.kubernetes.io/name: dstream
+    app.kubernetes.io/instance: dstream
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: dstream-0.1.0
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dstream
+        app.kubernetes.io/instance: dstream
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+      - name: migrate
+        image: ghcr.io/vivekagent47/dstream:0.1.0
+        imagePullPolicy: IfNotPresent
+        # Tight in-pod retry instead of leaning on Job backoff: Job backoff is
+        # exponential, so once the bundled Postgres finishes starting the next
+        # attempt could be minutes out and `--wait` would time out. Poll every
+        # 3s for up to 3 minutes; first success exits 0.
+        command: ["sh", "-c"]
+        args:
+          - |
+            for i in $(seq 1 60); do
+              dstream migrate up && exit 0
+              echo "migrate: db not ready, retry $i/60 in 3s"; sleep 3
+            done
+            echo "migrate: gave up waiting for the database"; exit 1
+        envFrom:
+          - configMapRef:
+              name: dstream-config
+          - secretRef:
+              name: dstream-secret
+        resources: 
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+
