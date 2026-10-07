@@ -89,8 +89,10 @@ type RedisConfig struct {
 }
 
 type WorkerConfig struct {
-	Concurrency       int `mapstructure:"concurrency"`
-	PerOrgMaxInflight int `mapstructure:"per_org_max_inflight"`
+	Concurrency       int           `mapstructure:"concurrency"`
+	PerOrgMaxInflight int           `mapstructure:"per_org_max_inflight"`
+	HealthAddr        string        `mapstructure:"health_addr"`
+	StallTimeout      time.Duration `mapstructure:"stall_timeout"`
 }
 
 type SMTPConfig struct {
@@ -208,6 +210,8 @@ func Load() (Config, error) {
 	// 0 = disabled: no per-org cap (single-tenant self-host uses the full pool).
 	// Set > 0 (e.g. 20) in multi-tenant deployments so one org can't starve others.
 	v.SetDefault("worker.per_org_max_inflight", 0)
+	v.SetDefault("worker.health_addr", ":8081")
+	v.SetDefault("worker.stall_timeout", "60s")
 	v.SetDefault("smtp.host", "")
 	v.SetDefault("smtp.port", 587)
 	v.SetDefault("smtp.user", "")

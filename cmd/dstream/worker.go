@@ -169,6 +169,12 @@ func runWorker(ctx context.Context, cfg config.Config, w *workerDeps, drain, rec
 	procCtx, procCancel := context.WithCancel(context.Background())
 	defer procCancel()
 
+	// Liveness watchdog: each consumer stamps a heartbeat per loop iteration
+	// (below). The health server reports 503 once no consumer has advanced
+	// within StallTimeout, which k8s turns into a restart. See watchdog.go.
+	wd := newWatchdog()
+	defer serveWorkerHealth(ctx, cfg.Worker.HealthAddr, wd, cfg.Worker.StallTimeout, log)()
+
 	// Worker pool: each goroutine fair-picks one event round-robin across
 	// orgs and processes it. On an empty ring it blocks on WaitNotify so it
 	// wakes the moment an event is enqueued/promoted rather than busy-polling.
@@ -177,6 +183,7 @@ func runWorker(ctx context.Context, cfg config.Config, w *workerDeps, drain, rec
 		go func() {
 			defer wg.Done()
 			for ctx.Err() == nil {
+				wd.beat()
 				raw, p, ok, err := dq.FairPick(ctx, leaseMs)
 				if err != nil {
 					if ctx.Err() != nil {
