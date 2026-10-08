@@ -5,7 +5,7 @@ Live design doc: what dstream is, how it's built, what has shipped, what's next.
 - **Per-phase designs:** `docs/superpowers/specs/` (27 design docs, one per slice)
 - **User-facing overview:** `README.md`
 
-**Status:** Phases 1–4 shipped, plus 5a (RBAC enforcement + API-key roles), 5b (instance-level OIDC single sign-on) and 5c (usage metering and quotas — no payment provider). Phase 6 remains.
+**Status:** Phases 1–4 shipped, plus 5a (RBAC enforcement + API-key roles), 5b (instance-level OIDC single sign-on) and 5c (usage metering and quotas — no payment provider). Phase 6 shipped its deployment half — a Helm chart (server/worker/migrate/web + bundled Postgres/Redis, toggleable), raw Kubernetes manifests rendered from it, a production web image, a worker liveness watchdog, and an image-publish workflow — proven end-to-end on kind; a pre-built single-binary release is the remaining open item.
 
 ---
 
@@ -46,8 +46,9 @@ internal/
   logging/  metrics/  tracing/  middleware/  mailer/
 web/                  TanStack Start dashboard (+ customer-facing App Portal)
 db/                   schema.sql (source of truth), migrations (Atlas), sqlc queries
-deploy/docker/        Dockerfile + docker-compose.yml (dev stack)
-deploy/helm/          empty — Phase 6
+deploy/docker/        Dockerfile, web.Dockerfile (dev), web.prod.Dockerfile (nginx SPA), docker-compose.yml
+deploy/helm/dstream/  Helm chart — server/worker/migrate/web + bundled Postgres/Redis (toggleable)
+deploy/k8s/           raw manifests generated from the chart (kubectl apply -k); regen.sh re-renders
 tools/loadtest/       ingest load harness (`make load`)
 ```
 
@@ -114,7 +115,7 @@ SSO adds **no table and no column**. An OIDC login joins on the existing `users.
 | 3 | Transforms (goja) + filters (CEL) | ✅ shipped |
 | 4 | Record/replay + fixture library | ✅ shipped |
 | 5 | Multi-tenant hardening — full RBAC, SSO, usage metering + quotas | ✅ shipped (5a RBAC + key roles, 5b OIDC SSO, 5c usage metering + quotas — no payment provider) |
-| 6 | Self-host packaging — Helm chart, single-binary release | planned (`deploy/helm/` is empty; compose ships) |
+| 6 | Self-host packaging — Helm chart, single-binary release | 🟡 deployment shipped (Helm chart + raw k8s manifests + prod web image + image-publish workflow + worker watchdog, proven on kind); single-binary release still open |
 
 A visual workflow builder held the fifth slot until 2026-09-29, when it was dropped and the remaining phases moved up — see §7.
 
@@ -379,6 +380,28 @@ future biller reads `usage_rollups`, it doesn't ship here.
 
 Spec: `2026-10-02-phase-5c-usage-metering-quotas-design.md`.
 
+### Phase 6 — self-host packaging 🟡 (deployment half)
+
+A single Helm chart (`deploy/helm/dstream`) deploys the whole stack with one
+`helm install`: server + worker Deployments, a migrate Job, and the dashboard
+as a **static SPA served by nginx** (TanStack Start flipped to SPA mode; a new
+`web.prod.Dockerfile` builds it). **Postgres and Redis are bundled** as
+single-node StatefulSets by default (`postgresql.enabled` / `redis.enabled`);
+flip them off to point at managed datastores. Ingress is on by default — one
+host to nginx, which serves the SPA and reverse-proxies `/api`, `/admin`, `/e`
+and the CLI WebSocket tunnel to the server. `deploy/k8s/` holds the same chart
+rendered to plain YAML (`kubectl apply -k`), kept in sync by `regen.sh` — the
+chart is the single source of truth. An image-publish workflow pushes
+`:<version>` + `:latest` on a `v*` tag. The whole thing was proven end-to-end on
+kind (install, migrate, SPA, ingest, and a live WebSocket tunnel handshake).
+
+The **worker gained a liveness watchdog** (`DSTREAM_WORKER_HEALTH_ADDR`, default
+`:8081`): a portless queue consumer was invisible to Kubernetes, so a heartbeat
+on the consumer loop drives a `/healthz` that returns 503 once the loop stalls
+past `DSTREAM_WORKER_STALL_TIMEOUT` — the k8s liveness/readiness source that
+restarts a wedged worker. See §7 for the migrate-as-Job and generated-secret
+rulings. Still open: a pre-built single-binary release.
+
 ### Beyond the phases
 
 **Super-admin queue ops** — `/console/queues`: per-lane drill-down (dead / scheduled / processing / pending), an all-orgs pending table, and safe ops (requeue a dead event, force-promote a scheduled one, drain the dead list), each a single atomic Lua script. Spec: `2026-09-26-admin-queue-ops-design.md`.
@@ -395,6 +418,10 @@ Spec: `2026-10-02-phase-5c-usage-metering-quotas-design.md`.
 | 2026-09-30 | **Members cannot delete anything**, fixtures and scenarios included. A carve-out for disposable test artifacts was considered and rejected: an exemption list beside the blanket `DELETE ⇒ admin` rule is a second source of truth, and the uniform rule is one sentence to document. Cost: a member must ask an admin to clean up their own fixtures. |
 | 2026-10-01 | **SSO is instance-level, not per-org.** One IdP per deployment, configured by env var. Per-org connections would need client secrets encrypted at rest, and dstream has no secret-encryption facility or key management — that is a subsystem, not a slice. They would also need the `sso_identities` mapping this slice avoided, since one address could then legitimately exist under two issuers. Cost: a multi-tenant SaaS deployment cannot offer per-tenant SSO until that is built. |
 | 2026-10-01 | **`DSTREAM_OIDC_DEFAULT_ORG` is not validated at boot** (amended mid-implementation; an earlier draft promised it would be). The check cannot live in config validation — that runs before the DB pool opens — and placing it after the pool would couple startup to database seeding state, bricking a deployment whose default org is created by a seed job *after* first boot. Cost: a bad slug surfaces at the first SSO login instead, so it must surface legibly — a `500` naming the variable plus a server log line, never the `401` an auth failure returns. |
+| 2026-10-08 | **Bundled Postgres + Redis are the Helm chart's default**, toggleable off (`postgresql.enabled` / `redis.enabled`) for BYO managed datastores. The chart installs and runs standalone out of the box; a real deployment flips them off. Bundled nodes are single-replica, no HA, no backups — labelled dev/demo grade. |
+| 2026-10-08 | **Migrations run as a per-revision Job, not a Helm pre-install hook.** A pre-install hook runs *before* the chart's normal resources, so with the bundled Postgres (the default) there is no database to migrate yet and a fresh install always fails. A normal Job created alongside Postgres retries (an in-pod loop) until the DB is up; `helm install/upgrade --wait --wait-for-jobs` gates the release on it. A single Job also sidesteps a concurrent-apply race, since `dstream migrate up` takes no lock. Cost: the rollout is not strictly ordered before the app pods — acceptable because migrations are additive and the app pods crash-restart until the schema is present. |
+| 2026-10-08 | **Generated secrets are computed once per render.** Helm does not memoize `include`/`randAlphaNum`, so deriving the bundled Postgres password separately for the Secret's `pgPassword` key and for the embedded `DSTREAM_DB_URL` produced two different values — Postgres initialised with one, the DSN carried the other, and auth failed on *every* bundled install. Found only in a live kind install (`helm lint`/`template` can't see it). `session_secret` and the pg password are now computed once in `secret.yaml` and reused; `lookup` keeps them stable across upgrades, `secrets.existingSecret` is the GitOps escape hatch. |
+| 2026-10-08 | **The dashboard deploys as a static SPA behind nginx, not the Nitro Node server.** No `createServerFn` exists in `web/src`, so SPA mode emits a pure client bundle (shell `_shell.html`) and the Node runtime is dropped. The same nginx carries the WebSocket upgrade for the CLI tunnel (`/api/cli/connect`), and `trustedProxies` defaults to the private ranges so the real client IP survives the proxy hop — otherwise per-IP limits (magic-link) would key on the web pod's IP and throttle everyone together. Safe because the server is ClusterIP, reachable only via nginx. |
 | 2026-10-01 | **The SSO callback binds its state to the browser with a cookie**, correcting this spec's own first draft, which claimed single-use state was sufficient for a `GET` callback. It was not: `/sso/start` is unauthenticated, so an attacker mints a valid state for free, logs in as himself, and phishes a victim into a top-level `GET` of the callback — a working session-fixation bug that the slice's first implementation carried, caught in review before it was committed. Accepted residual: `dstream_sso_state` is not `__Host-` prefixed (that needs `Secure`, false in local HTTP dev), so cookie tossing from a compromised sibling subdomain remains in scope, as it does for the CSRF cookie. |
 | 2026-10-02 | **Quota columns pinned out of four `organizations` queries.** `GetOrganizationByID`, `GetOrganizationBySlug`, `CreateOrganization` and `UpdateOrgName` were `SELECT * FROM organizations` / `RETURNING *`, so `plan` and all five quota columns had been serializing straight into `POST /api/orgs` and `PATCH /api/orgs/{org_id}` responses since the 5c migration landed. Not a confidentiality break — `GET /api/usage` already exposes limits at member level — but a contract inconsistency against the owner-only quota write gate. Fixed by pinning explicit column lists and regenerating with `sqlc`, matching `ListOrgsForUser`'s existing pin. |
 | 2026-10-03 | **Quota authority moved from the org owner to the platform operator**, reversing the 5c decision recorded above it. `PATCH /api/orgs/{org_id}/plan` is deleted; `PATCH /admin/orgs/{org_id}/plan` and `GET /admin/plans` replace it behind `auth.SuperAdminOnly`, which is session-only, so no API key reaches them. An owner raising their own ceiling is the thing the ceiling exists to prevent — "a quota change is a spend decision" was right about the *weight* of the decision and wrong about *whose* it is. `organizations` now has exactly four writers (`CreateOrganization`, `UpdateOrgName`, `DeleteOrganization`, `UpdateOrgQuota`), and only the last touches a quota column. |
@@ -410,7 +437,7 @@ Spec: `2026-10-02-phase-5c-usage-metering-quotas-design.md`.
 
 **Deferred:** pause/resume an org's delivery lane (needs a change to the correctness-critical `FairPick` Lua); per-connection and per-destination queue breakdowns; historical queue metrics.
 
-**Deferred to later phases:** cross-org fixture sharing (Phase 5); Helm chart and single-binary release (Phase 6).
+**Deferred to later phases:** cross-org fixture sharing (Phase 5); a pre-built single-binary release (Phase 6 — the Helm chart + raw k8s manifests + image publishing shipped).
 
 **Deferred usage-metering surface (Phase 5c shipped the meter only):** a
 payment provider — Stripe subscriptions, invoices, checkout, dunning — is out
@@ -432,6 +459,8 @@ tokens to carry usage identity).
 ## 9. Operations & verification
 
 `docker compose -f deploy/docker/docker-compose.yml up -d --build` brings up the whole dev stack (server, worker, web, Postgres, Redis, Jaeger) and runs migrations. Config is env-var driven via Viper — see `.env.example`. Note the split hosts in dev: the API and ingest are on `:8080`, the dashboard on `:3000`.
+
+**Kubernetes:** `helm install dstream deploy/helm/dstream --set ingress.host=<host> --wait --wait-for-jobs` — bundled Postgres+Redis by default, so it runs standalone; set `postgresql.enabled=false` / `redis.enabled=false` (and `secrets.existingSecret`) to point at managed datastores, the production shape. Without Helm, `kubectl apply -k deploy/k8s` applies the same manifests (replace the `REPLACE_ME_*` secret placeholders and the ingress host first). `deploy/k8s/` is generated from the chart by `deploy/k8s/regen.sh` — edit the chart, not the manifests.
 
 `/metrics` is Prometheus-format but **cookie-gated to super-admins**, so a stock scraper can't read it — it's browse-only today, and no scraper ships in the dev compose. Tracing is off unless `DSTREAM_TRACING_ENABLED` is set.
 
