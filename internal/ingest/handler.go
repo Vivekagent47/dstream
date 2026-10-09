@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +49,13 @@ const (
 	// much shorter than SourceCacheTTL so a source created just after a bad-token
 	// probe becomes reachable within a few seconds.
 	NegativeSourceCacheTTL = 3 * time.Second
+
+	// negSweepEvery bounds the source cache: an unauthenticated /e/{random} flood
+	// stores a distinct negative entry per bad token, and those only ever expired
+	// logically — nothing deleted them until the SAME token was presented again,
+	// which an attacker never does, so the map grew without bound. Every this-many
+	// negative stores we sweep all physically-expired entries.
+	negSweepEvery = 4096
 )
 
 type Handler struct {
@@ -82,6 +90,11 @@ type Handler struct {
 	// which is acceptable for v1 (the worst case is one extra request
 	// queued for an org that just rotated tokens).
 	sourceCache sync.Map // map[string]sourceCacheEntry, keyed by ingest_token
+
+	// negStores counts negative-cache writes to drive a periodic sweep of expired
+	// entries (see negSweepEvery), keeping the unauthenticated bad-token path from
+	// growing sourceCache without bound.
+	negStores atomic.Uint64
 }
 
 type sourceCacheEntry struct {
@@ -216,10 +229,18 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(body)
 	bodyHash := hex.EncodeToString(sum[:])
 
+	// Dedup on method+path+body, not the body alone: two genuinely different
+	// requests that share a body — an empty-body POST and DELETE, or the same
+	// payload to different paths — must not collapse into one and silently drop the
+	// second. bodyHash already uniquely identifies the body, so fold method+path
+	// into a cheap second digest; the stored body_hash stays a pure body digest.
+	dsum := sha256.Sum256([]byte(r.Method + "\n" + r.URL.Path + "\n" + bodyHash))
+	dedupTag := hex.EncodeToString(dsum[:])
+
 	dup, err := func() (bool, error) {
 		ctx, span := ingestTracer.Start(ctx, "ingest.dedup")
 		defer span.End()
-		return h.checkDedup(ctx, sourceID, bodyHash)
+		return h.checkDedup(ctx, sourceID, dedupTag)
 	}()
 	if err != nil {
 		h.Log.WarnContext(ctx, "ingest: dedup check failed (ignored)", "err", err)
@@ -238,7 +259,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if dedupClaimed {
 		defer func() {
 			if !committed {
-				_ = h.Redis.Del(context.Background(), dedupKey(sourceID, bodyHash)).Err()
+				_ = h.Redis.Del(context.Background(), dedupKey(sourceID, dedupTag)).Err()
 			}
 		}()
 	}
@@ -356,9 +377,13 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		// One enqueue per event — local-Redis roundtrips, not the per-connection
 		// Postgres roundtrips the batch insert above eliminated. A failed enqueue
 		// leaves the event 'queued' in Postgres; the worker's reaper re-queues it.
+		// The events are already committed above, so detach from the request ctx:
+		// a client that disconnects right after the commit must not cancel these
+		// enqueues and push every event onto the 15-minute reaper path.
+		enqCtx := context.WithoutCancel(ctx)
 		for _, ev := range events {
 			c := connByID[store.GoUUID(ev.ConnectionID)]
-			if err := h.Queue.Enqueue(ctx, dqueue.Payload{
+			if err := h.Queue.Enqueue(enqCtx, dqueue.Payload{
 				EventID:             store.GoUUID(ev.ID),
 				OrgID:               store.GoUUID(ev.OrgID),
 				Attempt:             0,
@@ -449,6 +474,20 @@ func (h *Handler) InvalidateSource(token string) {
 	h.sourceCache.Delete(token)
 }
 
+// sweepExpiredSources deletes every physically-expired cache entry (positive and
+// negative). Called periodically off the negative-store path so an unbounded
+// unique-bad-token flood can't grow sourceCache forever. O(n) over the map, but
+// amortised across negSweepEvery stores.
+func (h *Handler) sweepExpiredSources() {
+	now := time.Now()
+	h.sourceCache.Range(func(k, v any) bool {
+		if e, ok := v.(sourceCacheEntry); ok && now.After(e.expires) {
+			h.sourceCache.Delete(k)
+		}
+		return true
+	})
+}
+
 func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source, []compiledRule, error) {
 	// Cache hit? (positive or negative)
 	if v, ok := h.sourceCache.Load(token); ok {
@@ -476,6 +515,9 @@ func (h *Handler) resolveSource(ctx context.Context, token string) (store.Source
 				expires:  time.Now().Add(NegativeSourceCacheTTL),
 				notFound: true,
 			})
+			if h.negStores.Add(1)%negSweepEvery == 0 {
+				h.sweepExpiredSources()
+			}
 			return store.Source{}, nil, ErrSourceNotFound
 		}
 		return store.Source{}, nil, err
