@@ -37,6 +37,20 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+// TestBigIntPrecision guards the UseNumber+normalizeJSON fix: an integer past
+// 2^53 must compare exactly, not round to float64. Without the fix the payload
+// value rounds to ...992 and the match against the exact literal is false.
+func TestBigIntPrecision(t *testing.T) {
+	pay := []byte(`{"id":9007199254740993}`)
+	got, err := Match(`payload.id == 9007199254740993`, false, pay, nil, Meta{})
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if !got {
+		t.Fatal("big int rounded to float64: exact-value comparison failed")
+	}
+}
+
 func TestCostBound(t *testing.T) {
 	// audit I2: a valid-bool expr whose nested constant-list comprehensions would
 	// evaluate an enormous iteration count must be stopped by the runtime cost

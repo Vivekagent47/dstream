@@ -4,6 +4,7 @@
 package filter
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -67,10 +68,18 @@ func Compile(expr string, outbound bool) (*Program, error) {
 // Eval binds variables and evaluates. A non-bool or runtime error returns
 // (false, err); the caller applies the fail-open policy.
 func (p *Program) Eval(payload []byte, headers map[string]string, meta Meta) (bool, error) {
+	// Decode with UseNumber + normalize so integers keep their exact value: a plain
+	// json.Unmarshal into `any` makes every number a float64, which rounds IDs past
+	// 2^53 (snowflakes, order numbers) and makes CEL comparisons against the exact
+	// int literal wrong. normalizeJSON turns each json.Number into the int64/float64
+	// CEL actually compares.
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
 	var pv any
-	if err := json.Unmarshal(payload, &pv); err != nil {
+	if err := dec.Decode(&pv); err != nil {
 		return false, fmt.Errorf("payload not JSON: %w", err)
 	}
+	pv = normalizeJSON(pv)
 	// Bind event_type/channels unconditionally (audit item 4): binding them only
 	// when non-empty made an outbound expr referencing them error — and fail open
 	// spuriously — on a delivery with empty event_type AND nil channels. channels
@@ -96,6 +105,32 @@ func (p *Program) Eval(payload []byte, headers map[string]string, meta Meta) (bo
 		return false, fmt.Errorf("filter did not return bool: %v", out.Value())
 	}
 	return b, nil
+}
+
+// normalizeJSON converts json.Number nodes (produced by a UseNumber decode) into
+// the int64/float64 CEL expects, recursing through objects and arrays. An integer
+// that overflows int64 falls back to float64 (the rare >9.2e18 case).
+func normalizeJSON(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return i
+		}
+		f, _ := t.Float64()
+		return f
+	case map[string]any:
+		for k, val := range t {
+			t[k] = normalizeJSON(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = normalizeJSON(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // --- compiled-program cache ---
