@@ -173,6 +173,10 @@ func runTunnel(ctx context.Context, wsURL, apiKey, forwardURL string) error {
 	if err != nil {
 		return fmt.Errorf("ws dial: %w", err)
 	}
+	// Raise the read limit well above coder/websocket's 32 KiB default: an inbound
+	// "event" frame carries the webhook body (ingest caps it at 5 MiB) base64'd
+	// inside JSON, so the default tears the whole tunnel down on any larger body.
+	conn.SetReadLimit(8 << 20)
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 	fmt.Fprintln(os.Stderr, "✓ tunnel open")
 

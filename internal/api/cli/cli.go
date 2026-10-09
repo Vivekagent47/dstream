@@ -27,10 +27,12 @@ const (
 	cliPingEvery  = 10 * time.Second
 	// cliResponseTimeout is how long an event waits for the CLI's response frame.
 	cliResponseTimeout = 35 * time.Second
-	// cliReadLimit caps a single inbound WS frame (CLI response). Matches the
-	// 1 MiB attempt-body cap; without it the library's 32 KiB default tears the
-	// whole tunnel down on a larger local response.
-	cliReadLimit = 1 << 20
+	// cliReadLimit caps a single inbound WS frame (CLI response). The CLI caps the
+	// local response body at 1 MiB, but ships it as a []byte that JSON-encodes to
+	// base64 (~+33%) inside the response frame, so the frame runs ~1.4 MiB plus
+	// headers/JSON. Set 2 MiB so a full 1 MiB response can't exceed the limit and
+	// tear the tunnel down. (The library default is 32 KiB.)
+	cliReadLimit = 2 << 20
 	// maxConcurrentDispatch bounds in-flight event goroutines per tunnel so an
 	// event burst can't spawn unbounded goroutines.
 	maxConcurrentDispatch = 64
