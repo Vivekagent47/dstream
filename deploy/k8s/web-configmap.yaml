@@ -47,7 +47,17 @@ data:
       location /healthz { proxy_pass http://dstream_server; }
       location /readyz  { proxy_pass http://dstream_server; }
 
-      location / { try_files $uri $uri/ /_shell.html; }
+      # Hashed build assets: a missing file must 404, not fall back to the shell.
+      location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+      }
+
+      # SPA shell must never be cached, or clients keep stale asset hashes.
+      location / {
+        try_files $uri $uri/ /_shell.html;
+        add_header Cache-Control "no-cache";
+      }
     }
   proxy_common.conf: |
     proxy_http_version 1.1;

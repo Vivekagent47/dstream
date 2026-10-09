@@ -21,5 +21,5 @@ RUN rm -f /usr/share/nginx/html/index.html
 # Standalone default so the image serves the SPA on its own. The Helm chart
 # mounts a rendered config over this that also proxies /api,/admin,/e to the
 # server; running this image alone, API calls 502 (no server), as expected.
-RUN printf 'server {\n  listen 80;\n  server_name _;\n  client_max_body_size 25m;\n  root /usr/share/nginx/html;\n  index _shell.html;\n  location / { try_files $uri $uri/ /_shell.html; }\n}\n' > /etc/nginx/conf.d/default.conf
+RUN printf 'server {\n  listen 80;\n  server_name _;\n  client_max_body_size 25m;\n  root /usr/share/nginx/html;\n  index _shell.html;\n  location /assets/ { try_files $uri =404; add_header Cache-Control \"public, max-age=31536000, immutable\"; }\n  location / { try_files $uri $uri/ /_shell.html; add_header Cache-Control \"no-cache\"; }\n}\n' > /etc/nginx/conf.d/default.conf
 EXPOSE 80
