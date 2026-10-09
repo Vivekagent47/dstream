@@ -180,11 +180,23 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	if row.DestinationType == "cli" {
 		return h.dispatchToCLI(ctx, row, p, raw)
 	}
-	if row.DestinationType != "http" {
-		return fmt.Errorf("delivery type %q not implemented", row.DestinationType)
-	}
-	if row.DestinationUrl == nil || *row.DestinationUrl == "" {
-		return fmt.Errorf("destination has no URL")
+	// A non-http type or a missing URL can never be delivered. Returning a plain
+	// error left the task leased, so the recoverer re-promoted it every lease
+	// window forever (burning a worker slot each cycle) — it is terminal, so
+	// dead-letter it the same way the structural-URL check below does.
+	if row.DestinationType != "http" || row.DestinationUrl == nil || *row.DestinationUrl == "" {
+		reason := fmt.Errorf("destination has no URL")
+		if row.DestinationType != "http" {
+			reason = fmt.Errorf("delivery type %q not implemented", row.DestinationType)
+		}
+		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), reason)
+		_ = h.Queries.MarkEventFailed(ctx, row.ID)
+		if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+			return err
+		}
+		metrics.Delivery(destID, connID, "failed")
+		metrics.Attempt(connID, "deadletter")
+		return nil
 	}
 	// Reject structurally-unsafe URLs up front. A bad scheme can never
 	// succeed, so don't burn the retry budget on it — record and skip. IP-level

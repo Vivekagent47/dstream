@@ -464,19 +464,24 @@ func TestProcess_RequestBuildFailureFailsAttempt(t *testing.T) {
 	}
 }
 
+// A missing URL can never be delivered: terminal (attempt recorded, event
+// failed, member dead-lettered, nil error) so the recoverer cannot re-promote it.
 func TestProcess_NoURL(t *testing.T) {
 	for name, u := range map[string]*string{"nil": nil, "empty": strp("")} {
 		t.Run(name, func(t *testing.T) {
 			f := seed(t, seedOpt{url: u})
-			err := f.process(0)
-			if err == nil || err.Error() != "destination has no URL" {
-				t.Fatalf("err = %v", err)
+			if err := f.process(0); err != nil {
+				t.Fatalf("err = %v, want nil (terminal)", err)
 			}
-			// Error without Ack: the member stays leased for the recoverer.
-			if n := len(f.lane("processing")); n != 1 {
-				t.Fatalf("processing = %d, want 1 (left leased)", n)
+			f.settled("dead")
+			f.wantState("failed", 0)
+			as := f.attempts()
+			if len(as) != 1 || as[0].ErrorMessage == nil || *as[0].ErrorMessage != "destination has no URL" {
+				t.Fatalf("attempts = %+v", as)
 			}
-			f.wantState("queued", 0)
+			if n, err := f.dq.Recover(context.Background(), time.Now().Add(time.Hour).UnixMilli()); err != nil || n != 0 {
+				t.Fatalf("recover = %d, %v; dead-lettered member must not be re-injected", n, err)
+			}
 		})
 	}
 }
@@ -503,8 +508,16 @@ func TestProcess_UnknownDestinationType(t *testing.T) {
 	f.h.Queries = store.New(tx)
 	p, raw := f.pick(0, false, 0)
 	err = f.h.Process(ctx, p, raw)
-	if err == nil || err.Error() != `delivery type "sms" not implemented` {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (terminal)", err)
+	}
+	f.settled("dead")
+	as, err := store.New(tx).ListAttemptsByEvent(ctx, store.UUID(f.ev))
+	if err != nil || len(as) != 1 || as[0].ErrorMessage == nil || *as[0].ErrorMessage != `delivery type "sms" not implemented` {
+		t.Fatalf("attempts = %+v err=%v", as, err)
+	}
+	if n, err := f.dq.Recover(ctx, time.Now().Add(time.Hour).UnixMilli()); err != nil || n != 0 {
+		t.Fatalf("recover = %d, %v; dead-lettered member must not be re-injected", n, err)
 	}
 	if len(d.calls()) != 0 {
 		t.Fatal("unknown destination type must not be delivered")
