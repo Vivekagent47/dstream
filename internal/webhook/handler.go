@@ -69,9 +69,15 @@ func (h Handler) effTransformMaxOutput() int {
 
 const inflightTTL = 150 * time.Second // 5x the delivery timeout, matches deliver's lease
 
+// Refresh the TTL only on a real acquisition (n<=cap, ARGV[2]). Refreshing on
+// every INCR kept a crashed worker's phantom slot alive forever under continuous
+// traffic (see deliver.inflightIncrScript). This shares deliver's inflight:org:*
+// budget, so the two scripts must stay identical.
 var inflightScript = redis.NewScript(`
 local n = redis.call('INCR', KEYS[1])
-redis.call('EXPIRE', KEYS[1], ARGV[1])
+if n <= tonumber(ARGV[2]) then
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
 return n`)
 
 func deliveryID(p dqueue.Payload) (uuid.UUID, error) {
@@ -131,7 +137,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	orgID := store.GoUUID(row.OrgID)
 	if h.PerOrgMaxInflight > 0 && h.Redis != nil {
 		key := fmt.Sprintf("inflight:org:%s", orgID)
-		n, ierr := inflightScript.Run(ctx, h.Redis, []string{key}, int(inflightTTL.Seconds())).Int()
+		n, ierr := inflightScript.Run(ctx, h.Redis, []string{key}, int(inflightTTL.Seconds()), h.PerOrgMaxInflight).Int()
 		if ierr == nil {
 			if n > h.PerOrgMaxInflight {
 				h.Redis.Decr(context.Background(), key)

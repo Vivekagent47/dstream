@@ -95,7 +95,7 @@ func TestInflightReleaseUsesBackgroundCtx(t *testing.T) {
 
 	// Acquire a slot on a live delivery ctx (the acquire side stays on it).
 	reqCtx, cancel := context.WithCancel(context.Background())
-	if _, err := inflightIncrScript.Run(reqCtx, rdb, []string{key}, 150).Int64(); err != nil {
+	if _, err := inflightIncrScript.Run(reqCtx, rdb, []string{key}, 150, 1).Int64(); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -117,5 +117,49 @@ func TestInflightReleaseUsesBackgroundCtx(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("slot leaked: counter = %d, want 0", n)
+	}
+}
+
+// TestInflightOverCapDoesNotRefreshTTL is the regression guard for the permanent
+// slot-leak fix: a crashed worker can leave a phantom slot held at the cap. The
+// script must refresh the TTL only on a real acquisition (n<=cap), never on the
+// over-cap INCRs the caller immediately Decrs — otherwise continuous over-cap
+// traffic keeps the phantom's TTL alive forever and the destination never heals.
+// Redis-gated (skips when none is reachable).
+func TestInflightOverCapDoesNotRefreshTTL(t *testing.T) {
+	addr := os.Getenv("DSTREAM_REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	ping, cancelPing := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelPing()
+	if err := rdb.Ping(ping).Err(); err != nil {
+		t.Skip("no redis at " + addr)
+	}
+	bg := context.Background()
+	key := "inflight:test:" + uuid.NewString()
+	defer rdb.Del(bg, key)
+
+	const cap = 1
+	// Phantom slot at the cap with a short lease left (the crashed worker's leak).
+	if err := rdb.Set(bg, key, cap, 3*time.Second).Err(); err != nil {
+		t.Fatalf("seed phantom: %v", err)
+	}
+	// An over-cap acquisition (n=2 > cap) must NOT bump the TTL to the big lease.
+	if n, err := inflightIncrScript.Run(bg, rdb, []string{key}, 150, cap).Int64(); err != nil || n != cap+1 {
+		t.Fatalf("over-cap incr: n=%d err=%v", n, err)
+	}
+	if pttl := rdb.PTTL(bg, key).Val(); pttl > 3*time.Second {
+		t.Errorf("over-cap INCR refreshed the TTL (pttl=%s); phantom slot would never heal", pttl)
+	}
+
+	// A real acquisition (n<=cap) still refreshes the lease.
+	rdb.Del(bg, key)
+	if n, err := inflightIncrScript.Run(bg, rdb, []string{key}, 150, cap).Int64(); err != nil || n != 1 {
+		t.Fatalf("acquire: n=%d err=%v", n, err)
+	}
+	if pttl := rdb.PTTL(bg, key).Val(); pttl < 60*time.Second {
+		t.Errorf("real acquisition did not set the lease TTL (pttl=%s)", pttl)
 	}
 }
