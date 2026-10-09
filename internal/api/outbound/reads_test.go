@@ -29,7 +29,7 @@ func readRoutes(r chi.Router, h Handlers) {
 func TestListMessages(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), readRoutes)
+	r := newRouter(t, q, nil, sign(t), readRoutes)
 	ctx := context.Background()
 
 	// app + one message inserted directly via store

@@ -210,7 +210,7 @@ func newFx(t *testing.T, opts ...func(*fxOpt)) *fx {
 		hq = o.queries
 	}
 	f.h = Handlers{
-		Log: slog.New(slog.NewTextHandler(f.logs, nil)), Queries: hq, Queue: f.dq,
+		Log: slog.New(slog.NewTextHandler(f.logs, nil)), Queries: hq, Pool: pool, Queue: f.dq,
 		Portal: f.ps, AppBaseURL: "https://app.example.test",
 	}
 	if o.mutate != nil {

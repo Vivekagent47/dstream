@@ -35,7 +35,7 @@ func mkAppForFilterTest(t *testing.T, r *chi.Mux, uid, oid uuid.UUID) string {
 func TestEndpointBadFilterExpr(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), epFilterRoutes)
+	r := newRouter(t, q, nil, sign(t), epFilterRoutes)
 	appID := mkAppForFilterTest(t, r, uid, oid)
 
 	rec := httptest.NewRecorder()
@@ -59,7 +59,7 @@ func TestEndpointBadFilterExpr(t *testing.T) {
 func TestEndpointBadTransformJS(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), epFilterRoutes)
+	r := newRouter(t, q, nil, sign(t), epFilterRoutes)
 	appID := mkAppForFilterTest(t, r, uid, oid)
 
 	rec := httptest.NewRecorder()
@@ -83,7 +83,7 @@ func TestEndpointBadTransformJS(t *testing.T) {
 func TestEndpointEmptyFilterDisables(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), epFilterRoutes)
+	r := newRouter(t, q, nil, sign(t), epFilterRoutes)
 	appID := mkAppForFilterTest(t, r, uid, oid)
 
 	rec := httptest.NewRecorder()

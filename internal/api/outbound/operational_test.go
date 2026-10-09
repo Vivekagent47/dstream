@@ -20,7 +20,7 @@ func opRoutes(r chi.Router, h Handlers) {
 
 func TestGetOperationalApp(t *testing.T) {
 	q := store.New(testPool(t))
-	r := newRouter(q, nil, sign(t), opRoutes)
+	r := newRouter(t, q, nil, sign(t), opRoutes)
 	user, org := seedOrg(t, q)
 
 	// first call: 200 + is_operational:true, get-or-create.

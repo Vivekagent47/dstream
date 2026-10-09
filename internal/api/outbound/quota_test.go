@@ -68,7 +68,7 @@ func newQuotaEnv(t *testing.T, soft, hard int64, period string, gateRedis *redis
 		t.Fatalf("gate reload: %v", err)
 	}
 
-	h := Handlers{Log: discardLog(), Queries: q, Queue: dq, Quota: gate}
+	h := Handlers{Log: discardLog(), Queries: q, Pool: pool, Queue: dq, Quota: gate}
 	r := newRouterWith(h, sign(t), msgRoutes)
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
