@@ -1,4 +1,4 @@
-h1:BHm0+Mx9TaSUXRAnMeajVq9N1IfVE1lOpguKTCEbTbY=
+h1:e1GuqRZRyV40aLRwmuxRUcfjUEgcgU2pXvyoWiK7v08=
 00000000000000_extensions.sql h1:hbbiUsP7yRuJwyp7q1wb/fOVkdzYbFY2w+F8UtF8OVE=
 20260616155338_init.sql h1:iQJwQHDsULVs1PYLToRZ1OuX61DKc7cYW9c4hAhGMIQ=
 20260621000000_audit_org_id_nullable.sql h1:YAeVbvWPn2+RBWdZI4fbrQrev8ZZ3zS5jghcig8rrmw=
@@ -29,3 +29,4 @@ h1:BHm0+Mx9TaSUXRAnMeajVq9N1IfVE1lOpguKTCEbTbY=
 20260930160802_api_key_role.sql h1:O7ZqKSskhtUQrZ2oov7885dXO+bt/+KI0i6C5nb3XZE=
 20261002043243_usage_metering.sql h1:ck55Kcl1Ej7hDclVM9vLZPHNjvm6IxqWHEKVIcRdqHY=
 20261002202155_admin_managed_quotas.sql h1:hg4PdtcPBeSBT5FRiEUGX4g1/QeZB4wLwxfqqDEZAuo=
+20261009120000_hot_table_indexes.sql h1:jszx9FhOYYXd6Li+8kkyPU5fMHzbsvwASfYIyNlra88=
