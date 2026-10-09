@@ -208,7 +208,20 @@ func buildServer(ctx context.Context, cfg config.Config, log *slog.Logger) (*htt
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
+		// Readiness must fail when a backing store is down so the Service stops
+		// routing to a pod that can only return 5xx. Short timeout so a slow dep
+		// fails the probe instead of hanging it.
+		rctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(rctx); err != nil {
+			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := rdb.Ping(rctx).Err(); err != nil {
+			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
