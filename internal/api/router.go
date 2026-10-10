@@ -100,6 +100,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		AppBaseURL:    d.AppBaseURL,
 		Authenticator: d.Authenticator,
 		OIDC:          d.OIDC,
+
+		EvictSourceCache: d.EvictSourceCache,
 	}
 	pl := pipeline.Handlers{
 		Log:              d.Log,

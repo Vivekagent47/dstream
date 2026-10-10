@@ -58,7 +58,15 @@ func (d Handlers) CreateOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := slugifyName(body.Name)
-	org, err := d.Queries.CreateOrganization(r.Context(), store.CreateOrganizationParams{
+	tx, err := d.Pool.Begin(r.Context())
+	if err != nil {
+		d.Log.Error("create org: begin tx", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "create org")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	qtx := d.Queries.WithTx(tx)
+	org, err := qtx.CreateOrganization(r.Context(), store.CreateOrganizationParams{
 		Name: body.Name,
 		Slug: slug,
 	})
@@ -68,7 +76,7 @@ func (d Handlers) CreateOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, _ := auth.FromContext(r.Context())
-	if err := d.Queries.AddOrgMember(r.Context(), store.AddOrgMemberParams{
+	if err := qtx.AddOrgMember(r.Context(), store.AddOrgMemberParams{
 		OrgID:  org.ID,
 		UserID: store.UUID(p.UserID),
 		Role:   string(auth.RoleOwner),
@@ -77,9 +85,14 @@ func (d Handlers) CreateOrg(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusInternalServerError, "add owner")
 		return
 	}
-	if _, err := opevents.SeedOperationalApp(r.Context(), d.Queries, store.GoUUID(org.ID)); err != nil {
+	if _, err := opevents.SeedOperationalApp(r.Context(), qtx, store.GoUUID(org.ID)); err != nil {
 		d.Log.Error("seed operational app", "err", err)
 		httpx.Err(w, http.StatusInternalServerError, "provision org")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		d.Log.Error("create org: commit", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "create org")
 		return
 	}
 	orgUUID := store.GoUUID(org.ID)
@@ -261,10 +274,24 @@ func (d Handlers) DeleteOrg(w http.ResponseWriter, r *http.Request) {
 		OrgID:      orgID,
 		Metadata:   meta,
 	})
+	// Collect ingest tokens before the cascade so the cache can be evicted.
+	var tokens []string
+	if d.EvictSourceCache != nil {
+		if srcs, serr := d.Queries.ListSourcesByOrg(r.Context(), store.UUID(orgID)); serr != nil {
+			d.Log.Warn("delete org: list sources for cache evict", "err", serr)
+		} else {
+			for _, s := range srcs {
+				tokens = append(tokens, s.IngestToken)
+			}
+		}
+	}
 	if err := d.Queries.DeleteOrganization(r.Context(), store.UUID(orgID)); err != nil {
 		d.Log.Error("delete org", "err", err)
 		httpx.Err(w, http.StatusInternalServerError, "delete org")
 		return
+	}
+	for _, t := range tokens {
+		d.EvictSourceCache(t)
 	}
 	// If the deleted org was the caller's active session-org, rotate the
 	// cookie to point at whatever org they still have (or uuid.Nil if

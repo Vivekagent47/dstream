@@ -96,6 +96,10 @@ func (d Handlers) serveAudit(w http.ResponseWriter, r *http.Request, orgID uuid.
 			httpx.Err(w, http.StatusBadRequest, "invalid actor_user_id")
 			return
 		}
+		if u == uuid.Nil { // store.UUID(Nil) is NULL = unfiltered
+			httpx.Err(w, http.StatusBadRequest, "invalid actor_user_id")
+			return
+		}
 		actorUser = store.UUID(u)
 	}
 

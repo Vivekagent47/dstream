@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -331,7 +332,10 @@ func (d Handlers) RotateEndpointSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	var body rotateSecretReq
 	if r.ContentLength != 0 {
-		_ = json.NewDecoder(r.Body).Decode(&body) // body optional
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			httpx.Err(w, http.StatusBadRequest, "invalid json")
+			return
+		}
 	}
 	newSecret := ""
 	if body.Secret != nil && *body.Secret != "" {

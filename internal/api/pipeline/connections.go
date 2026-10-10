@@ -276,6 +276,30 @@ type patchConnectionReq struct {
 	TransformJs         *string         `json:"transform_js,omitempty"`
 }
 
+// validateRetryParams range-checks the retry knobs (the schema has no CHECKs).
+// Only the fields present in the patch are checked; base<=cap is enforced when
+// both are sent. ponytail: a patch with only one of base/cap isn't cross-checked
+// against the stored value.
+func validateRetryParams(b patchConnectionReq) string {
+	const maxMs = 7 * 24 * 3600 * 1000 // 7 days
+	if v := b.MaxRetries; v != nil && (*v < 0 || *v > 100) {
+		return "max_retries must be 0..100"
+	}
+	if v := b.RetryJitterPct; v != nil && (*v < 0 || *v > 100) {
+		return "retry_jitter_pct must be 0..100"
+	}
+	if v := b.RetryBaseMs; v != nil && (*v < 1 || *v > maxMs) {
+		return "retry_base_ms must be 1..604800000"
+	}
+	if v := b.RetryCapMs; v != nil && (*v < 1 || *v > maxMs) {
+		return "retry_cap_ms must be 1..604800000"
+	}
+	if b.RetryBaseMs != nil && b.RetryCapMs != nil && *b.RetryBaseMs > *b.RetryCapMs {
+		return "retry_base_ms must be <= retry_cap_ms"
+	}
+	return ""
+}
+
 func (d Handlers) PatchConnection(w http.ResponseWriter, r *http.Request) {
 	p, err := auth.FromContext(r.Context())
 	if err != nil || p.OrgID == uuid.Nil {
@@ -298,6 +322,10 @@ func (d Handlers) PatchConnection(w http.ResponseWriter, r *http.Request) {
 			httpx.Err(w, http.StatusBadRequest, "invalid retry_strategy")
 			return
 		}
+	}
+	if msg := validateRetryParams(body); msg != "" {
+		httpx.Err(w, http.StatusBadRequest, msg)
+		return
 	}
 	// Compile-validate before DB work. Present (non-nil) → set behind the flag;
 	// empty string → cleared to NULL; absent (nil) → left unchanged.
