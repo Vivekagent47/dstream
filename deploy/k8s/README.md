@@ -26,3 +26,9 @@ real Secret rather than the placeholders here.
 
 Migrations run as a Job; it retries until Postgres is up. Give it a moment on a
 fresh apply.
+
+The migrate Job name is pinned to a revision (e.g. `dstream-migrate-r1`) and a
+Job's pod template is immutable, so re-running `kubectl apply -k` after changing
+the image tag fails with `field is immutable` while the old Job still exists.
+Delete the finished Job first (`kubectl delete job -l app.kubernetes.io/component=migrate`,
+or regenerate from the Helm chart, which bumps the revision each upgrade).
