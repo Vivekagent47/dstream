@@ -543,7 +543,7 @@ func TestQueues_PopulatedStatsItemsAndOrgs(t *testing.T) {
 
 	deadRaw := e.dead(t, ghost)
 	procID := e.enqueue(t, ghost)
-	e.pick(t) // lease only; Items reports the plain member, compared below
+	e.pick(t)           // lease only; Items reports the plain member, compared below
 	e.enqueue(t, ghost) // and one still pending
 	schedRaw := e.scheduled(t, ghost)
 	for i := 0; i < 3; i++ {

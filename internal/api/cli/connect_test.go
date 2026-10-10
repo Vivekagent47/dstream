@@ -207,7 +207,7 @@ func TestConnectDeliversEventAndRecordsAttempt(t *testing.T) {
 			c := e.dial(org, src)
 			helloFor(t, c, src)
 			e.pushEvent(src, ev)
-			want := `{"body":"eyJhIjoxfQ==","event_id":"` + ev.String() + `","headers":{"X-In":["1"]},"method":"POST","path":"/","type":"event"}`
+			want := `{"body":"eyJhIjoxfQ==","event_id":"` + ev.String() + `","headers":{"X-In":["1"]},"method":"POST","path":"/e/x","type":"event"}`
 			if got := read(t, c); got != want {
 				t.Fatalf("event frame\n got %s\nwant %s", got, want)
 			}

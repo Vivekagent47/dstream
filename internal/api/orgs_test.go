@@ -207,7 +207,8 @@ func TestCreateOrg_AddsCreatorAsOwner(t *testing.T) {
 	q := store.New(pool)
 	uid, oid := seedUserAndOrg(t, q)
 
-	router, signer := newTestRouter(q)
+	// CreateOrg runs in a transaction, so the router needs a wired Pool.
+	router, signer := newTestRouterPool(pool, q)
 	req := requestWithSessionBody(t, signer, http.MethodPost, "/api/orgs", uid, oid, map[string]any{
 		"name": "Acme",
 	})
@@ -894,13 +895,11 @@ func TestCreateOrg_MidFlowFailures(t *testing.T) {
 		// A real slug collision cannot be provoked by input (48-bit random
 		// suffix), so the statement is failed directly.
 		{"create org", []string{"insert into organizations"}, http.StatusBadRequest, "create org", false, 0},
-		// Documents CURRENT behaviour, not contract: the org is stranded with
-		// no members, so it cannot be selected, administered, invited into or
-		// deleted through the API (each needs a membership).
-		{"add owner", []string{"insert into org_members"}, http.StatusInternalServerError, "add owner", true, 0},
-		// Documents CURRENT behaviour, not contract: the org is left half
-		// provisioned: it has its owner but no operational app.
-		{"seed operational app", []string{"insert into applications", "is_operational"}, http.StatusInternalServerError, "provision org", true, 1},
+		// CreateOrg runs in one transaction, so a failure after the org insert
+		// rolls the whole thing back — no stranded org, no orphan membership.
+		{"add owner", []string{"insert into org_members"}, http.StatusInternalServerError, "add owner", false, 0},
+		// Same: a failure seeding the operational app rolls back the org + owner.
+		{"seed operational app", []string{"insert into applications", "is_operational"}, http.StatusInternalServerError, "provision org", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newIDEnv(t, failOn(tc.frags...), nil)
