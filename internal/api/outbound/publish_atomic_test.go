@@ -31,9 +31,9 @@ func (e *quotaEnv) testSend(epID string) int {
 
 // M3: a test send creates a real message + delivery, so it obeys the ceiling.
 func TestTestEndpoint_OverHard_429WithRetryAfter(t *testing.T) {
-	e := newQuotaEnv(t, 1, 1, "month", nil)
+	e := newQuotaEnv(t, 1, 2, "month", nil) // hard 2: the publish below uses slot 1
 	epID := e.mkEndpoint(t, map[string]any{"url": "https://ex.test/a"})
-	if rec := e.publish(1); rec.Code != http.StatusAccepted { // consumes the ceiling
+	if rec := e.publish(1); rec.Code != http.StatusAccepted { // count=1, under hard
 		t.Fatalf("publish: status = %d; body=%s", rec.Code, rec.Body.String())
 	}
 	rec := e.post(e.base+"/endpoints/"+epID+"/test", map[string]any{"event_type": "invoice.paid"})

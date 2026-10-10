@@ -615,9 +615,13 @@ func TestProcess_FilterErrorFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Fail-closed + visible: a filter eval error terminates the event (dead/failed)
-	// and records the reason — it must NOT deliver.
+	// and records the reason — it must NOT deliver. attempt_count is 1 because the
+	// event is marked in-flight before the filter runs.
 	f.settled("dead")
-	f.wantState("failed", 0)
+	f.wantState("failed", 1)
+	if as := f.attempts(); len(as) != 1 || as[0].ErrorMessage == nil || !strings.Contains(*as[0].ErrorMessage, "filter:") {
+		t.Fatalf("attempts = %+v, want one filter error", as)
+	}
 	if len(d.calls()) != 0 {
 		t.Fatalf("filter error must not deliver, got %d calls", len(d.calls()))
 	}

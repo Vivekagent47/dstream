@@ -73,8 +73,10 @@ func failNth(marker string, n int) tracerFn {
 	}
 }
 
-// tracedQueries is a real pool whose statements pass through tr.
-func tracedQueries(t *testing.T, tr tracerFn) *store.Queries {
+// tracedPool is a real pool whose statements — including those run inside a tx
+// begun from it — pass through tr. The handler's publish path opens a tx on its
+// Pool, so a fault test must trace the Pool, not just the Queries.
+func tracedPool(t *testing.T, tr tracerFn) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("DSTREAM_TEST_DB_URL")
 	if dsn == "" {
@@ -91,7 +93,12 @@ func tracedQueries(t *testing.T, tr tracerFn) *store.Queries {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return store.New(pool)
+	return pool
+}
+
+// tracedQueries is a real pool whose statements pass through tr.
+func tracedQueries(t *testing.T, tr tracerFn) *store.Queries {
+	return store.New(tracedPool(t, tr))
 }
 
 // NOTE: mountAll is a hand-copied router, so the 403 assertions here do not prove
@@ -176,6 +183,7 @@ type fx struct {
 
 type fxOpt struct {
 	queries *store.Queries // handler-side queries; nil = real
+	pool    *pgxpool.Pool  // handler-side pool; nil = the real test pool
 	mutate  func(*Handlers)
 }
 
@@ -209,8 +217,12 @@ func newFx(t *testing.T, opts ...func(*fxOpt)) *fx {
 	if o.queries != nil {
 		hq = o.queries
 	}
+	hpool := pool
+	if o.pool != nil {
+		hpool = o.pool
+	}
 	f.h = Handlers{
-		Log: slog.New(slog.NewTextHandler(f.logs, nil)), Queries: hq, Pool: pool, Queue: f.dq,
+		Log: slog.New(slog.NewTextHandler(f.logs, nil)), Queries: hq, Pool: hpool, Queue: f.dq,
 		Portal: f.ps, AppBaseURL: "https://app.example.test",
 	}
 	if o.mutate != nil {
@@ -223,6 +235,16 @@ func newFx(t *testing.T, opts ...func(*fxOpt)) *fx {
 }
 
 func withQueries(q *store.Queries) func(*fxOpt) { return func(o *fxOpt) { o.queries = q } }
+
+// withTracedPool points BOTH the handler's Queries and Pool at one traced pool,
+// so a fault fires whether a statement runs directly or inside the publish tx.
+func withTracedPool(t *testing.T, tr tracerFn) func(*fxOpt) {
+	tp := tracedPool(t, tr)
+	return func(o *fxOpt) {
+		o.queries = store.New(tp)
+		o.pool = tp
+	}
+}
 func withHandlers(m func(*Handlers)) func(*fxOpt) {
 	return func(o *fxOpt) { o.mutate = m }
 }

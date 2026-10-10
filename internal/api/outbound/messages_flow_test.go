@@ -177,14 +177,17 @@ func TestPublish_DatabaseFailures(t *testing.T) {
 		name, marker string
 		msgs         int // messages expected in the store afterwards
 	}
+	// Publish is one transaction (message + fan-out), so a failure at ANY step
+	// rolls the whole thing back — no message is left behind, whichever query
+	// fails. The fault must trace the Pool, since the tx runs on it.
 	for _, c := range []tc{
 		{"insert message", "insert into messages", 0},
-		{"match endpoints", "cardinality(filter_event_types)", 1},
-		{"insert deliveries", "insert into message_deliveries", 1},
+		{"match endpoints", "cardinality(filter_event_types)", 0},
+		{"insert deliveries", "insert into message_deliveries", 0},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			f := newFx(t, withQueries(tracedQueries(t, failAll(c.marker))))
+			f := newFx(t, withTracedPool(t, failAll(c.marker)))
 			et := uniq("dbfail")
 			f.mkEventType(f.oid, et, nil)
 			f.mkEp(f.app, "https://ex.test/x")
@@ -200,7 +203,7 @@ func TestPublish_DatabaseFailures(t *testing.T) {
 		})
 	}
 	t.Run("idempotency lookup", func(t *testing.T) {
-		f := newFx(t, withQueries(tracedQueries(t, failAll("from messages where app_id = $1 and event_id = $2"))))
+		f := newFx(t, withTracedPool(t, failAll("from messages where app_id = $1 and event_id = $2")))
 		et := uniq("idemfail")
 		f.mkEventType(f.oid, et, nil)
 		body := map[string]any{"event_type": et, "payload": 1, "event_id": "same"}
