@@ -167,7 +167,13 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		ok, ferr := filter.Match(*row.EndpointFilterExpr, true, row.Payload, epHeaders,
 			filter.Meta{EventType: row.EventType, Channels: row.Channels})
 		if ferr != nil {
-			h.Log.WarnContext(ctx, "filter eval error; failing open", "delivery_id", did, "err", ferr) // fail-open: deliver
+			// Fail-closed + visible: a filter eval error is deterministic, so
+			// terminate and surface it (same sequence as the transform-error path
+			// below) instead of delivering an event the filter couldn't confirm
+			// should be sent.
+			h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, 0, "filter: "+ferr.Error())
+			_ = h.Queries.MarkDeliveryDead(ctx, store.UUID(did))
+			return q.DeadLetter(ctx, raw)
 		} else if !ok {
 			_ = h.Queries.MarkDeliveryFiltered(ctx, store.UUID(did))
 			return q.Ack(ctx, raw) // terminal 'filtered': no HTTP, no sign

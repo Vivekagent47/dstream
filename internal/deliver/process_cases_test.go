@@ -608,18 +608,18 @@ func TestProcess_FilterMatchDelivers(t *testing.T) {
 	}
 }
 
-func TestProcess_FilterErrorFailsOpen(t *testing.T) {
+func TestProcess_FilterErrorFailsClosed(t *testing.T) {
 	d := newDest(t, "", 200)
 	f := seed(t, seedOpt{url: d.url(), filter: strp("this is ((( not an expression")})
 	if err := f.process(0); err != nil {
 		t.Fatal(err)
 	}
-	f.wantState("delivered", 1)
-	if len(d.calls()) != 1 {
-		t.Fatal("a filter eval error must fail open and deliver")
-	}
-	if !strings.Contains(f.log.String(), "filter eval error; failing open") {
-		t.Errorf("fail-open not logged: %s", f.log.String())
+	// Fail-closed + visible: a filter eval error terminates the event (dead/failed)
+	// and records the reason — it must NOT deliver.
+	f.settled("dead")
+	f.wantState("failed", 0)
+	if len(d.calls()) != 0 {
+		t.Fatalf("filter error must not deliver, got %d calls", len(d.calls()))
 	}
 }
 

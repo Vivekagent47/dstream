@@ -349,8 +349,18 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		if row.FilterExpr != nil && *row.FilterExpr != "" {
 			ok, ferr := filter.Match(*row.FilterExpr, false, body, flat, filter.Meta{})
 			if ferr != nil {
-				// Fail-open: an eval error must not silently swallow events.
-				h.Log.WarnContext(ctx, "filter eval error; failing open", "event_id", p.EventID, "err", ferr)
+				// Fail-closed + visible: a filter eval error is deterministic (e.g. a
+				// missing key), so don't deliver an event the filter couldn't confirm
+				// should be sent — terminate and surface it, same non-retryable
+				// sequence as the transform-error path below.
+				h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), fmt.Errorf("filter: %v", ferr))
+				_ = h.Queries.MarkEventFailed(ctx, row.ID)
+				if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+					return err
+				}
+				metrics.Delivery(destID, connID, "failed")
+				metrics.Attempt(connID, "deadletter")
+				return nil
 			} else if !ok {
 				if err := h.Queries.MarkEventFiltered(ctx, row.ID); err != nil {
 					return fmt.Errorf("mark filtered: %w", err)

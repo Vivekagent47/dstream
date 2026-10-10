@@ -16,7 +16,7 @@ func TestMatch(t *testing.T) {
 		{"header", `headers["x-src"] == "stripe"`, false, true, false},
 		{"has guard true", `has(payload.type)`, false, true, false},
 		{"has guard false", `has(payload.missing)`, false, false, false},
-		{"missing field errs (fail-open handled by caller)", `payload.missing == 1`, false, false, true},
+		{"missing field errs (caller decides policy)", `payload.missing == 1`, false, false, true},
 		{"outbound vars", `event_type == "user.created" && size(channels) > 0`, true, true, false},
 	}
 	for _, c := range cases {
