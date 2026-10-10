@@ -187,3 +187,18 @@ func TestCheckDedupRollback(t *testing.T) {
 		t.Fatalf("post-rollback checkDedup: dup=%v err=%v, want dup=false", dup, err)
 	}
 }
+
+func TestParseRemoteAddrForms(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.5:1234":  "203.0.113.5",
+		"203.0.113.5":       "203.0.113.5",
+		"[2001:db8::1]:443": "2001:db8::1",
+		"2001:db8::1":       "2001:db8::1",
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/e/x", nil)
+		r.RemoteAddr = in
+		if got := parseRemoteAddr(r); got == nil || got.String() != want {
+			t.Errorf("parseRemoteAddr(%q) = %v, want %s", in, got, want)
+		}
+	}
+}

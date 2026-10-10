@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -605,9 +606,9 @@ func parseRemoteAddr(r *http.Request) *netip.Addr {
 	// normalized it to the real client IP, peeling X-Forwarded-For only through
 	// configured trusted proxies. Parsing raw XFF here would bypass that gate and
 	// let any client forge the stored ingest_ip (GHSA-3fxj-6jh8-hvhx, audit #10).
-	host := r.RemoteAddr
-	if i := strings.LastIndexByte(host, ':'); i >= 0 {
-		host = host[:i]
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil { // no port: whole string is the host (bare IPv4 / IPv6)
+		host = strings.Trim(r.RemoteAddr, "[]")
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {

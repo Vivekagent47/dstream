@@ -318,8 +318,8 @@ func (d Handlers) dispatchEventToCLI(
 	frame := map[string]any{
 		"type":     "event",
 		"event_id": eventID.String(),
-		"method":   "POST",
-		"path":     "/",
+		"method":   row.RequestMethod,
+		"path":     row.RequestPath,
 		"headers":  headers,
 		"body":     body,
 	}

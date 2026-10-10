@@ -37,7 +37,9 @@ SELECT e.id              AS id,
        d.rate_limit_burst AS destination_rate_limit_burst,
        d.max_inflight    AS destination_max_inflight,
        r.body_ref        AS body_ref,
-       r.headers         AS request_headers
+       r.headers         AS request_headers,
+       r.http_method     AS request_method,
+       r.http_path       AS request_path
 FROM events e
 JOIN connections c ON c.id = e.connection_id
 JOIN destinations d ON d.id = c.destination_id

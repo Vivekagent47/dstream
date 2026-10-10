@@ -21,10 +21,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// cliHTTP is the shared client for API calls and fixture forwards: a server
+// that accepts the connection but never answers must not hang the CLI forever.
+var cliHTTP = &http.Client{Timeout: 30 * time.Second}
+
+// cliCtx is cancelled on SIGINT/SIGTERM (set in cliCmd's PersistentPreRun) so
+// Ctrl-C aborts in-flight API requests.
+var cliCtx = context.Background()
+
 func cliCmd() *cobra.Command {
+	var stop context.CancelFunc
 	c := &cobra.Command{
 		Use:   "cli",
 		Short: "Local development CLI (tunnel, replay, listen)",
+		PersistentPreRun: func(*cobra.Command, []string) {
+			cliCtx, stop = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		},
+		PersistentPostRun: func(*cobra.Command, []string) { stop() },
 	}
 	c.AddCommand(listenCmd(), fixturesCmd(), replayCmd(), importCmd(), scenarioCmd())
 	return c
@@ -76,7 +89,7 @@ func listenCmd() *cobra.Command {
 				cancel()
 			}()
 
-			return runTunnel(ctx, wsURL, apiKey, forwardFlag)
+			return runTunnelReconnect(ctx, wsURL, apiKey, forwardFlag)
 		},
 	}
 	cmd.Flags().StringVar(&sourceFlag, "source", "", "Source ID or name to listen on (required)")
@@ -96,12 +109,12 @@ func resolveSource(base, apiKey, ref string) (string, error) {
 	if isUUID(ref) {
 		return ref, nil
 	}
-	req, err := http.NewRequest("GET", base+"/api/cli/sources", nil)
+	req, err := http.NewRequestWithContext(cliCtx, "GET", base+"/api/cli/sources", nil)
 	if err != nil {
 		return "", fmt.Errorf("build request for %s: %w", base, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliHTTP.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("list sources: %w", err)
 	}
@@ -166,6 +179,31 @@ type tunnelResponse struct {
 	Error   string              `json:"error,omitempty"`
 }
 
+// runTunnelReconnect re-runs runTunnel after any error with capped backoff
+// (1s to 30s) and returns nil only once ctx is cancelled.
+func runTunnelReconnect(ctx context.Context, wsURL, apiKey, forwardURL string) error {
+	backoff := time.Second
+	for {
+		start := time.Now()
+		err := runTunnel(ctx, wsURL, apiKey, forwardURL)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if time.Since(start) > 10*time.Second {
+			backoff = time.Second // was healthy for a while; restart the ramp
+		}
+		fmt.Fprintf(os.Stderr, "tunnel lost (%v); reconnecting in %s\n", err, backoff)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+}
+
 func runTunnel(ctx context.Context, wsURL, apiKey, forwardURL string) error {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+apiKey)
@@ -204,10 +242,29 @@ func runTunnel(ctx context.Context, wsURL, apiKey, forwardURL string) error {
 	}
 }
 
+// joinForwardURL appends the event's path (and query, if it carries one) to the
+// forward URL. Empty or unparseable path leaves forwardURL untouched.
+func joinForwardURL(forwardURL, evPath string) string {
+	if evPath == "" {
+		return forwardURL
+	}
+	u, err := url.Parse(forwardURL)
+	p, err2 := url.Parse(evPath)
+	if err != nil || err2 != nil {
+		return forwardURL
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + p.Path
+	u.RawPath = ""
+	if p.RawQuery != "" {
+		u.RawQuery = p.RawQuery
+	}
+	return u.String()
+}
+
 func forward(ctx context.Context, conn *websocket.Conn, client *http.Client, forwardURL string, ev tunnelEvent) {
 	resp := tunnelResponse{Type: "response", EventID: ev.EventID}
 
-	req, err := http.NewRequestWithContext(ctx, ev.Method, forwardURL, bytes.NewReader(ev.Body))
+	req, err := http.NewRequestWithContext(ctx, ev.Method, joinForwardURL(forwardURL, ev.Path), bytes.NewReader(ev.Body))
 	if err != nil {
 		resp.Error = err.Error()
 		_ = wsjson.Write(ctx, conn, resp)
@@ -250,12 +307,12 @@ func cliAuth(baseFlag string) (apiKey, base string, err error) {
 
 // cliGetJSON does an authed GET and decodes the JSON body into out.
 func cliGetJSON(url, apiKey string, out any) error {
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(cliCtx, "GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("build request for %s: %w", url, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliHTTP.Do(req)
 	if err != nil {
 		return err
 	}
@@ -275,13 +332,13 @@ func cliPostJSON(url, apiKey string, in any, out any) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(cliCtx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build request for %s: %w", url, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliHTTP.Do(req)
 	if err != nil {
 		return err
 	}
@@ -395,7 +452,7 @@ func forwardExport(exp cliExport, target string) (status int, dur time.Duration,
 	if method == "" {
 		method = http.MethodPost
 	}
-	req, err := http.NewRequest(method, target, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(cliCtx, method, target, bytes.NewReader(b))
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -411,7 +468,7 @@ func forwardExport(exp cliExport, target string) (status int, dur time.Duration,
 		req.Header.Set("Content-Type", exp.ContentType)
 	}
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliHTTP.Do(req)
 	if err != nil {
 		return 0, time.Since(start), "", err
 	}
