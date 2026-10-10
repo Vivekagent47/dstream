@@ -362,6 +362,28 @@ func TestIngest_Dedup_SameBodyOnceInsideWindowTwiceOutside(t *testing.T) {
 	}
 }
 
+// The dedup key covers method+path+body: same body under a different method is
+// a distinct request and must be accepted; identical method+body still dedups.
+func TestIngest_Dedup_KeyIncludesMethod(t *testing.T) {
+	e := newCaptureEnv(t)
+	e.addConn(t)
+	const body = `{"same":true}`
+	post := e.postHdr(t, http.MethodPost, body, nil)
+	put := e.postHdr(t, http.MethodPut, body, nil)
+	del := e.postHdr(t, http.MethodDelete, body, nil)
+	for name, r := range map[string]*httptest.ResponseRecorder{"post": post, "put": put, "delete": del} {
+		if r.Code != http.StatusAccepted || strings.Contains(r.Body.String(), "deduped") {
+			t.Errorf("%s: status=%d body=%s, want accepted and not deduped", name, r.Code, r.Body)
+		}
+	}
+	if dup := e.postHdr(t, http.MethodPut, body, nil); !strings.Contains(dup.Body.String(), `"deduped":true`) {
+		t.Errorf("same method+body repeat = %s, want deduped", dup.Body)
+	}
+	if e.events(t) != 3 {
+		t.Errorf("events = %d, want 3", e.events(t))
+	}
+}
+
 func TestIngest_DedupDown_FailsOpenAndLogs(t *testing.T) {
 	e := newCaptureEnv(t)
 	e.addConn(t)

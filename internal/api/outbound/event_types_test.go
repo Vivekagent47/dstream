@@ -24,7 +24,7 @@ func etRoutes(r chi.Router, h Handlers) {
 func TestCreateAndGetEventType(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), etRoutes)
+	r := newRouter(t, q, nil, sign(t), etRoutes)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, sessionReq(t, sign(t), http.MethodPost, "/api/event-types", uid, oid,
@@ -49,7 +49,7 @@ func TestCreateAndGetEventType(t *testing.T) {
 func TestCreateEventTypeDuplicate(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), etRoutes)
+	r := newRouter(t, q, nil, sign(t), etRoutes)
 
 	body := map[string]any{"name": "user.created", "description": "a user was created"}
 
@@ -72,7 +72,7 @@ func TestCreateEventTypeDuplicate(t *testing.T) {
 func TestPatchEventTypeNullSchema(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), etRoutes)
+	r := newRouter(t, q, nil, sign(t), etRoutes)
 
 	// schema-less event type: editing description + archiving with schema:null must succeed.
 	rec := httptest.NewRecorder()

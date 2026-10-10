@@ -23,6 +23,9 @@ spec:
       app.kubernetes.io/component: server
   template:
     metadata:
+      annotations:
+        checksum/config: 4bd894fd4884909ff6770b6f2796d3e4e16fc1134e093e49c95fa480f912c36b
+        checksum/secret: a3e48c2ae45f5f017bf513bafe97fcec4e3b3f0547e10b2c87f6cd6c22fe6403
       labels:
         app.kubernetes.io/name: dstream
         app.kubernetes.io/instance: dstream
@@ -51,6 +54,11 @@ spec:
         args: ["server"]
         ports:
         - { name: http, containerPort: 8080 }
+        # Keep serving while endpoint removal propagates; sleep 5 + app
+        # shutdown (15s) stays well under terminationGracePeriodSeconds (35).
+        lifecycle:
+          preStop:
+            exec: { command: ["sleep", "5"] }
         envFrom:
           - configMapRef:
               name: dstream-config

@@ -293,20 +293,18 @@ func TestProcess_DeferralScheduleFailureLeavesTaskLeased(t *testing.T) {
 
 // --- filter, transform ---
 
-func TestProcess_FilterEvalErrorFailsOpenAndDelivers(t *testing.T) {
+func TestProcess_FilterEvalErrorIsTerminal(t *testing.T) {
 	e := newWenv(t)
-	lb := &logCapture{}
-	e.h.Log = lb.logger()
 	delID, _, orgID, epID, _ := e.seed(e.srv.URL)
 	e.exec(`UPDATE endpoints SET filter_expr = 'payload.missing == 1' WHERE id = $1`, store.UUID(epID))
 	if err := e.process(delID, orgID); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := e.delStatus(delID); st != "delivered" || e.hits.Load() != 1 {
-		t.Fatalf("status=%q hits=%d, want fail-open delivery", st, e.hits.Load())
-	}
-	if !strings.Contains(lb.String(), "filter eval error; failing open") {
-		t.Errorf("fail-open not logged: %s", lb)
+	// Fail-closed + visible: a filter eval error (missing key) dead-letters the
+	// delivery with the reason recorded; it must not reach the wire.
+	e.wantDead(delID, "filter:")
+	if e.hits.Load() != 0 {
+		t.Fatalf("filter error must not send, got %d hits", e.hits.Load())
 	}
 }
 

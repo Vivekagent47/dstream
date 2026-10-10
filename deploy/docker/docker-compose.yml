@@ -74,6 +74,7 @@ services:
       DSTREAM_REDIS_ADDR: redis:6379
       DSTREAM_TRACING_ENABLED: "true"
       DSTREAM_TRACING_OTLP_ENDPOINT: http://jaeger:4318
+      DSTREAM_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     ports:
       - "8080:8080"
     depends_on:

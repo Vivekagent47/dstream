@@ -260,6 +260,7 @@ CREATE TABLE request_bodies (
     body        BYTEA,                       -- nullable: payload retention nulls it past the window
     stored_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX request_bodies_stored_at_idx ON request_bodies (stored_at);
 
 CREATE TABLE capture_rules (
     id          UUID PRIMARY KEY DEFAULT uuidv7(),
@@ -363,6 +364,7 @@ CREATE TABLE attempts (
     UNIQUE (event_id, attempt_num)
 );
 CREATE INDEX attempts_event_idx ON attempts (event_id);
+CREATE INDEX attempts_attempted_at_idx ON attempts (attempted_at);
 
 -- =========================================================================
 -- CLI tunnel
@@ -457,6 +459,7 @@ CREATE TABLE messages (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX messages_app_created_idx ON messages (app_id, created_at DESC);
+CREATE INDEX messages_created_at_idx ON messages (created_at);
 CREATE UNIQUE INDEX messages_app_event_id_idx ON messages (app_id, event_id) WHERE event_id IS NOT NULL;
 
 CREATE TABLE message_deliveries (
@@ -478,6 +481,8 @@ CREATE INDEX message_deliveries_message_idx ON message_deliveries (message_id);
 -- replay/recover reuse the existing row. Enforces that + makes concurrent replay
 -- safe (the loser hits ON CONFLICT instead of inserting a duplicate → double send).
 CREATE UNIQUE INDEX message_deliveries_msg_ep_idx ON message_deliveries (message_id, endpoint_id);
+-- Reaper (ClaimStuckMessageDeliveries): stuck queued rows with no retry scheduled.
+CREATE INDEX message_deliveries_stuck_idx ON message_deliveries (updated_at) WHERE status = 'queued' AND next_retry_at IS NULL;
 
 CREATE TABLE message_delivery_attempts (
   id               UUID PRIMARY KEY DEFAULT uuidv7(),
@@ -491,6 +496,7 @@ CREATE TABLE message_delivery_attempts (
   attempted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX mda_delivery_attempt_idx ON message_delivery_attempts (delivery_id, attempt_num);
+CREATE INDEX mda_attempted_at_idx ON message_delivery_attempts (attempted_at);
 
 -- =========================================================================
 -- Usage metering

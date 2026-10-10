@@ -17,7 +17,10 @@ import (
 func msgRoutes(r chi.Router, h Handlers) {
 	r.Route("/applications", func(r chi.Router) {
 		r.Post("/", h.CreateApplication)
-		r.Route("/{app_id}/endpoints", func(r chi.Router) { r.Post("/", h.CreateEndpoint) })
+		r.Route("/{app_id}/endpoints", func(r chi.Router) {
+			r.Post("/", h.CreateEndpoint)
+			r.Post("/{id}/test", h.TestEndpoint)
+		})
 		r.Route("/{app_id}/messages", func(r chi.Router) { r.Post("/", h.CreateMessage) })
 	})
 	r.Route("/event-types", func(r chi.Router) { r.Post("/", h.CreateEventType) })
@@ -48,7 +51,7 @@ func TestSendMessageFansOutWithFilter(t *testing.T) {
 	rdb := testRedis(t)
 	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, dq, sign(t), msgRoutes)
+	r := newRouter(t, q, dq, sign(t), msgRoutes)
 
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -114,7 +117,7 @@ func TestReplayExpungedMessageReturns422(t *testing.T) {
 	rdb := testRedis(t)
 	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, dq, sign(t), replayRoutes)
+	r := newRouter(t, q, dq, sign(t), replayRoutes)
 
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -157,7 +160,7 @@ func TestSendMessageFansOutWithChannels(t *testing.T) {
 	rdb := testRedis(t)
 	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, dq, sign(t), msgRoutes)
+	r := newRouter(t, q, dq, sign(t), msgRoutes)
 
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -221,7 +224,7 @@ func TestSendMessageEmptyEventIDNotIdempotent(t *testing.T) {
 	rdb := testRedis(t)
 	dq := dqueue.NewClient(rdb).WithPrefix("obtest-" + uuidNewShort())
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, dq, sign(t), msgRoutes)
+	r := newRouter(t, q, dq, sign(t), msgRoutes)
 
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

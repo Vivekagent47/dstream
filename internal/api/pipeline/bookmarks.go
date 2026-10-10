@@ -204,6 +204,10 @@ func (d Handlers) ListBookmarks(w http.ResponseWriter, r *http.Request) {
 			httpx.Err(w, http.StatusBadRequest, "invalid source_id")
 			return
 		}
+		if id == uuid.Nil { // store.UUID(Nil) is NULL = unfiltered
+			httpx.Err(w, http.StatusBadRequest, "invalid source_id")
+			return
+		}
 		params.SourceID = store.UUID(id)
 	}
 	if tag := r.URL.Query().Get("tag"); tag != "" {

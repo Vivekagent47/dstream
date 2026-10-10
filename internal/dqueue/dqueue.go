@@ -6,9 +6,12 @@
 // so a single org's backlog can never starve the others.
 //
 // At-least-once: a picked event moves to the processing ZSET under a lease
-// deadline; Ack removes it, DeadLetter terminates it, and Recover reinjects any
-// event whose lease expired (crashed worker). Scheduled retries/backoff live in
-// the scheduled ZSET and are promoted to pending by PromoteDue.
+// deadline and a per-pick fencing token; Ack removes it, DeadLetter terminates
+// it, and Recover reinjects any event whose lease expired (crashed worker). The
+// token (prefixed to the processing member, "<token>\x1f<evt>") ensures a stale
+// worker whose lease was already recovered can't Ack away the event's newer
+// lease — its Ack targets a token that no longer exists. Scheduled retries/
+// backoff live in the scheduled ZSET and are promoted to pending by PromoteDue.
 //
 // Every multi-key mutation is a single Lua script (atomic under Redis's single
 // thread), so the queue is correct across multiple worker nodes with no locks.
@@ -91,7 +94,12 @@ return n
 `)
 
 // fairPickScript: pop the front org from the ring, take one event, lease it in
-// the processing ZSET, and re-append the org iff it still has pending work.
+// the processing ZSET under a fencing token, and re-append the org iff it still
+// has pending work. The processing member is "<token>\x1f<evt>": the token
+// (ARGV[3], unique per pick) fences the lease so a stale holder's Ack/DeadLetter
+// — which target this exact member — can't remove a newer lease of the same
+// event. \x1f (unit separator) can never occur in JSON, so an untagged member
+// left in processing across a rollout still splits to itself (see stripToken).
 var fairPickScript = redis.NewScript(`
 local p = ARGV[1]
 local org = redis.call('LPOP', p..':orgs')
@@ -99,9 +107,10 @@ if not org then return false end
 local pkey = p..':pending:'..org
 local evt = redis.call('LPOP', pkey)
 if not evt then return false end
-redis.call('ZADD', p..':processing', ARGV[2], evt)
+local member = ARGV[3]..'\31'..evt
+redis.call('ZADD', p..':processing', ARGV[2], member)
 if tonumber(redis.call('LLEN', pkey)) > 0 then redis.call('RPUSH', p..':orgs', org) end
-return evt
+return member
 `)
 
 // deadListCap bounds <p>:dead to the most recent N entries. The dead list is a
@@ -109,14 +118,20 @@ return evt
 // (MarkEventFailed) — so without a cap it would accumulate forever and OOM Redis.
 const deadListCap = 10000
 
-// deadLetterScript: terminate an event — move it from processing to the dead
-// list, then LTRIM the dead list to its most recent deadListCap entries (ARGV[3])
-// so it stays a bounded debug tail rather than growing without bound.
+// deadLetterScript: terminate an event — ZREM the exact leased member from
+// processing, push the token-stripped payload onto the dead list, then LTRIM the
+// dead list to its most recent deadListCap entries (ARGV[3]) so it stays a
+// bounded debug tail. The dead list stores the plain payload (valid JSON for
+// RequeueDead), never the fencing-tokened member.
 var deadLetterScript = redis.NewScript(`
 local p = ARGV[1]
-redis.call('RPUSH', p..':dead', ARGV[2])
+local member = ARGV[2]
+local evt = member
+local i = string.find(member, '\31', 1, true)
+if i then evt = string.sub(member, i + 1) end
+redis.call('RPUSH', p..':dead', evt)
 redis.call('LTRIM', p..':dead', -tonumber(ARGV[3]), -1)
-redis.call('ZREM', p..':processing', ARGV[2])
+redis.call('ZREM', p..':processing', member)
 return 1
 `)
 
@@ -141,8 +156,11 @@ return #due
 var recoverScript = redis.NewScript(`
 local p = ARGV[1]
 local expired = redis.call('ZRANGEBYSCORE', p..':processing', '-inf', ARGV[2])
-for _, evt in ipairs(expired) do
-  redis.call('ZREM', p..':processing', evt)
+for _, member in ipairs(expired) do
+  redis.call('ZREM', p..':processing', member)
+  local evt = member
+  local i = string.find(member, '\31', 1, true)
+  if i then evt = string.sub(member, i + 1) end
   redis.call('ZADD', p..':scheduled', ARGV[2], evt)
 end
 return #expired
@@ -179,12 +197,33 @@ func (c *Client) Schedule(ctx context.Context, p Payload, atUnixMs int64) error 
 	return c.rdb.ZAdd(ctx, c.prefix+":scheduled", redis.Z{Score: float64(atUnixMs), Member: raw}).Err()
 }
 
-// FairPick takes one event round-robin across orgs and leases it for leaseMs.
-// The returned raw member is what Ack/DeadLetter operate on. ok=false means the
-// pending ring is currently empty.
+// leaseSep separates the fencing token from the payload in a processing member.
+// \x1f (ASCII unit separator) never appears in JSON, so stripToken is a no-op on
+// an untagged member (e.g. one left in processing across a rollout).
+const leaseSep = '\x1f'
+
+// stripToken returns the payload portion of a (possibly) fencing-tokened
+// processing member: everything after the first leaseSep, or the whole string if
+// there is none.
+func stripToken(member string) string {
+	if i := strings.IndexByte(member, leaseSep); i >= 0 {
+		return member[i+1:]
+	}
+	return member
+}
+
+// FairPick takes one event round-robin across orgs and leases it for leaseMs
+// under a unique fencing token. The returned raw member (token-prefixed) is what
+// Ack/DeadLetter operate on. ok=false means the pending ring is currently empty.
+//
+// ponytail: if ctx is cancelled after the Lua script ran but before the reply
+// arrives (shutdown), the event is leased in processing yet never returned; it
+// is recovered when the lease expires (ceiling: one leaseMs window of delay).
+// Not fixed: a detached context would delay shutdown for little gain.
 func (c *Client) FairPick(ctx context.Context, leaseMs int64) (raw string, p Payload, ok bool, err error) {
 	deadline := time.Now().UnixMilli() + leaseMs
-	res, err := fairPickScript.Run(ctx, c.rdb, nil, c.prefix, deadline).Result()
+	token := uuid.NewString()
+	res, err := fairPickScript.Run(ctx, c.rdb, nil, c.prefix, deadline, token).Result()
 	if err == redis.Nil {
 		return "", Payload{}, false, nil
 	}
@@ -196,7 +235,7 @@ func (c *Client) FairPick(ctx context.Context, leaseMs int64) (raw string, p Pay
 		// script returned false (empty ring / empty list)
 		return "", Payload{}, false, nil
 	}
-	if err := json.Unmarshal([]byte(s), &p); err != nil {
+	if err := json.Unmarshal([]byte(stripToken(s)), &p); err != nil {
 		return "", Payload{}, false, err
 	}
 	return s, p, true, nil
@@ -371,7 +410,8 @@ func (c *Client) Items(ctx context.Context, lane, org string, limit int) ([]Item
 		}
 		items := make([]Item, 0, len(zs))
 		for _, z := range zs {
-			it := c.decodeItem(z.Member.(string))
+			// stripToken is a no-op on scheduled members (plain JSON, no token).
+			it := c.decodeItem(stripToken(z.Member.(string)))
 			if lane == "scheduled" {
 				it.NextRunMs = int64(z.Score)
 			} else {

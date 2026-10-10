@@ -13,6 +13,9 @@ spec:
       app.kubernetes.io/component: server
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
         {{- include "dstream.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: server
@@ -42,6 +45,11 @@ spec:
         args: ["server"]
         ports:
         - { name: http, containerPort: 8080 }
+        # Keep serving while endpoint removal propagates; sleep 5 + app
+        # shutdown (15s) stays well under terminationGracePeriodSeconds (35).
+        lifecycle:
+          preStop:
+            exec: { command: ["sleep", "5"] }
         envFrom:
           {{- include "dstream.envFrom" . | nindent 10 }}
         livenessProbe:

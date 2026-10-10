@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Vivekagent47/dstream/internal/api/httpx"
 	"github.com/Vivekagent47/dstream/internal/auth"
@@ -26,7 +27,10 @@ func isUniqueViolation(err error) bool {
 type Handlers struct {
 	Log     *slog.Logger
 	Queries *store.Queries
-	Queue   *dqueue.Client
+	// Pool begins transactions (publish wraps message-create + fan-out atomically
+	// so a message can never persist with zero deliveries).
+	Pool  *pgxpool.Pool
+	Queue *dqueue.Client
 	// SelfHosts are dstream's own hostnames; an endpoint pointing at one is
 	// rejected at create/patch (loop guard).
 	SelfHosts []string

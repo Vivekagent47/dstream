@@ -99,7 +99,21 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 	payload := buf.Bytes()
 	sum := sha256.Sum256(payload)
 
-	msg, err := d.Queries.CreateMessage(r.Context(), store.CreateMessageParams{
+	// Create the message and fan out to matching endpoints in ONE transaction, so a
+	// message can never persist with zero deliveries. Without it, a fan-out failure
+	// after the message commits leaves a delivery-less message, and the client's
+	// idempotent retry then returns success (the ON CONFLICT path) without ever
+	// creating the deliveries. Enqueue is Redis, so it runs after commit.
+	tx, err := d.Pool.Begin(r.Context())
+	if err != nil {
+		d.Log.Error("begin publish tx", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "create message")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }() // no-op after Commit
+	qtx := d.Queries.WithTx(tx)
+
+	msg, err := qtx.CreateMessage(r.Context(), store.CreateMessageParams{
 		AppID:       app.ID,
 		OrgID:       store.UUID(p.OrgID),
 		EventType:   req.EventType,
@@ -109,7 +123,9 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		Channels:    req.Channels,
 	})
 	if err != nil {
-		// ON CONFLICT DO NOTHING returns no row on an idempotency collision.
+		// ON CONFLICT DO NOTHING returns no row on an idempotency collision. A DO
+		// NOTHING conflict doesn't abort the tx, but we're returning either way, so
+		// read the existing row outside it and let the rollback drop the empty tx.
 		if errors.Is(err, pgx.ErrNoRows) && req.EventID != nil {
 			existing, gerr := d.Queries.GetMessageByAppEventID(r.Context(), store.GetMessageByAppEventIDParams{
 				AppID: app.ID, EventID: req.EventID,
@@ -131,7 +147,7 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fan out to matching, enabled endpoints.
-	epIDs, err := d.Queries.ListMatchingEndpoints(r.Context(), store.ListMatchingEndpointsParams{
+	epIDs, err := qtx.ListMatchingEndpoints(r.Context(), store.ListMatchingEndpointsParams{
 		AppID: app.ID, EventType: req.EventType, MsgChannels: req.Channels,
 	})
 	if err != nil {
@@ -139,8 +155,9 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusInternalServerError, "fan-out")
 		return
 	}
+	var dels []store.CreateMessageDeliveriesBatchRow
 	if len(epIDs) > 0 {
-		dels, err := d.Queries.CreateMessageDeliveriesBatch(r.Context(), store.CreateMessageDeliveriesBatchParams{
+		dels, err = qtx.CreateMessageDeliveriesBatch(r.Context(), store.CreateMessageDeliveriesBatchParams{
 			MessageID:   msg.ID,
 			OrgID:       store.UUID(p.OrgID),
 			EndpointIds: epIDs,
@@ -150,17 +167,24 @@ func (d Handlers) CreateMessage(w http.ResponseWriter, r *http.Request) {
 			httpx.Err(w, http.StatusInternalServerError, "fan-out")
 			return
 		}
-		for _, del := range dels {
-			data, _ := json.Marshal(map[string]string{"delivery_id": store.GoUUID(del.ID).String()})
-			if err := d.Queue.Enqueue(r.Context(), dqueue.Payload{
-				Kind:       "message",
-				OrgID:      p.OrgID,
-				EnqueuedAt: time.Now().UnixMilli(),
-				Data:       data,
-			}); err != nil {
-				// Leave the row 'queued'; the outbound reaper re-enqueues it.
-				d.Log.Error("enqueue delivery", "err", err, "delivery_id", store.GoUUID(del.ID))
-			}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		d.Log.Error("commit publish tx", "err", err)
+		httpx.Err(w, http.StatusInternalServerError, "create message")
+		return
+	}
+
+	// Message + deliveries are durable now; enqueue the Redis tasks. A failed
+	// enqueue leaves the row 'queued' for the outbound reaper to re-enqueue.
+	for _, del := range dels {
+		data, _ := json.Marshal(map[string]string{"delivery_id": store.GoUUID(del.ID).String()})
+		if err := d.Queue.Enqueue(r.Context(), dqueue.Payload{
+			Kind:       "message",
+			OrgID:      p.OrgID,
+			EnqueuedAt: time.Now().UnixMilli(),
+			Data:       data,
+		}); err != nil {
+			d.Log.Error("enqueue delivery", "err", err, "delivery_id", store.GoUUID(del.ID))
 		}
 	}
 

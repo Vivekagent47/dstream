@@ -86,7 +86,7 @@ func TestMemberCannotRepointEndpoint(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
 	member := seedMember(t, q, oid)
-	r := newRouter(q, nil, sign(t), epPatchRoutes)
+	r := newRouter(t, q, nil, sign(t), epPatchRoutes)
 	appID, epID := seedAppWithEndpoint(t, r, uid, oid, "https://original.example.test/hook")
 
 	rec := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestMemberCanEditEndpointWithoutMovingURL(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
 	member := seedMember(t, q, oid)
-	r := newRouter(q, nil, sign(t), epPatchRoutes)
+	r := newRouter(t, q, nil, sign(t), epPatchRoutes)
 	appID, epID := seedAppWithEndpoint(t, r, uid, oid, "https://original.example.test/hook")
 
 	rec := httptest.NewRecorder()

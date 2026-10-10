@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/Vivekagent47/dstream/internal/filter"
 	"github.com/Vivekagent47/dstream/internal/store"
 	"github.com/Vivekagent47/dstream/internal/transform"
+	"github.com/Vivekagent47/dstream/internal/usage"
 	"github.com/Vivekagent47/dstream/internal/webhook"
 )
 
@@ -330,7 +332,10 @@ func (d Handlers) RotateEndpointSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	var body rotateSecretReq
 	if r.ContentLength != 0 {
-		_ = json.NewDecoder(r.Body).Decode(&body) // body optional
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			httpx.Err(w, http.StatusBadRequest, "invalid json")
+			return
+		}
 	}
 	newSecret := ""
 	if body.Secret != nil && *body.Secret != "" {
@@ -606,6 +611,14 @@ func (d Handlers) TestEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validatePayloadAgainstSchema(et.Schema, raw); err != nil {
 		httpx.Err(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	// A test send creates a real message + delivery, so it must meter against the
+	// publish quota like the publish path (messages.go) — otherwise this route
+	// (reachable with a portal token) is a hole straight through the org's ceiling.
+	if dec := d.Quota.CheckPublish(r.Context(), p.OrgID); dec == usage.OverHard {
+		w.Header().Set("Retry-After", usage.RetryAfter)
+		httpx.Err(w, http.StatusTooManyRequests, "quota exceeded")
 		return
 	}
 	var buf bytes.Buffer

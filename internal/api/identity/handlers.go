@@ -37,4 +37,7 @@ type Handlers struct {
 	// does not change shape with configuration.
 	Authenticator auth.Authenticator
 	OIDC          config.OIDCConfig
+	// EvictSourceCache drops a source from the ingest in-process cache (nil in
+	// tests); DeleteOrg uses it so a deleted org's tokens stop ingesting at once.
+	EvictSourceCache func(token string)
 }

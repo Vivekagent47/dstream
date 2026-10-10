@@ -22,38 +22,48 @@ func TestIsPublicIP(t *testing.T) {
 		{"1.1.1.1", true},
 		{"8.8.8.8", true},
 		{"2606:4700:4700::1111", true},
-		{"127.0.0.1", false},         // loopback
-		{"::1", false},               // loopback v6
-		{"169.254.169.254", false},   // cloud metadata (link-local)
-		{"10.0.0.5", false},          // RFC1918
-		{"172.16.4.2", false},        // RFC1918
-		{"192.168.1.1", false},       // RFC1918
-		{"0.0.0.0", false},           // unspecified
-		{"fe80::1", false},           // link-local v6
-		{"fc00::1", false},           // ULA
-		{"224.0.0.1", false},         // multicast
-		{"::ffff:127.0.0.1", false},  // v4-mapped loopback must not slip through
-		{"::ffff:10.0.0.1", false},   // v4-mapped private
-		{"100.64.0.1", false},        // CGNAT (RFC 6598) low edge
-		{"100.127.255.254", false},   // CGNAT (RFC 6598) high edge
-		{"::ffff:100.64.0.1", false}, // v4-mapped CGNAT must not slip through
-		{"198.18.0.1", false},        // benchmarking (RFC 2544) low edge
-		{"198.19.255.254", false},    // benchmarking (RFC 2544) high edge
-		{"100.63.255.255", true},     // just below CGNAT — still public
-		{"100.128.0.1", true},        // just above CGNAT — still public
-		{"198.17.255.255", true},     // just below benchmarking — still public
-		{"198.20.0.1", true},         // just above benchmarking — still public
-		{"::", false},                // unspecified v6
-		{"fd00::1", false},           // ULA (fc00::/7 upper half)
-		{"fe80::a:b", false},         // link-local v6
-		{"ff02::1", false},           // link-local multicast v6
-		{"ff0e::1", false},           // global multicast v6
-		{"239.255.255.250", false},   // multicast v4
-		{"169.254.0.1", false},       // link-local v4 low edge
-		{"172.31.255.255", false},    // RFC1918 high edge
-		{"172.15.255.255", true},     // just below 172.16/12
-		{"172.32.0.1", true},         // just above 172.16/12
-		{"127.255.255.254", false},   // whole 127/8 is loopback
+		{"127.0.0.1", false},              // loopback
+		{"::1", false},                    // loopback v6
+		{"169.254.169.254", false},        // cloud metadata (link-local)
+		{"10.0.0.5", false},               // RFC1918
+		{"172.16.4.2", false},             // RFC1918
+		{"192.168.1.1", false},            // RFC1918
+		{"0.0.0.0", false},                // unspecified
+		{"fe80::1", false},                // link-local v6
+		{"fc00::1", false},                // ULA
+		{"224.0.0.1", false},              // multicast
+		{"::ffff:127.0.0.1", false},       // v4-mapped loopback must not slip through
+		{"::ffff:10.0.0.1", false},        // v4-mapped private
+		{"100.64.0.1", false},             // CGNAT (RFC 6598) low edge
+		{"100.127.255.254", false},        // CGNAT (RFC 6598) high edge
+		{"::ffff:100.64.0.1", false},      // v4-mapped CGNAT must not slip through
+		{"198.18.0.1", false},             // benchmarking (RFC 2544) low edge
+		{"198.19.255.254", false},         // benchmarking (RFC 2544) high edge
+		{"0.1.2.3", false},                // this-network 0/8
+		{"169.254.169.254", false},        // cloud metadata
+		{"168.63.129.16", false},          // Azure WireServer
+		{"168.63.129.17", true},           // neighbour stays public
+		{"192.0.0.1", false},              // IETF protocol assignments
+		{"192.0.1.1", true},               // just above 192.0.0.0/24
+		{"64:ff9b::a9fe:a9fe", false},     // NAT64-embedded 169.254.169.254
+		{"64:ff9b::808:808", false},       // NAT64 low-range
+		{"::ffff:169.254.169.254", false}, // v4-mapped metadata
+		{"::ffff:168.63.129.16", false},   // v4-mapped Azure
+		{"100.63.255.255", true},          // just below CGNAT — still public
+		{"100.128.0.1", true},             // just above CGNAT — still public
+		{"198.17.255.255", true},          // just below benchmarking — still public
+		{"198.20.0.1", true},              // just above benchmarking — still public
+		{"::", false},                     // unspecified v6
+		{"fd00::1", false},                // ULA (fc00::/7 upper half)
+		{"fe80::a:b", false},              // link-local v6
+		{"ff02::1", false},                // link-local multicast v6
+		{"ff0e::1", false},                // global multicast v6
+		{"239.255.255.250", false},        // multicast v4
+		{"169.254.0.1", false},            // link-local v4 low edge
+		{"172.31.255.255", false},         // RFC1918 high edge
+		{"172.15.255.255", true},          // just below 172.16/12
+		{"172.32.0.1", true},              // just above 172.16/12
+		{"127.255.255.254", false},        // whole 127/8 is loopback
 		{"2001:4860:4860::8888", true},
 		// Documents CURRENT behaviour, not contract: isPublicIP treats the
 		// broadcast address, and all of 240.0.0.0/4 (reserved), as public.

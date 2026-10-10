@@ -24,7 +24,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/nginx: 7b39580b8e2393a5ed1cf19eb1a2eebd167790f18aaab76a6490e655e86e3b4c
+        checksum/nginx: 89ba5729e8f9a1ca734d7ec734412f41375da437eab40aacf7d239e8addffca3
       labels:
         app.kubernetes.io/name: dstream
         app.kubernetes.io/instance: dstream

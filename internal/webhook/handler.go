@@ -69,9 +69,15 @@ func (h Handler) effTransformMaxOutput() int {
 
 const inflightTTL = 150 * time.Second // 5x the delivery timeout, matches deliver's lease
 
+// Refresh the TTL only on a real acquisition (n<=cap, ARGV[2]). Refreshing on
+// every INCR kept a crashed worker's phantom slot alive forever under continuous
+// traffic (see deliver.inflightIncrScript). This shares deliver's inflight:org:*
+// budget, so the two scripts must stay identical.
 var inflightScript = redis.NewScript(`
 local n = redis.call('INCR', KEYS[1])
-redis.call('EXPIRE', KEYS[1], ARGV[1])
+if n <= tonumber(ARGV[2]) then
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
 return n`)
 
 func deliveryID(p dqueue.Payload) (uuid.UUID, error) {
@@ -131,7 +137,7 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 	orgID := store.GoUUID(row.OrgID)
 	if h.PerOrgMaxInflight > 0 && h.Redis != nil {
 		key := fmt.Sprintf("inflight:org:%s", orgID)
-		n, ierr := inflightScript.Run(ctx, h.Redis, []string{key}, int(inflightTTL.Seconds())).Int()
+		n, ierr := inflightScript.Run(ctx, h.Redis, []string{key}, int(inflightTTL.Seconds()), h.PerOrgMaxInflight).Int()
 		if ierr == nil {
 			if n > h.PerOrgMaxInflight {
 				h.Redis.Decr(context.Background(), key)
@@ -161,7 +167,13 @@ func (h Handler) Process(ctx context.Context, p dqueue.Payload, raw string, q *d
 		ok, ferr := filter.Match(*row.EndpointFilterExpr, true, row.Payload, epHeaders,
 			filter.Meta{EventType: row.EventType, Channels: row.Channels})
 		if ferr != nil {
-			h.Log.WarnContext(ctx, "filter eval error; failing open", "delivery_id", did, "err", ferr) // fail-open: deliver
+			// Fail-closed + visible: a filter eval error is deterministic, so
+			// terminate and surface it (same sequence as the transform-error path
+			// below) instead of delivering an event the filter couldn't confirm
+			// should be sent.
+			h.recordAttempt(ctx, did, attemptNum, 0, nil, nil, 0, "filter: "+ferr.Error())
+			_ = h.Queries.MarkDeliveryDead(ctx, store.UUID(did))
+			return q.DeadLetter(ctx, raw)
 		} else if !ok {
 			_ = h.Queries.MarkDeliveryFiltered(ctx, store.UUID(did))
 			return q.Ack(ctx, raw) // terminal 'filtered': no HTTP, no sign

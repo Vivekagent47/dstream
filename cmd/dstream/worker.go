@@ -28,6 +28,26 @@ import (
 	"github.com/Vivekagent47/dstream/internal/webhook"
 )
 
+// validateWorkerRuntime rejects worker config that silently breaks liveness or
+// leaks secrets. Split out of the command so it is unit-testable without a boot.
+// Concurrency 0 starts no consumers (no heartbeat → the watchdog restarts the
+// pod); a stall window at or below the delivery timeout kills a healthy worker
+// mid-delivery (a consumer inside a send doesn't beat); the <= also rejects 0 /
+// negative durations. DevMode logs plaintext magic-link/invite tokens and the
+// mailer runs in the worker, so mirror the server's non-localhost refusal.
+func validateWorkerRuntime(cfg config.Config) error {
+	if cfg.Worker.Concurrency < 1 {
+		return fmt.Errorf("DSTREAM_WORKER_CONCURRENCY must be >= 1 (got %d)", cfg.Worker.Concurrency)
+	}
+	if cfg.Worker.StallTimeout <= deliver.DeliveryTimeout {
+		return fmt.Errorf("DSTREAM_WORKER_STALL_TIMEOUT must exceed the %s delivery timeout (got %s)", deliver.DeliveryTimeout, cfg.Worker.StallTimeout)
+	}
+	if cfg.DevMode && !isLocalBaseURL(cfg.PublicBaseURL) {
+		return fmt.Errorf("DSTREAM_DEV_MODE must be false when DSTREAM_PUBLIC_BASE_URL is not localhost (the worker logs plaintext magic-link tokens)")
+	}
+	return nil
+}
+
 func workerCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "worker",
@@ -35,6 +55,9 @@ func workerCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
+				return err
+			}
+			if err := validateWorkerRuntime(cfg); err != nil {
 				return err
 			}
 			log := logging.New(cfg.LogLevel, cfg.LogFormat)

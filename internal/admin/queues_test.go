@@ -89,9 +89,14 @@ func TestQueueDeadRequeueRoundTrip(t *testing.T) {
 	q.Enqueue(ctx, dqueue.Payload{EventID: uuid.New(), OrgID: org})
 	raw, _, _, _ := q.FairPick(ctx, 60000)
 	q.DeadLetter(ctx, raw)
+	// FairPick's raw is a tokened lease handle; the dead lane holds the plain payload.
+	dead, _, _ := q.Items(ctx, "dead", "", 100)
+	if len(dead) != 1 {
+		t.Fatalf("dead items: %d", len(dead))
+	}
 
 	r := queueRouter(d)
-	body := strings.NewReader(`{"raw":` + jsonString(raw) + `}`)
+	body := strings.NewReader(`{"raw":` + jsonString(dead[0].Raw) + `}`)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/queues/dead/requeue", body))
 	if rec.Code != http.StatusOK {

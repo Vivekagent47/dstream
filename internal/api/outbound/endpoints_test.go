@@ -26,7 +26,7 @@ func epRoutes(r chi.Router, h Handlers) {
 func TestCreateEndpointReturnsSecretOnce(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), epRoutes)
+	r := newRouter(t, q, nil, sign(t), epRoutes)
 
 	// create app
 	rec := httptest.NewRecorder()

@@ -710,10 +710,16 @@ func TestListen_ForwardsOneEventEndToEnd(t *testing.T) {
 	defer api.Close()
 	cliEnv(t, api.URL)
 
+	// The tunnel now reconnects after the server closes; stop it with SIGINT
+	// once the event has been answered.
+	go func() {
+		time.Sleep(1500 * time.Millisecond) // past the first (1s) reconnect backoff
+		_ = syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+	}()
 	_, stderr, err := execCmd(t, cliCmd(), "listen", "--source", "stripe", "--forward", target.URL)
 
-	if err == nil || !strings.Contains(err.Error(), "ws read") {
-		t.Errorf("listen ends when the server closes: err = %v", err)
+	if err != nil {
+		t.Errorf("listen exits cleanly on SIGINT: err = %v", err)
 	}
 	if !strings.Contains(stderr, "→ tunneling source "+uuidSrc+" to "+target.URL) {
 		t.Errorf("stderr = %q", stderr)

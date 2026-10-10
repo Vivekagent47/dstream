@@ -18,6 +18,12 @@ WARNING — generated secrets:
   empty and these REGENERATE — logging every session out and breaking
   Postgres auth. For GitOps, create a Secret yourself and set
   `secrets.existingSecret`.
+
+  Bundled Postgres: the data PVC survives `helm uninstall`, the generated
+  password does not. Before reinstalling in the same namespace either delete
+  the leftover PVC:
+    kubectl delete pvc -l app.kubernetes.io/instance={{ .Release.Name }}
+  or set a fixed `postgresql.password` so it matches the existing data.
 {{- end }}
 
 Migrations run as a Job. To block the release until it completes (and fail the

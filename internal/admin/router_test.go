@@ -234,12 +234,19 @@ func (e *env) pick(t *testing.T) string {
 
 func (e *env) dead(t *testing.T, org uuid.UUID) string {
 	t.Helper()
-	e.enqueue(t, org)
-	raw := e.pick(t)
+	id := e.enqueue(t, org)
+	raw := e.pick(t) // tokened lease handle: DeadLetter needs it to clear processing
 	if err := e.q.DeadLetter(context.Background(), raw); err != nil {
 		t.Fatalf("dead letter: %v", err)
 	}
-	return raw
+	// The dead lane holds the plain payload; that is the admin-facing identity.
+	for _, it := range e.lane(t, "dead", "") {
+		if it.EventID == id {
+			return it.Raw
+		}
+	}
+	t.Fatalf("dead item not found")
+	return ""
 }
 
 func (e *env) scheduled(t *testing.T, org uuid.UUID) string {
@@ -535,8 +542,8 @@ func TestQueues_PopulatedStatsItemsAndOrgs(t *testing.T) {
 	ghost := uuid.New() // pending depth for an org the database has never heard of
 
 	deadRaw := e.dead(t, ghost)
-	e.enqueue(t, ghost)
-	procRaw := e.pick(t)
+	procID := e.enqueue(t, ghost)
+	e.pick(t)           // lease only; Items reports the plain member, compared below
 	e.enqueue(t, ghost) // and one still pending
 	schedRaw := e.scheduled(t, ghost)
 	for i := 0; i < 3; i++ {
@@ -571,7 +578,7 @@ func TestQueues_PopulatedStatsItemsAndOrgs(t *testing.T) {
 	if it, tr := itemsFor("lane=dead"); len(it) != 1 || it[0].Raw != deadRaw || it[0].OrgID != ghost || tr {
 		t.Errorf("dead items: %+v truncated=%v", it, tr)
 	}
-	if it, _ := itemsFor("lane=processing"); len(it) != 1 || it[0].Raw != procRaw {
+	if it, _ := itemsFor("lane=processing"); len(it) != 1 || it[0].EventID != procID {
 		t.Errorf("processing items: %+v", it)
 	}
 	if it, _ := itemsFor("lane=scheduled"); len(it) != 1 || it[0].Raw != schedRaw || it[0].Attempt != 2 {

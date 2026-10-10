@@ -44,7 +44,7 @@ func serveWorkerHealth(ctx context.Context, addr string, wd *watchdog, stall tim
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("stalled"))
 	})
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("worker health server", "err", err)

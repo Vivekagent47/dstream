@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 
 import { api, qk, type Attempt, type EventDetail } from '#/lib/api'
+import { buildCurl } from '#/lib/curl'
 import { capitalize } from '#/lib/utils'
 import { AuthErrorBoundary } from '#/components/AuthErrorBoundary'
 import { CopyValue, DetailRow, copyText } from '#/components/detail-page'
@@ -399,16 +400,4 @@ function formatHeaders(headers: Record<string, string | string[]>): string {
   return Object.entries(headers)
     .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
     .join('\n')
-}
-
-// Reproduce the delivered request as a copy-pasteable curl. Body is passed raw
-// via --data; headers replayed as sent.
-function buildCurl(ev: EventDetail): string {
-  const url = ev.destination.url ?? ''
-  const parts = [`curl -X ${ev.request.method} ${JSON.stringify(url)}`]
-  for (const [k, v] of Object.entries(ev.request.headers)) {
-    parts.push(`  -H ${JSON.stringify(`${k}: ${Array.isArray(v) ? v.join(', ') : v}`)}`)
-  }
-  if (ev.request.body) parts.push(`  --data ${JSON.stringify(ev.request.body)}`)
-  return parts.join(' \\\n')
 }

@@ -142,6 +142,10 @@ func (d Handlers) ListCaptureRules(w http.ResponseWriter, r *http.Request) {
 			httpx.Err(w, http.StatusBadRequest, "invalid source_id")
 			return
 		}
+		if id == uuid.Nil { // store.UUID(Nil) is NULL = unfiltered
+			httpx.Err(w, http.StatusBadRequest, "invalid source_id")
+			return
+		}
 		params.SourceID = store.UUID(id)
 	}
 	rows, err := d.Queries.ListCaptureRulesForOrg(r.Context(), params)

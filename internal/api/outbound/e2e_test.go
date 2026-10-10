@@ -45,7 +45,7 @@ func TestEndToEndSignedDelivery(t *testing.T) {
 		}
 	})
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, dq, sign(t), fullRoutes)
+	r := newRouter(t, q, dq, sign(t), fullRoutes)
 	ctx := context.Background()
 
 	type capture struct {

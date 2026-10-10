@@ -27,7 +27,7 @@ func TestCreateApplication(t *testing.T) {
 	pool := testPool(t)
 	q := store.New(pool)
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), appRoutes)
+	r := newRouter(t, q, nil, sign(t), appRoutes)
 
 	req := sessionReq(t, sign(t), http.MethodPost, "/api/applications", uid, oid,
 		map[string]any{"name": "Acme", "uid": "cust_1"})
@@ -49,7 +49,7 @@ func TestCreateApplication(t *testing.T) {
 func TestCreateApplicationDuplicateUID(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), appRoutes)
+	r := newRouter(t, q, nil, sign(t), appRoutes)
 	body := map[string]any{"name": "Acme", "uid": "dup_1"}
 
 	rec := httptest.NewRecorder()
@@ -69,7 +69,7 @@ func TestCreateApplicationDuplicateUID(t *testing.T) {
 func TestOperationalAppNotModifiableViaGenericRoutes(t *testing.T) {
 	q := store.New(testPool(t))
 	uid, oid := seedOrg(t, q)
-	r := newRouter(q, nil, sign(t), appRoutes)
+	r := newRouter(t, q, nil, sign(t), appRoutes)
 
 	opID, err := opevents.SeedOperationalApp(context.Background(), q, oid)
 	if err != nil {

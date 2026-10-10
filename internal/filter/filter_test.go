@@ -16,7 +16,7 @@ func TestMatch(t *testing.T) {
 		{"header", `headers["x-src"] == "stripe"`, false, true, false},
 		{"has guard true", `has(payload.type)`, false, true, false},
 		{"has guard false", `has(payload.missing)`, false, false, false},
-		{"missing field errs (fail-open handled by caller)", `payload.missing == 1`, false, false, true},
+		{"missing field errs (caller decides policy)", `payload.missing == 1`, false, false, true},
 		{"outbound vars", `event_type == "user.created" && size(channels) > 0`, true, true, false},
 	}
 	for _, c := range cases {
@@ -34,6 +34,20 @@ func TestMatch(t *testing.T) {
 				t.Fatalf("got %v want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// TestBigIntPrecision guards the UseNumber+normalizeJSON fix: an integer past
+// 2^53 must compare exactly, not round to float64. Without the fix the payload
+// value rounds to ...992 and the match against the exact literal is false.
+func TestBigIntPrecision(t *testing.T) {
+	pay := []byte(`{"id":9007199254740993}`)
+	got, err := Match(`payload.id == 9007199254740993`, false, pay, nil, Meta{})
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if !got {
+		t.Fatal("big int rounded to float64: exact-value comparison failed")
 	}
 }
 

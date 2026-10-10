@@ -22,6 +22,24 @@ import (
 	"github.com/Vivekagent47/dstream/internal/usage"
 )
 
+// maxAPIBodyBytes is the hard ceiling on any /api request body. Above the largest
+// legitimate body (bookmark import, 12 MiB); routes needing a tighter cap set
+// their own MaxBytesReader, which takes effect first.
+const maxAPIBodyBytes = 16 << 20
+
+// maxBodyBytes wraps every request body in a MaxBytesReader so a single request
+// can't buffer unbounded memory (OOM). A nil body (GET) is left alone.
+func maxBodyBytes(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, n)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // Deps bundles everything an API handler might need so we can wire them via
 // a single struct instead of an explosion of constructor arguments.
 type Deps struct {
@@ -82,6 +100,8 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		AppBaseURL:    d.AppBaseURL,
 		Authenticator: d.Authenticator,
 		OIDC:          d.OIDC,
+
+		EvictSourceCache: d.EvictSourceCache,
 	}
 	pl := pipeline.Handlers{
 		Log:              d.Log,
@@ -103,6 +123,7 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 	ob := outbound.Handlers{
 		Log:         d.Log,
 		Queries:     d.Queries,
+		Pool:        d.Pool,
 		Queue:       d.Queue,
 		SelfHosts:   d.SelfHosts,
 		SecretGrace: d.SecretGrace,
@@ -115,6 +136,12 @@ func Mount(parent chi.Router, d Deps, extra ...func(http.Handler) http.Handler) 
 		for _, m := range extra {
 			r.Use(m)
 		}
+		// Cap every request body. Without this an unauthenticated route that decodes
+		// JSON (e.g. /auth/magic-link/request) buffers whatever the client sends,
+		// so a multi-GB POST OOMs the process. 16 MiB clears the largest legitimate
+		// body (bookmark import, 12 MiB); routes that need a tighter limit (publish
+		// 5 MiB) still wrap their own MaxBytesReader, which wins.
+		r.Use(maxBodyBytes(maxAPIBodyBytes))
 
 		// Unauthenticated.
 		r.Route("/auth", func(r chi.Router) {

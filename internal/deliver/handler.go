@@ -54,13 +54,18 @@ const (
 	cliWaitTimeout = 2 * time.Minute
 )
 
-// inflightIncrScript atomically increments the per-destination in-flight
-// counter and (re)sets its TTL, so the slot lease can never be left without an
-// expiry — the non-atomic INCR-then-EXPIRE it replaces could leak a slot
-// permanently (wedging the destination) if the worker died between the calls.
+// inflightIncrScript atomically increments the in-flight counter and refreshes
+// its TTL ONLY when the result is within the cap (ARGV[2]). A crashed worker can
+// leave a phantom slot held; the TTL is what reclaims it. Refreshing on every
+// INCR (including the over-cap ones the caller immediately Decrs) kept that TTL
+// alive forever under continuous traffic, wedging the destination permanently.
+// Refreshing only on a real acquisition (n<=cap) lets a phantom's TTL lapse once
+// traffic is purely over-cap, so the slot self-heals. Live holders still refresh.
 var inflightIncrScript = redis.NewScript(`
 local n = redis.call('INCR', KEYS[1])
-redis.call('EXPIRE', KEYS[1], ARGV[1])
+if n <= tonumber(ARGV[2]) then
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
 return n
 `)
 
@@ -175,11 +180,23 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	if row.DestinationType == "cli" {
 		return h.dispatchToCLI(ctx, row, p, raw)
 	}
-	if row.DestinationType != "http" {
-		return fmt.Errorf("delivery type %q not implemented", row.DestinationType)
-	}
-	if row.DestinationUrl == nil || *row.DestinationUrl == "" {
-		return fmt.Errorf("destination has no URL")
+	// A non-http type or a missing URL can never be delivered. Returning a plain
+	// error left the task leased, so the recoverer re-promoted it every lease
+	// window forever (burning a worker slot each cycle) — it is terminal, so
+	// dead-letter it the same way the structural-URL check below does.
+	if row.DestinationType != "http" || row.DestinationUrl == nil || *row.DestinationUrl == "" {
+		reason := fmt.Errorf("destination has no URL")
+		if row.DestinationType != "http" {
+			reason = fmt.Errorf("delivery type %q not implemented", row.DestinationType)
+		}
+		h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), reason)
+		_ = h.Queries.MarkEventFailed(ctx, row.ID)
+		if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+			return err
+		}
+		metrics.Delivery(destID, connID, "failed")
+		metrics.Attempt(connID, "deadletter")
+		return nil
 	}
 	// Reject structurally-unsafe URLs up front. A bad scheme can never
 	// succeed, so don't burn the retry budget on it — record and skip. IP-level
@@ -208,7 +225,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 	if h.PerOrgMaxInflight > 0 {
 		orgKey := "inflight:org:" + store.GoUUID(row.OrgID).String()
 		ttlSec := int(DeliveryTimeout * 5 / time.Second)
-		n, err := inflightIncrScript.Run(ctx, h.Redis, []string{orgKey}, ttlSec).Int64()
+		n, err := inflightIncrScript.Run(ctx, h.Redis, []string{orgKey}, ttlSec, h.PerOrgMaxInflight).Int64()
 		if err == nil {
 			if n > int64(h.PerOrgMaxInflight) {
 				// bg ctx: a release must run even if the delivery ctx is cancelled,
@@ -253,7 +270,7 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		// Slot lease: INCR + EXPIRE atomically (~5x delivery timeout) so the
 		// counter always carries a TTL and a crashed worker can't leak a slot.
 		ttlSec := int(DeliveryTimeout * 5 / time.Second)
-		count, err := inflightIncrScript.Run(ctx, h.Redis, []string{inflightKey}, ttlSec).Int64()
+		count, err := inflightIncrScript.Run(ctx, h.Redis, []string{inflightKey}, ttlSec, int64(*row.DestinationMaxInflight)).Int64()
 		if err == nil {
 			if count > int64(*row.DestinationMaxInflight) {
 				// bg ctx: a release must run even if the delivery ctx is cancelled,
@@ -332,8 +349,18 @@ func (h *Handler) Process(ctx context.Context, p dqueue.Payload, raw string) err
 		if row.FilterExpr != nil && *row.FilterExpr != "" {
 			ok, ferr := filter.Match(*row.FilterExpr, false, body, flat, filter.Meta{})
 			if ferr != nil {
-				// Fail-open: an eval error must not silently swallow events.
-				h.Log.WarnContext(ctx, "filter eval error; failing open", "event_id", p.EventID, "err", ferr)
+				// Fail-closed + visible: a filter eval error is deterministic (e.g. a
+				// missing key), so don't deliver an event the filter couldn't confirm
+				// should be sent — terminate and surface it, same non-retryable
+				// sequence as the transform-error path below.
+				h.recordAttempt(ctx, row.ID, int(row.AttemptCount)+1, nil, nil, nil, queuedFor, time.Duration(0), fmt.Errorf("filter: %v", ferr))
+				_ = h.Queries.MarkEventFailed(ctx, row.ID)
+				if err := h.Queue.DeadLetter(ctx, raw); err != nil {
+					return err
+				}
+				metrics.Delivery(destID, connID, "failed")
+				metrics.Attempt(connID, "deadletter")
+				return nil
 			} else if !ok {
 				if err := h.Queries.MarkEventFiltered(ctx, row.ID); err != nil {
 					return fmt.Errorf("mark filtered: %w", err)
@@ -554,9 +581,11 @@ func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
 			continue
 		}
 		if eerr := h.Queue.Enqueue(ctx, dqueue.Payload{
-			EventID:             store.GoUUID(ev.ID),
-			OrgID:               store.GoUUID(ev.OrgID),
-			Attempt:             0,
+			EventID: store.GoUUID(ev.ID),
+			OrgID:   store.GoUUID(ev.OrgID),
+			// ponytail: attempt_count == retries consumed (one row per failed attempt), so carrying it
+			// keeps the max_retries budget across a reap; was 0, which granted a fresh budget.
+			Attempt:             int(ev.AttemptCount),
 			EnqueuedAt:          time.Now().UnixMilli(),
 			RetryStrategy:       conn.RetryStrategy,
 			RetryBaseMs:         conn.RetryBaseMs,
