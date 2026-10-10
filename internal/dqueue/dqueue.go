@@ -215,6 +215,11 @@ func stripToken(member string) string {
 // FairPick takes one event round-robin across orgs and leases it for leaseMs
 // under a unique fencing token. The returned raw member (token-prefixed) is what
 // Ack/DeadLetter operate on. ok=false means the pending ring is currently empty.
+//
+// ponytail: if ctx is cancelled after the Lua script ran but before the reply
+// arrives (shutdown), the event is leased in processing yet never returned; it
+// is recovered when the lease expires (ceiling: one leaseMs window of delay).
+// Not fixed: a detached context would delay shutdown for little gain.
 func (c *Client) FairPick(ctx context.Context, leaseMs int64) (raw string, p Payload, ok bool, err error) {
 	deadline := time.Now().UnixMilli() + leaseMs
 	token := uuid.NewString()

@@ -95,6 +95,17 @@ var (
 	benchmarkRange = netip.MustParsePrefix("198.18.0.0/15")
 )
 
+// More internal/metadata ranges netip's predicates miss: this-network 0/8,
+// IETF protocol assignments 192.0.0.0/24, Azure WireServer/IMDS, and NAT64
+// 64:ff9b::/96 (can embed 169.254.169.254 etc. via a NAT64 gateway).
+// ponytail: 169.254/16 is already caught by IsLinkLocalUnicast; listed in tests.
+var extraBlocked = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("168.63.129.16/32"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+}
+
 // isPublicIP reports whether ip is a globally-routable unicast address safe to
 // deliver to. Rejects loopback, private (RFC1918 + ULA fc00::/7), link-local
 // (incl. 169.254.169.254 cloud metadata and fe80::/10), multicast, the
@@ -110,6 +121,11 @@ func isPublicIP(ip netip.Addr) bool {
 	}
 	if cgnatRange.Contains(ip) || benchmarkRange.Contains(ip) {
 		return false
+	}
+	for _, p := range extraBlocked {
+		if p.Contains(ip) {
+			return false
+		}
 	}
 	return true
 }

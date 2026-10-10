@@ -581,9 +581,11 @@ func (h *Handler) ReapStuckEvents(ctx context.Context) (int, error) {
 			continue
 		}
 		if eerr := h.Queue.Enqueue(ctx, dqueue.Payload{
-			EventID:             store.GoUUID(ev.ID),
-			OrgID:               store.GoUUID(ev.OrgID),
-			Attempt:             0,
+			EventID: store.GoUUID(ev.ID),
+			OrgID:   store.GoUUID(ev.OrgID),
+			// ponytail: attempt_count == retries consumed (one row per failed attempt), so carrying it
+			// keeps the max_retries budget across a reap; was 0, which granted a fresh budget.
+			Attempt:             int(ev.AttemptCount),
 			EnqueuedAt:          time.Now().UnixMilli(),
 			RetryStrategy:       conn.RetryStrategy,
 			RetryBaseMs:         conn.RetryBaseMs,
