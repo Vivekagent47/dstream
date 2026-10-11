@@ -76,12 +76,20 @@ func TestRequireSession(t *testing.T) {
 
 // --- DB-gated integration coverage ---
 
-func testPool(t *testing.T) *pgxpool.Pool {
+// requireDSN returns the test database URL or skips the test when it is unset,
+// so DB-backed tests skip locally instead of connecting to the libpq default.
+func requireDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("DSTREAM_TEST_DB_URL")
 	if dsn == "" {
 		t.Skip("DSTREAM_TEST_DB_URL not set")
 	}
+	return dsn
+}
+
+func testPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := requireDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	pool, err := store.NewPool(ctx, dsn, 2)

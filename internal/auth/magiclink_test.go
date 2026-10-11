@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -362,10 +361,7 @@ func TestBootstrapSession_PendingInviteWinsOverDefaultOrg(t *testing.T) {
 // pg_stat_activity) rather than sleeping, then releases the winner.
 func TestBootstrapSession_ConcurrentDefaultOrgJoin_NoAbort(t *testing.T) {
 	ctx := context.Background()
-	dsn := os.Getenv("DSTREAM_TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("DSTREAM_TEST_DB_URL not set")
-	}
+	dsn := requireDSN(t)
 	// testPool caps at 2 conns; this needs three live at once (both
 	// transactions plus the lock-wait probe).
 	pool, err := store.NewPool(ctx, dsn, 4)
