@@ -396,6 +396,8 @@ func TestServeAudit_BadQueryParamsAreRefused(t *testing.T) {
 		{"?before_id=abc", "invalid before_id"},
 		{"?before_id=-1", "invalid before_id"},
 		{"?actor_user_id=not-a-uuid", "invalid actor_user_id"},
+		// Zero UUID parses but would map to NULL = unfiltered; rejected, not silently ignored.
+		{"?actor_user_id=" + uuid.Nil.String(), "invalid actor_user_id"},
 	} {
 		wantErr(t, e.do(http.MethodGet, "/api/audit"+c.query, owner, org, nil), 400, c.msg)
 	}

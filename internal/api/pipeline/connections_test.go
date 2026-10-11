@@ -263,6 +263,9 @@ func TestConnectionValidation(t *testing.T) {
 		wantErr(t, do(t, r, http.MethodPatch, "/api/connections/"+id, uid, oid, body), status, msg)
 	}
 	patch(cid, map[string]any{"retry_strategy": "random"}, 400, "invalid retry_strategy")
+	patch(cid, map[string]any{"max_retries": 101}, 400, "max_retries must be 0..100")
+	patch(cid, map[string]any{"retry_jitter_pct": -1}, 400, "retry_jitter_pct must be 0..100")
+	patch(cid, map[string]any{"retry_base_ms": 10, "retry_cap_ms": 5}, 400, "retry_base_ms must be <= retry_cap_ms")
 	patch(cid, map[string]any{"filter_expr": "payload.n"}, 400, "filter expression must evaluate to bool, got dyn")
 	patch(cid, map[string]any{"name": "a\u0000b"}, 500, "update") // Postgres rejects NUL in text
 	patch("not-a-uuid", map[string]any{"name": "x"}, 400, "invalid id")
