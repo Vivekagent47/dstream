@@ -121,6 +121,28 @@ func TestReapStuckEvents(t *testing.T) {
 	delivered.wantState("delivered", 0)
 }
 
+// A stuck event that already burned N attempts re-enqueues at attempt N, not 0,
+// so the reap doesn't hand it a fresh max_retries budget.
+func TestReapStuckEvents_CarriesAttemptBudget(t *testing.T) {
+	f := seed(t, seedOpt{url: strp("http://x.invalid")})
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE events SET attempt_count=3 WHERE id=$1`, store.UUID(f.ev)); err != nil {
+		t.Fatal(err)
+	}
+	f.backdate("queued", "50 years")
+
+	if _, err := f.h.ReapStuckEvents(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := f.dq.Items(context.Background(), "pending", f.org.String(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Attempt != 3 {
+		t.Fatalf("items = %+v, want one item with Attempt=3", items)
+	}
+}
+
 func TestReapStuckEvents_Errors(t *testing.T) {
 	ctx := context.Background()
 	t.Run("claim query fails", func(t *testing.T) {

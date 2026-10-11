@@ -602,6 +602,8 @@ func TestCaptureRuleListAndIdValidation(t *testing.T) {
 	uid, oid := seedOrg(t, q)
 	r := newRouter(q, captureRuleRoutes)
 	wantErr(t, do(t, r, http.MethodGet, "/api/capture-rules?source_id=nope", uid, oid, nil), http.StatusBadRequest, "invalid source_id")
+	// Zero UUID parses but would map to NULL = unfiltered; rejected, not silently ignored.
+	wantErr(t, do(t, r, http.MethodGet, "/api/capture-rules?source_id="+uuid.Nil.String(), uid, oid, nil), http.StatusBadRequest, "invalid source_id")
 	wantErr(t, do(t, r, http.MethodGet, "/api/capture-rules/nope", uid, oid, nil), http.StatusBadRequest, "invalid capture rule id")
 	wantErr(t, do(t, r, http.MethodDelete, "/api/capture-rules/nope", uid, oid, nil), http.StatusBadRequest, "invalid capture rule id")
 	wantErr(t, do(t, r, http.MethodGet, "/api/capture-rules/"+uuid.NewString(), uid, oid, nil), http.StatusNotFound, "capture rule not found")

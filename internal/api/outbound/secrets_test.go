@@ -236,6 +236,8 @@ func TestRotateSecret_BringYourOwnAndRefusals(t *testing.T) {
 	for _, bad := range []string{"%%%not base64%%%", "whsec_"} {
 		want(t, f.own(http.MethodPost, path, map[string]any{"secret": bad}), http.StatusBadRequest, "secret is not a valid signing key")
 	}
+	// A non-empty but malformed JSON body is rejected (not treated as "generate one").
+	want(t, httpDo(f, http.MethodPost, path, strings.NewReader("{nope")), http.StatusBadRequest, "invalid json")
 	row := f.epRow(f.app, ep.ID)
 	if row.Secret != orig.Secret || row.PrevSecret != nil {
 		t.Fatalf("a refused rotation must not touch the row: %+v", row)

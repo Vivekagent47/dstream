@@ -126,6 +126,8 @@ func TestListBookmarksFilters(t *testing.T) {
 	mustEq(t, "source_id", row["source_id"], src1.String())
 	mustEq(t, "request_id", row["request_id"], req2.String())
 	wantErr(t, do(t, r, http.MethodGet, "/api/bookmarks?source_id=nope", uid, oid, nil), 400, "invalid source_id")
+	// Zero UUID parses but would map to NULL = unfiltered dump; rejected, not silently ignored.
+	wantErr(t, do(t, r, http.MethodGet, "/api/bookmarks?source_id="+uuid.Nil.String(), uid, oid, nil), 400, "invalid source_id")
 	otherOrg := decodeList(t, do(t, r, http.MethodGet, "/api/bookmarks", uidB, oidB, nil))
 	mustEq(t, "org B sees only its own", len(otherOrg), 1)
 }

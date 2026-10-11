@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +136,7 @@ func stmt(name string) string { return "-- name: " + name + " " }
 
 func closedPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	pool, err := store.NewPool(context.Background(), os.Getenv("DSTREAM_TEST_DB_URL"), 1)
+	pool, err := store.NewPool(context.Background(), requireDSN(t), 1)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -381,7 +380,7 @@ func TestBootstrapSession_DefaultOrgFailures(t *testing.T) {
 func TestBootstrapSession_ConcurrentFirstLoginAdoptsTheWinnersUser(t *testing.T) {
 	// testPool's two connections are both held by the transactions below; the
 	// poll needs a third.
-	pool, err := store.NewPool(context.Background(), os.Getenv("DSTREAM_TEST_DB_URL"), 4)
+	pool, err := store.NewPool(context.Background(), requireDSN(t), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
